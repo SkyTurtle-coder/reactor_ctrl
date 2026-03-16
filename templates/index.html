@@ -8,23 +8,44 @@
 <body>
     <main>
         <h1>reactor_ctrl</h1>
-        <p>Basisprojekt fuer Flask, MySQL und spaetere RS-485-Geraeteintegration.</p>
+        <p>Basisprojekt fuer Flask, MySQL und RS-232 ueber den Moxa NPort 5610-8-DT Ethernet-Device-Server.</p>
         <p>Aktuelle DB-Config: {{ database_url }}</p>
         <ul>
             <li><a href="/health">/health</a></li>
             <li><a href="/health/db">/health/db</a></li>
             <li><a href="/api/">/api/</a></li>
             <li><a href="/api/devices">/api/devices</a></li>
-            <li><a href="/api/serial-adapters">/api/serial-adapters</a></li>
-            <li><a href="/api/rs485-buses">/api/rs485-buses</a></li>
+            <li><a href="/api/device-servers">/api/device-servers</a></li>
+            <li><a href="/api/device-connections">/api/device-connections</a></li>
         </ul>
-        <pre>POST /api/devices
+        <pre>POST /api/device-servers
 {
-  "asset_serial": "R-001",
-  "display_name": "Reaktor 1",
-  "device_type": "reactor",
-  "protocol": "modbus_rtu"
-}</pre>
+  "server_code": "MOXA-01",
+  "display_name": "Moxa NPort 5610-8-DT",
+  "vendor": "Moxa",
+  "model": "NPort 5610-8-DT",
+  "host": "192.168.1.50",
+  "serial_standard": "rs232",
+  "port_count": 8
+}
+
+POST /api/device-connections
+{
+  "device_server_id": 1,
+  "port_number": 1,
+  "connection_label": "Port 1",
+  "baud_rate": 9600,
+  "parity": "N"
+}
+
+PUT /api/devices/1/binding
+{
+  "connection_id": 1,
+  "quality_state": "configured",
+  "is_online": false
+}
+
+POST /api/device-connections/1/probe</pre>
     </main>
 </body>
 </html>

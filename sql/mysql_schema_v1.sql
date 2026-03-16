@@ -1,5 +1,5 @@
--- reactor_ctrl - MySQL/MariaDB schema v1
--- Ziel: Serverbetrieb mit mehreren USB-RS485-Adaptern, Geraeteerkennung und Historisierung
+-- reactor_ctrl - Ethernet serial server schema v2-in-place
+-- Zielplattform: Moxa NPort 5610-8-DT, 8x RS-232 via Ethernet fuer Reaktorkomponenten
 -- Voraussetzung: MariaDB 10.6+ oder MySQL 8.0+
 
 SET NAMES utf8mb4;
@@ -11,69 +11,60 @@ CREATE DATABASE IF NOT EXISTS reactor_ctrl
 
 USE reactor_ctrl;
 
-CREATE TABLE IF NOT EXISTS usb_hub (
-  hub_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  hub_name VARCHAR(100) NOT NULL,
-  hub_serial VARCHAR(128) NULL,
-  host_name VARCHAR(100) NULL,
-  physical_location VARCHAR(255) NULL,
+CREATE TABLE IF NOT EXISTS device_server (
+  device_server_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  server_code VARCHAR(64) NOT NULL,
+  display_name VARCHAR(120) NOT NULL,
+  vendor VARCHAR(64) NOT NULL DEFAULT 'Moxa',
+  model VARCHAR(64) NULL,
+  host VARCHAR(255) NOT NULL,
+  management_port INT UNSIGNED NULL,
+  serial_standard VARCHAR(16) NOT NULL DEFAULT 'rs232',
+  port_count SMALLINT UNSIGNED NOT NULL DEFAULT 8,
+  notes TEXT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (hub_id),
-  UNIQUE KEY uq_usb_hub_serial (hub_serial),
-  KEY idx_usb_hub_host (host_name)
+  PRIMARY KEY (device_server_id),
+  UNIQUE KEY uq_device_server_code (server_code),
+  UNIQUE KEY uq_device_server_host (host),
+  KEY idx_device_server_active (is_active),
+  CONSTRAINT chk_device_server_serial_standard CHECK (serial_standard IN ('rs232', 'rs422', 'rs485'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS serial_adapter (
-  adapter_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  adapter_uid CHAR(36) NOT NULL,
-  hub_id BIGINT UNSIGNED NULL,
-  adapter_label VARCHAR(100) NULL,
-  usb_vendor_id VARCHAR(8) NULL,
-  usb_product_id VARCHAR(8) NULL,
-  usb_serial VARCHAR(128) NULL,
-  usb_location_path VARCHAR(255) NULL,
-  driver_info VARCHAR(255) NULL,
-  last_seen_port VARCHAR(64) NULL,
-  last_seen_at DATETIME(3) NULL,
-  is_active TINYINT(1) NOT NULL DEFAULT 1,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (adapter_id),
-  UNIQUE KEY uq_adapter_uid (adapter_uid),
-  UNIQUE KEY uq_adapter_usb_serial (usb_serial),
-  KEY idx_adapter_hub (hub_id),
-  KEY idx_adapter_port (last_seen_port),
-  CONSTRAINT fk_adapter_hub
-    FOREIGN KEY (hub_id) REFERENCES usb_hub (hub_id)
-    ON UPDATE CASCADE
-    ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS rs485_bus (
-  bus_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  adapter_id BIGINT UNSIGNED NOT NULL,
-  bus_name VARCHAR(100) NOT NULL,
-  protocol VARCHAR(32) NOT NULL DEFAULT 'modbus_rtu',
+CREATE TABLE IF NOT EXISTS device_connection (
+  connection_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  device_server_id BIGINT UNSIGNED NOT NULL,
+  port_number SMALLINT UNSIGNED NOT NULL,
+  connection_label VARCHAR(120) NULL,
+  transport_type VARCHAR(16) NOT NULL DEFAULT 'tcp_socket',
+  tcp_host VARCHAR(255) NOT NULL,
+  tcp_port INT UNSIGNED NOT NULL,
   baud_rate INT UNSIGNED NOT NULL DEFAULT 9600,
   data_bits TINYINT UNSIGNED NOT NULL DEFAULT 8,
   parity CHAR(1) NOT NULL DEFAULT 'N',
   stop_bits TINYINT UNSIGNED NOT NULL DEFAULT 1,
-  poll_interval_ms INT UNSIGNED NOT NULL DEFAULT 1000,
-  timeout_ms INT UNSIGNED NOT NULL DEFAULT 1200,
+  flow_control VARCHAR(16) NOT NULL DEFAULT 'none',
+  read_timeout_ms INT UNSIGNED NOT NULL DEFAULT 1200,
+  write_timeout_ms INT UNSIGNED NOT NULL DEFAULT 1200,
+  reconnect_delay_ms INT UNSIGNED NOT NULL DEFAULT 1000,
+  last_seen_at DATETIME(3) NULL,
+  last_error VARCHAR(500) NULL,
   is_enabled TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (bus_id),
-  UNIQUE KEY uq_bus_adapter (adapter_id),
-  UNIQUE KEY uq_bus_name (bus_name),
-  KEY idx_bus_enabled (is_enabled),
-  CONSTRAINT chk_bus_parity CHECK (parity IN ('N', 'E', 'O')),
-  CONSTRAINT fk_bus_adapter
-    FOREIGN KEY (adapter_id) REFERENCES serial_adapter (adapter_id)
+  PRIMARY KEY (connection_id),
+  UNIQUE KEY uq_connection_server_port (device_server_id, port_number),
+  UNIQUE KEY uq_connection_tcp_endpoint (tcp_host, tcp_port),
+  KEY idx_connection_enabled (is_enabled),
+  KEY idx_connection_tcp_endpoint_lookup (tcp_host, tcp_port),
+  CONSTRAINT chk_connection_transport_type CHECK (transport_type IN ('tcp_socket', 'rfc2217')),
+  CONSTRAINT chk_connection_parity CHECK (parity IN ('N', 'E', 'O')),
+  CONSTRAINT chk_connection_flow_control CHECK (flow_control IN ('none', 'rtscts', 'xonxoff')),
+  CONSTRAINT fk_connection_device_server
+    FOREIGN KEY (device_server_id) REFERENCES device_server (device_server_id)
     ON UPDATE CASCADE
-    ON DELETE RESTRICT
+    ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS device (
@@ -96,23 +87,20 @@ CREATE TABLE IF NOT EXISTS device (
 
 CREATE TABLE IF NOT EXISTS device_binding_current (
   device_id BIGINT UNSIGNED NOT NULL,
-  bus_id BIGINT UNSIGNED NOT NULL,
-  rs485_address SMALLINT UNSIGNED NOT NULL,
-  register_profile VARCHAR(120) NULL,
+  connection_id BIGINT UNSIGNED NOT NULL,
   first_seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   last_seen_at DATETIME(3) NULL,
   is_online TINYINT(1) NOT NULL DEFAULT 0,
   quality_state VARCHAR(32) NOT NULL DEFAULT 'unknown',
   PRIMARY KEY (device_id),
-  UNIQUE KEY uq_binding_bus_address (bus_id, rs485_address),
+  UNIQUE KEY uq_binding_connection (connection_id),
   KEY idx_binding_online (is_online),
-  CONSTRAINT chk_binding_address CHECK (rs485_address BETWEEN 1 AND 247),
   CONSTRAINT fk_binding_device
     FOREIGN KEY (device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE CASCADE,
-  CONSTRAINT fk_binding_bus
-    FOREIGN KEY (bus_id) REFERENCES rs485_bus (bus_id)
+  CONSTRAINT fk_binding_connection
+    FOREIGN KEY (connection_id) REFERENCES device_connection (connection_id)
     ON UPDATE CASCADE
     ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -120,21 +108,19 @@ CREATE TABLE IF NOT EXISTS device_binding_current (
 CREATE TABLE IF NOT EXISTS device_binding_history (
   binding_history_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   device_id BIGINT UNSIGNED NOT NULL,
-  bus_id BIGINT UNSIGNED NOT NULL,
-  rs485_address SMALLINT UNSIGNED NOT NULL,
+  connection_id BIGINT UNSIGNED NOT NULL,
   bound_from DATETIME(3) NOT NULL,
   bound_to DATETIME(3) NULL,
   reason VARCHAR(255) NULL,
   PRIMARY KEY (binding_history_id),
   KEY idx_binding_history_device_time (device_id, bound_from),
-  KEY idx_binding_history_bus_addr_time (bus_id, rs485_address, bound_from),
-  CONSTRAINT chk_binding_history_address CHECK (rs485_address BETWEEN 1 AND 247),
+  KEY idx_binding_history_connection_time (connection_id, bound_from),
   CONSTRAINT fk_binding_history_device
     FOREIGN KEY (device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE CASCADE,
-  CONSTRAINT fk_binding_history_bus
-    FOREIGN KEY (bus_id) REFERENCES rs485_bus (bus_id)
+  CONSTRAINT fk_binding_history_connection
+    FOREIGN KEY (connection_id) REFERENCES device_connection (connection_id)
     ON UPDATE CASCADE
     ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -261,47 +247,6 @@ CREATE TABLE IF NOT EXISTS soft_sensor_estimate (
     ON DELETE RESTRICT,
   CONSTRAINT fk_soft_sensor_estimate_device
     FOREIGN KEY (device_id) REFERENCES device (device_id)
-    ON UPDATE CASCADE
-    ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS discovery_run (
-  discovery_run_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  bus_id BIGINT UNSIGNED NOT NULL,
-  started_by VARCHAR(100) NOT NULL DEFAULT 'system',
-  started_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  finished_at DATETIME(3) NULL,
-  status VARCHAR(16) NOT NULL DEFAULT 'running',
-  notes VARCHAR(255) NULL,
-  PRIMARY KEY (discovery_run_id),
-  KEY idx_discovery_run_bus_time (bus_id, started_at),
-  CONSTRAINT chk_discovery_run_status CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
-  CONSTRAINT fk_discovery_run_bus
-    FOREIGN KEY (bus_id) REFERENCES rs485_bus (bus_id)
-    ON UPDATE CASCADE
-    ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS discovery_result (
-  discovery_result_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  discovery_run_id BIGINT UNSIGNED NOT NULL,
-  rs485_address SMALLINT UNSIGNED NOT NULL,
-  protocol VARCHAR(32) NOT NULL,
-  device_type_guess VARCHAR(64) NULL,
-  manufacturer_serial VARCHAR(128) NULL,
-  raw_identity JSON NULL,
-  matched_device_id BIGINT UNSIGNED NULL,
-  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  PRIMARY KEY (discovery_result_id),
-  UNIQUE KEY uq_discovery_run_addr (discovery_run_id, rs485_address),
-  KEY idx_discovery_result_serial (manufacturer_serial),
-  CONSTRAINT chk_discovery_result_address CHECK (rs485_address BETWEEN 1 AND 247),
-  CONSTRAINT fk_discovery_result_run
-    FOREIGN KEY (discovery_run_id) REFERENCES discovery_run (discovery_run_id)
-    ON UPDATE CASCADE
-    ON DELETE CASCADE,
-  CONSTRAINT fk_discovery_result_device
-    FOREIGN KEY (matched_device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

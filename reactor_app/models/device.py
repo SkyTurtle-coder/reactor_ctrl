@@ -32,4 +32,3 @@ class Device(db.Model):
     measurements = db.relationship("Measurement", back_populates="device")
     commands = db.relationship("ControlCommand", back_populates="device")
     soft_sensor_estimates = db.relationship("SoftSensorEstimate", back_populates="device")
-    discovery_matches = db.relationship("DiscoveryResult", back_populates="matched_device")
