@@ -4,6 +4,7 @@ from pathlib import Path
 
 from flask import Flask
 
+from .api import api_bp
 from .extensions import db
 from .web import web_bp
 
@@ -22,6 +23,7 @@ def create_app() -> Flask:
     with app.app_context():
         from . import models  # noqa: F401
 
+    app.register_blueprint(api_bp)
     app.register_blueprint(web_bp)
 
     return app

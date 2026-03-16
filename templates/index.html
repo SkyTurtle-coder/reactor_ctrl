@@ -13,7 +13,18 @@
         <ul>
             <li><a href="/health">/health</a></li>
             <li><a href="/health/db">/health/db</a></li>
+            <li><a href="/api/">/api/</a></li>
+            <li><a href="/api/devices">/api/devices</a></li>
+            <li><a href="/api/serial-adapters">/api/serial-adapters</a></li>
+            <li><a href="/api/rs485-buses">/api/rs485-buses</a></li>
         </ul>
+        <pre>POST /api/devices
+{
+  "asset_serial": "R-001",
+  "display_name": "Reaktor 1",
+  "device_type": "reactor",
+  "protocol": "modbus_rtu"
+}</pre>
     </main>
 </body>
 </html>
