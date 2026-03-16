@@ -104,3 +104,9 @@ Aktuell ist als erster Treiber `generic_text` implementiert. Er eignet sich fuer
 python -m pip install -r requirements.txt
 python app.py
 ```
+
+## Server-Hinweis
+
+Beim App-Start werden fehlende Tabellen standardmaessig automatisch angelegt (`AUTO_CREATE_SCHEMA=true`). Das verhindert, dass ein Deployment zwar den Code aktualisiert, aber neue Tabellen wie `device_server` oder `device_connection` in MySQL noch fehlen.
+
+Fuer produktive Deployments sollte `FLASK_DEBUG` auf `false` bleiben. Falls ein vorhandenes Datenbankschema noch aus der alten USB/RS-485-Struktur stammt, muessen die Legacy-Tabellen manuell auf das aktuelle NPort-Schema umgestellt werden.
