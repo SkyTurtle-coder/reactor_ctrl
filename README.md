@@ -30,6 +30,23 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 - `GET|POST /api/devices/<device_id>/commands`
 - `GET /api/commands/<command_id>`
 
+## API-Authentifizierung
+
+Alle schreibenden API-Endpunkte (`POST`, `PATCH`, `PUT`, `DELETE`) sind fuer den produktiven Betrieb tokenbasiert abgesichert.
+
+- Konfiguration ueber `API_AUTH_REQUIRED=true`
+- Token ueber `API_AUTH_TOKEN=<dein-langer-zufallstoken>`
+- Header entweder `Authorization: Bearer <token>` oder `X-API-Token: <token>`
+
+Beispiel:
+
+```powershell
+curl -H "Authorization: Bearer <token>" `
+  -H "Content-Type: application/json" `
+  -d "{\"asset_serial\":\"R-001\",\"display_name\":\"Reaktor 1\",\"device_type\":\"reactor_component\",\"protocol\":\"generic_text\"}" `
+  http://127.0.0.1:5000/api/devices
+```
+
 ## Beispielablauf
 
 1. Reaktorkomponente anlegen:
@@ -109,4 +126,4 @@ python app.py
 
 Beim App-Start werden fehlende Tabellen standardmaessig automatisch angelegt (`AUTO_CREATE_SCHEMA=true`). Das verhindert, dass ein Deployment zwar den Code aktualisiert, aber neue Tabellen wie `device_server` oder `device_connection` in MySQL noch fehlen.
 
-Fuer produktive Deployments sollte `FLASK_DEBUG` auf `false` bleiben. Falls ein vorhandenes Datenbankschema noch aus der alten USB/RS-485-Struktur stammt, muessen die Legacy-Tabellen manuell auf das aktuelle NPort-Schema umgestellt werden.
+Fuer produktive Deployments sollte `FLASK_DEBUG` auf `false` bleiben und `API_AUTH_TOKEN` gesetzt sein. Falls ein vorhandenes Datenbankschema noch aus der alten USB/RS-485-Struktur stammt, muessen die Legacy-Tabellen manuell auf das aktuelle NPort-Schema umgestellt werden.

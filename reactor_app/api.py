@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hmac
 from datetime import datetime, timezone
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from .extensions import db
@@ -20,6 +21,7 @@ from .services import DeviceCommandError, TcpSocketConfig, execute_device_comman
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
+_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -35,6 +37,50 @@ def _json_error(message: str, status_code: int, details: str | None = None):
     if details:
         payload["details"] = details
     return jsonify(payload), status_code
+
+
+def _json_auth_error(message: str, status_code: int):
+    response = jsonify({"error": message})
+    response.status_code = status_code
+    response.headers["WWW-Authenticate"] = f'Bearer realm="{current_app.config.get("API_AUTH_REALM", "reactor_ctrl")}"'
+    return response
+
+
+def _extract_api_token() -> str | None:
+    auth_header = request.headers.get("Authorization", "").strip()
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        if token:
+            return token
+
+    token = request.headers.get("X-API-Token")
+    if token is not None:
+        token = token.strip()
+    return token or None
+
+
+@api_bp.before_request
+def require_api_token_for_writes():
+    if request.method in _SAFE_METHODS:
+        return None
+
+    if not current_app.config.get("API_AUTH_REQUIRED", True):
+        return None
+
+    expected_token = current_app.config.get("API_AUTH_TOKEN")
+    if not expected_token:
+        return _json_auth_error(
+            "API write authentication is enabled but no API_AUTH_TOKEN is configured on the server.",
+            503,
+        )
+
+    provided_token = _extract_api_token()
+    if provided_token is None:
+        return _json_auth_error("Missing API authentication token.", 401)
+
+    if not hmac.compare_digest(provided_token, expected_token):
+        return _json_auth_error("Invalid API authentication token.", 401)
+    return None
 
 
 def _load_json_payload() -> dict[str, Any]:

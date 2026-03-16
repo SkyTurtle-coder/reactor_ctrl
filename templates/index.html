@@ -10,6 +10,7 @@
         <h1>reactor_ctrl</h1>
         <p>Basisprojekt fuer Flask, MySQL und RS-232 ueber den Moxa NPort 5610-8-DT Ethernet-Device-Server.</p>
         <p>Aktuelle DB-Config: {{ database_url }}</p>
+        <p>Schreibende API-Endpunkte erwarten einen API-Token per <code>Authorization: Bearer &lt;token&gt;</code> oder <code>X-API-Token</code>.</p>
         <ul>
             <li><a href="/health">/health</a></li>
             <li><a href="/health/db">/health/db</a></li>

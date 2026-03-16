@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import os
 from pathlib import Path
 
@@ -26,3 +27,10 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     DEBUG = _env_bool("FLASK_DEBUG", False)
     AUTO_CREATE_SCHEMA = _env_bool("AUTO_CREATE_SCHEMA", True)
+    API_AUTH_REQUIRED = _env_bool("API_AUTH_REQUIRED", True)
+    API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
+    API_AUTH_REALM = os.getenv("API_AUTH_REALM", "reactor_ctrl")
+
+    @staticmethod
+    def generate_api_auth_token() -> str:
+        return secrets.token_urlsafe(32)
