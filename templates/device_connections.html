@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block title %}Verbindungen | reactor_ctrl{% endblock %}
+
+{% block page_header %}
+<section class="page-header">
+    <span class="eyebrow">Transport</span>
+    <h1>Device-Verbindungen</h1>
+    <p class="page-lead">Serielle Kanaele ueber TCP, inklusive Endpoint, serieller Parameter und Binding-Zustand.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="metric-grid compact">
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Total</p><p class="metric-value">{{ summary.total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Enabled</p><p class="metric-value">{{ summary.enabled }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Gebunden</p><p class="metric-value">{{ summary.bound }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Bereits gesehen</p><p class="metric-value">{{ summary.recently_seen }}</p></div></article>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h2>Port-Mapping</h2>
+        <p>Die Tabelle bleibt bewusst nah an der API-Struktur, damit sie spaeter schlank mit Bootstrap-Formularen erweitert werden kann.</p>
+    </div>
+    <div class="card-body">
+        {% if connections %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Connection</th>
+                        <th>Endpoint</th>
+                        <th>Seriell</th>
+                        <th>Binding</th>
+                        <th>Letzter Kontakt</th>
+                        <th>Fehler</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for connection in connections %}
+                    <tr>
+                        <td>
+                            <strong>{{ connection.device_server.server_code }}</strong>
+                            <div class="muted">
+                                Port {{ connection.port_number }}
+                                {% if connection.connection_label %}
+                                / {{ connection.connection_label }}
+                                {% endif %}
+                            </div>
+                        </td>
+                        <td>
+                            <code>{{ connection.tcp_host }}:{{ connection.tcp_port }}</code>
+                            <div class="muted">{{ connection.transport_type }}</div>
+                        </td>
+                        <td>{{ connection.baud_rate }} / {{ connection.data_bits }}{{ connection.parity }}{{ connection.stop_bits }}</td>
+                        <td>
+                            <span class="badge {{ bool_badge_class(connection.is_enabled) }}">{{ "enabled" if connection.is_enabled else "disabled" }}</span>
+                            {% if connection.current_binding %}
+                            <div class="muted">{{ connection.current_binding.device.display_name }}</div>
+                            <span class="badge {{ bool_badge_class(connection.current_binding.is_online) }}">{{ "online" if connection.current_binding.is_online else "offline" }}</span>
+                            {% else %}
+                            <div class="muted">kein Geraet gebunden</div>
+                            {% endif %}
+                        </td>
+                        <td>{{ format_datetime(connection.last_seen_at) }}</td>
+                        <td>
+                            {% if connection.last_error %}
+                            <span class="error-text">{{ connection.last_error }}</span>
+                            {% else %}
+                            <span class="muted">kein Fehler</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="empty-state">Noch keine Device-Verbindungen definiert.</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

@@ -30,6 +30,18 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 - `GET|POST /api/devices/<device_id>/commands`
 - `GET /api/commands/<command_id>`
 
+## Web-Oberflaeche
+
+Die HTML-Basis ist bewusst serverseitig und schlank gehalten, damit spaeter ohne grossen Umbau eine Bootstrap- oder eigene CSS-Oberflaeche daruebergelegt werden kann.
+
+- `GET /`
+- `GET /devices`
+- `GET /device-servers`
+- `GET /device-connections`
+- `GET /commands`
+
+Die Templates verwenden bereits eine gemeinsame Layout-Struktur mit Navigation, Karten- und Tabellenblöcken sowie einer separaten Datei `static/css/app.css`.
+
 ## API-Authentifizierung
 
 Alle schreibenden API-Endpunkte (`POST`, `PATCH`, `PUT`, `DELETE`) sind fuer den produktiven Betrieb tokenbasiert abgesichert.

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+
+{% block title %}Commands | reactor_ctrl{% endblock %}
+
+{% block page_header %}
+<section class="page-header">
+    <span class="eyebrow">Command Log</span>
+    <h1>Steuerbefehle</h1>
+    <p class="page-lead">Letzte API- und Laufzeit-Kommandos fuer RS-232-Geraete, inklusive Status, Benutzer und Zeitleiste.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="metric-grid compact">
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Geladen</p><p class="metric-value">{{ summary.total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Queued</p><p class="metric-value">{{ summary.queued }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Completed</p><p class="metric-value">{{ summary.completed }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Failed</p><p class="metric-value">{{ summary.failed }}</p></div></article>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h2>Letzte 50 Commands</h2>
+        <p>Der Bereich ist als reine Tabelle angelegt und spaeter leicht um Filter, Formulare oder Offcanvas-Details erweiterbar.</p>
+    </div>
+    <div class="card-body">
+        {% if commands %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Angefragt</th>
+                        <th>Geraet</th>
+                        <th>Command</th>
+                        <th>Status</th>
+                        <th>Von</th>
+                        <th>UUID</th>
+                        <th>Fehler</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for command in commands %}
+                    <tr>
+                        <td>{{ format_datetime(command.requested_at) }}</td>
+                        <td>{{ command.device.display_name }}</td>
+                        <td>{{ command.command_name }}</td>
+                        <td><span class="badge {{ status_badge_class(command.status) }}">{{ command.status }}</span></td>
+                        <td>{{ command.requested_by }}</td>
+                        <td><code>{{ command.request_uuid }}</code></td>
+                        <td>
+                            {% if command.error_message %}
+                            <span class="error-text">{{ command.error_message }}</span>
+                            {% else %}
+                            <span class="muted">-</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="empty-state">Es sind noch keine Commands protokolliert.</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

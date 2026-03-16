@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}reactor_ctrl{% endblock %}</title>
+    {% block vendor_css %}{% endblock %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="app-shell">
+        <header class="site-header">
+            <div class="container">
+                <div class="navbar">
+                    <a class="brand" href="{{ url_for('web.index') }}">
+                        <span class="brand-kicker">reactor_ctrl</span>
+                        <strong>Moxa NPort RS-232 Control</strong>
+                    </a>
+                    <nav class="nav">
+                        <a class="nav-link{% if active_page == 'dashboard' %} active{% endif %}" href="{{ url_for('web.index') }}">Dashboard</a>
+                        <a class="nav-link{% if active_page == 'devices' %} active{% endif %}" href="{{ url_for('web.devices_overview') }}">Geraete</a>
+                        <a class="nav-link{% if active_page == 'device_servers' %} active{% endif %}" href="{{ url_for('web.device_servers_overview') }}">Device Server</a>
+                        <a class="nav-link{% if active_page == 'device_connections' %} active{% endif %}" href="{{ url_for('web.device_connections_overview') }}">Verbindungen</a>
+                        <a class="nav-link{% if active_page == 'commands' %} active{% endif %}" href="{{ url_for('web.commands_overview') }}">Commands</a>
+                    </nav>
+                </div>
+            </div>
+        </header>
+
+        <main class="container page-shell">
+            {% block page_header %}{% endblock %}
+            {% block content %}{% endblock %}
+        </main>
+
+        <footer class="site-footer">
+            <div class="container footer-grid">
+                <div class="footer-panel">
+                    <h2 class="footer-title">Systembasis</h2>
+                    <p>Flask, MySQL und RS-232 over Ethernet ueber Moxa NPort 5610-8-DT.</p>
+                </div>
+                <div class="footer-panel">
+                    <h2 class="footer-title">Datenbank</h2>
+                    <p><code>{{ database_url }}</code></p>
+                </div>
+                <div class="footer-panel">
+                    <h2 class="footer-title">API-Schutz</h2>
+                    <p>
+                        {% if api_auth_required %}
+                        Schreibende Endpunkte erwarten API-Token.
+                        {% else %}
+                        Schreibende Endpunkte sind derzeit offen.
+                        {% endif %}
+                    </p>
+                </div>
+            </div>
+        </footer>
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

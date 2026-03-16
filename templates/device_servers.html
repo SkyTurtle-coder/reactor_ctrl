@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Device Server | reactor_ctrl{% endblock %}
+
+{% block page_header %}
+<section class="page-header">
+    <span class="eyebrow">Infrastruktur</span>
+    <h1>Device Server</h1>
+    <p class="page-lead">Moxa-NPort-Knoten und kompatible Simulatoren als zentrale Ethernet-zu-RS-232-Schnittstellen.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="metric-grid compact">
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Total</p><p class="metric-value">{{ summary.total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Aktiv</p><p class="metric-value">{{ summary.active }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Ports konfiguriert</p><p class="metric-value">{{ summary.configured_ports }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Connections</p><p class="metric-value">{{ summary.defined_connections }}</p></div></article>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h2>Serverliste</h2>
+        <p>Vorbereitet fuer eine spaetere Bootstrap-Navigation und erweiterbare Verwaltungsformulare.</p>
+    </div>
+    <div class="card-body">
+        {% if servers %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Code</th>
+                        <th>Name</th>
+                        <th>Host</th>
+                        <th>Modell</th>
+                        <th>Ports</th>
+                        <th>Connections</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for server in servers %}
+                    <tr>
+                        <td><code>{{ server.server_code }}</code></td>
+                        <td>
+                            <strong>{{ server.display_name }}</strong>
+                            <div class="muted">{{ server.vendor }} / {{ server.serial_standard }}</div>
+                        </td>
+                        <td><code>{{ server.host }}</code></td>
+                        <td>{{ server.model or "n/a" }}</td>
+                        <td>{{ server.port_count }}</td>
+                        <td>{{ server.connections|length }}</td>
+                        <td><span class="badge {{ bool_badge_class(server.is_active) }}">{{ "aktiv" if server.is_active else "inaktiv" }}</span></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="empty-state">Noch keine Device Server vorhanden.</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

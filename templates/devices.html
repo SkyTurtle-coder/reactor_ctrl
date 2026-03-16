@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Geraete | reactor_ctrl{% endblock %}
+
+{% block page_header %}
+<section class="page-header">
+    <span class="eyebrow">Inventar</span>
+    <h1>Geraete</h1>
+    <p class="page-lead">Reaktorkomponenten mit Protokoll, Binding-Status und aktuellem Betriebszustand.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="metric-grid compact">
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Total</p><p class="metric-value">{{ summary.total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Aktiv</p><p class="metric-value">{{ summary.active }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Gebunden</p><p class="metric-value">{{ summary.bound }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Online</p><p class="metric-value">{{ summary.online }}</p></div></article>
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h2>Geraeteliste</h2>
+        <p>Diese Struktur ist absichtlich tabellarisch gehalten und spaeter leicht auf Bootstrap-Tabellen erweiterbar.</p>
+    </div>
+    <div class="card-body">
+        {% if devices %}
+        <div class="table-responsive">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Asset</th>
+                        <th>Name</th>
+                        <th>Typ</th>
+                        <th>Protokoll</th>
+                        <th>Binding</th>
+                        <th>Status</th>
+                        <th>Aktualisiert</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for device in devices %}
+                    <tr>
+                        <td><code>{{ device.asset_serial }}</code></td>
+                        <td>
+                            <strong>{{ device.display_name }}</strong>
+                            {% if device.manufacturer_serial %}
+                            <div class="muted">{{ device.manufacturer_serial }}</div>
+                            {% endif %}
+                        </td>
+                        <td>{{ device.device_type }}</td>
+                        <td><span class="badge badge-info">{{ device.protocol }}</span></td>
+                        <td>
+                            {% if device.current_binding %}
+                            <strong>{{ device.current_binding.connection.device_server.server_code }}</strong>
+                            <div class="muted">Port {{ device.current_binding.connection.port_number }}</div>
+                            {% else %}
+                            <span class="muted">nicht gebunden</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <span class="badge {{ bool_badge_class(device.is_active) }}">{{ "aktiv" if device.is_active else "inaktiv" }}</span>
+                            {% if device.current_binding %}
+                            <span class="badge {{ bool_badge_class(device.current_binding.is_online) }}">{{ "online" if device.current_binding.is_online else "offline" }}</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ format_datetime(device.updated_at) }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="empty-state">Noch keine Geraete in der Datenbank.</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
