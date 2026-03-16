@@ -1,13 +1,13 @@
--- reactor_ctrl - MySQL schema v1
+-- reactor_ctrl - MySQL/MariaDB schema v1
 -- Ziel: Serverbetrieb mit mehreren USB-RS485-Adaptern, Geraeteerkennung und Historisierung
--- Voraussetzung: MySQL 8.0+
+-- Voraussetzung: MariaDB 10.6+ oder MySQL 8.0+
 
 SET NAMES utf8mb4;
 SET time_zone = '+00:00';
 
 CREATE DATABASE IF NOT EXISTS reactor_ctrl
   CHARACTER SET utf8mb4
-  COLLATE utf8mb4_0900_ai_ci;
+  COLLATE utf8mb4_unicode_ci;
 
 USE reactor_ctrl;
 
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS usb_hub (
   PRIMARY KEY (hub_id),
   UNIQUE KEY uq_usb_hub_serial (hub_serial),
   KEY idx_usb_hub_host (host_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS serial_adapter (
   adapter_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS serial_adapter (
     FOREIGN KEY (hub_id) REFERENCES usb_hub (hub_id)
     ON UPDATE CASCADE
     ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS rs485_bus (
   bus_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS rs485_bus (
     FOREIGN KEY (adapter_id) REFERENCES serial_adapter (adapter_id)
     ON UPDATE CASCADE
     ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS device (
   device_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS device (
   UNIQUE KEY uq_device_manufacturer_serial_protocol (manufacturer_serial, protocol),
   KEY idx_device_type (device_type),
   KEY idx_device_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS device_binding_current (
   device_id BIGINT UNSIGNED NOT NULL,
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS device_binding_current (
     FOREIGN KEY (bus_id) REFERENCES rs485_bus (bus_id)
     ON UPDATE CASCADE
     ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS device_binding_history (
   binding_history_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS device_binding_history (
     FOREIGN KEY (bus_id) REFERENCES rs485_bus (bus_id)
     ON UPDATE CASCADE
     ON DELETE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS measurement_channel (
   channel_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS measurement_channel (
     FOREIGN KEY (device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS measurement (
   measurement_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -186,7 +186,7 @@ CREATE TABLE IF NOT EXISTS measurement (
     FOREIGN KEY (channel_id) REFERENCES measurement_channel (channel_id)
     ON UPDATE CASCADE
     ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS control_command (
   command_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS control_command (
     FOREIGN KEY (device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS control_command_event (
   command_event_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -226,7 +226,7 @@ CREATE TABLE IF NOT EXISTS control_command_event (
     FOREIGN KEY (command_id) REFERENCES control_command (command_id)
     ON UPDATE CASCADE
     ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS soft_sensor_model (
   soft_sensor_model_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS soft_sensor_model (
   PRIMARY KEY (soft_sensor_model_id),
   UNIQUE KEY uq_soft_sensor_model_code_version (model_code, model_version),
   KEY idx_soft_sensor_model_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS soft_sensor_estimate (
   soft_sensor_estimate_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS soft_sensor_estimate (
     FOREIGN KEY (device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS discovery_run (
   discovery_run_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -280,7 +280,7 @@ CREATE TABLE IF NOT EXISTS discovery_run (
     FOREIGN KEY (bus_id) REFERENCES rs485_bus (bus_id)
     ON UPDATE CASCADE
     ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS discovery_result (
   discovery_result_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -304,7 +304,7 @@ CREATE TABLE IF NOT EXISTS discovery_result (
     FOREIGN KEY (matched_device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
     ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE OR REPLACE VIEW v_latest_measurement_per_channel AS
 SELECT m.*

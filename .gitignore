@@ -2,7 +2,10 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.mypy_cache/
 .env
+.db_password
 *.log
 venv/
 .venv/
