@@ -7,8 +7,16 @@ from flask import Blueprint, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from .extensions import db
-from .models import Device, DeviceBindingCurrent, DeviceBindingHistory, DeviceConnection, DeviceServer
-from .services import TcpSocketConfig, probe_tcp_socket
+from .models import (
+    ControlCommand,
+    ControlCommandEvent,
+    Device,
+    DeviceBindingCurrent,
+    DeviceBindingHistory,
+    DeviceConnection,
+    DeviceServer,
+)
+from .services import DeviceCommandError, TcpSocketConfig, execute_device_command, list_supported_protocols, probe_tcp_socket
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -236,6 +244,41 @@ def _device_connection_to_dict(item: DeviceConnection) -> dict[str, Any]:
     }
 
 
+def _control_command_event_to_dict(item: ControlCommandEvent) -> dict[str, Any]:
+    return {
+        "command_event_id": item.command_event_id,
+        "command_id": item.command_id,
+        "event_type": item.event_type,
+        "event_payload": item.event_payload,
+        "created_at": _dt(item.created_at),
+    }
+
+
+def _control_command_to_dict(item: ControlCommand, *, include_events: bool = False) -> dict[str, Any]:
+    payload = {
+        "command_id": item.command_id,
+        "device_id": item.device_id,
+        "request_uuid": item.request_uuid,
+        "requested_by": item.requested_by,
+        "command_name": item.command_name,
+        "command_payload": item.command_payload,
+        "status": item.status,
+        "requested_at": _dt(item.requested_at),
+        "scheduled_for": _dt(item.scheduled_for),
+        "sent_at": _dt(item.sent_at),
+        "ack_at": _dt(item.ack_at),
+        "finished_at": _dt(item.finished_at),
+        "retry_count": item.retry_count,
+        "error_message": item.error_message,
+    }
+    if include_events:
+        payload["events"] = [
+            _control_command_event_to_dict(event)
+            for event in sorted(item.events, key=lambda current_event: current_event.command_event_id)
+        ]
+    return payload
+
+
 def _apply_device_payload(item: Device, payload: dict[str, Any], *, partial: bool) -> None:
     if not partial or "asset_serial" in payload:
         item.asset_serial = _clean_string(payload.get("asset_serial"), field_name="asset_serial", required=True)
@@ -416,13 +459,20 @@ def api_index():
         {
             "resources": {
                 "devices": "/api/devices",
+                "device_protocols": "/api/device-protocols",
                 "device_servers": "/api/device-servers",
                 "device_connections": "/api/device-connections",
                 "device_binding_example": "/api/devices/<device_id>/binding",
+                "device_commands": "/api/devices/<device_id>/commands",
                 "device_connection_probe": "/api/device-connections/<connection_id>/probe",
             }
         }
     )
+
+
+@api_bp.get("/device-protocols")
+def list_device_protocol_options():
+    return jsonify({"items": list_supported_protocols()})
 
 
 @api_bp.get("/devices")
@@ -564,6 +614,90 @@ def delete_device(device_id: int):
     if not ok:
         return error_response
     return "", 204
+
+
+@api_bp.get("/devices/<int:device_id>/commands")
+def list_device_commands(device_id: int):
+    device, error_response = _get_or_404(Device, device_id, "Device")
+    if error_response:
+        return error_response
+
+    include_events = request.args.get("include_events", "").strip().lower() in {"1", "true", "yes"}
+    items = (
+        ControlCommand.query.filter_by(device_id=device.device_id)
+        .order_by(ControlCommand.command_id.desc())
+        .limit(100)
+        .all()
+    )
+    return jsonify({"items": [_control_command_to_dict(item, include_events=include_events) for item in items]})
+
+
+@api_bp.post("/devices/<int:device_id>/commands")
+def execute_command_for_device(device_id: int):
+    device, error_response = _get_or_404(Device, device_id, "Device")
+    if error_response:
+        return error_response
+
+    try:
+        body = _load_json_payload()
+        command_name = _clean_string(body.get("command_name"), field_name="command_name", required=True)
+        requested_by = _clean_string(body.get("requested_by"), field_name="requested_by") or "api"
+        command_payload = body.get("payload", {})
+        if not isinstance(command_payload, dict):
+            raise ValueError("Field 'payload' must be a JSON object.")
+        assert command_name is not None
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    try:
+        execution = execute_device_command(
+            device,
+            command_name=command_name,
+            payload=command_payload,
+            requested_by=requested_by,
+        )
+    except DeviceCommandError as exc:
+        if exc.command is not None:
+            ok, error_response = _commit()
+            if not ok:
+                return error_response
+            return (
+                jsonify(
+                    {
+                        "error": str(exc),
+                        "details": exc.details,
+                        "command": _control_command_to_dict(exc.command, include_events=True),
+                    }
+                ),
+                exc.status_code,
+            )
+        return _json_error(str(exc), exc.status_code, str(exc.details) if exc.details else None)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return (
+        jsonify(
+            {
+                "command": _control_command_to_dict(execution.command, include_events=True),
+                "result": {
+                    "acknowledged": execution.result.acknowledged,
+                    "response_text": execution.result.response_text,
+                    "response_hex": execution.result.response_hex,
+                    "metadata": execution.result.metadata,
+                },
+            }
+        ),
+        201,
+    )
+
+
+@api_bp.get("/commands/<int:command_id>")
+def get_command(command_id: int):
+    item, error_response = _get_or_404(ControlCommand, command_id, "ControlCommand")
+    if error_response:
+        return error_response
+    return jsonify(_control_command_to_dict(item, include_events=True))
 
 
 @api_bp.get("/device-servers")

@@ -18,6 +18,7 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 ## Wichtige API-Endpunkte
 
 - `GET /api/`
+- `GET /api/device-protocols`
 - `GET|POST /api/device-servers`
 - `GET|PATCH|DELETE /api/device-servers/<device_server_id>`
 - `GET|POST /api/device-connections`
@@ -26,10 +27,23 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 - `GET|POST /api/devices`
 - `GET|PATCH|DELETE /api/devices/<device_id>`
 - `PUT|DELETE /api/devices/<device_id>/binding`
+- `GET|POST /api/devices/<device_id>/commands`
+- `GET /api/commands/<command_id>`
 
 ## Beispielablauf
 
-1. Device-Server anlegen:
+1. Reaktorkomponente anlegen:
+
+```json
+{
+  "asset_serial": "R-001",
+  "display_name": "Reaktor 1",
+  "device_type": "reactor_component",
+  "protocol": "generic_text"
+}
+```
+
+2. Device-Server anlegen:
 
 ```json
 {
@@ -39,7 +53,7 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 }
 ```
 
-2. Verbindung fuer Port 1 anlegen:
+3. Verbindung fuer Port 1 anlegen:
 
 ```json
 {
@@ -52,7 +66,7 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 
 Wenn `tcp_port` nicht angegeben wird, setzt die API fuer die Basis automatisch `4000 + port_number`.
 
-3. Geraet an den Port binden:
+4. Geraet an den Port binden:
 
 ```json
 {
@@ -62,11 +76,27 @@ Wenn `tcp_port` nicht angegeben wird, setzt die API fuer die Basis automatisch `
 }
 ```
 
-4. Verbindung pruefen:
+5. Verbindung pruefen:
 
 ```text
 POST /api/device-connections/1/probe
 ```
+
+6. Erstes RS-232-Kommando senden:
+
+```json
+{
+  "command_name": "query_text",
+  "requested_by": "api",
+  "payload": {
+    "text": "STATUS?",
+    "line_ending": "crlf",
+    "expect_response": true
+  }
+}
+```
+
+Aktuell ist als erster Treiber `generic_text` implementiert. Er eignet sich fuer textbasierte RS-232-Protokolle und sendet/empfaengt ASCII oder UTF-8 ueber die dem Geraet zugeordnete `device_connection`.
 
 ## Start
 

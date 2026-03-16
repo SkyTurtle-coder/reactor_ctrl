@@ -59,6 +59,24 @@ class TcpSocketTransport:
         assert self._sock is not None
         return self._sock.recv(recv_size or self.config.recv_size)
 
+    def receive_until(self, delimiter: bytes, *, max_bytes: int = 65536) -> bytes:
+        self.connect()
+        assert self._sock is not None
+
+        buffer = bytearray()
+        chunk_size = min(self.config.recv_size, max_bytes)
+        while len(buffer) < max_bytes:
+            chunk = self._sock.recv(chunk_size)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+            if delimiter in buffer:
+                break
+            chunk_size = min(self.config.recv_size, max_bytes - len(buffer))
+            if chunk_size <= 0:
+                break
+        return bytes(buffer)
+
     def send_and_receive(self, payload: bytes, recv_size: int | None = None) -> bytes:
         self.send(payload)
         return self.receive(recv_size=recv_size)

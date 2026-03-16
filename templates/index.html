@@ -14,11 +14,20 @@
             <li><a href="/health">/health</a></li>
             <li><a href="/health/db">/health/db</a></li>
             <li><a href="/api/">/api/</a></li>
+            <li><a href="/api/device-protocols">/api/device-protocols</a></li>
             <li><a href="/api/devices">/api/devices</a></li>
             <li><a href="/api/device-servers">/api/device-servers</a></li>
             <li><a href="/api/device-connections">/api/device-connections</a></li>
         </ul>
-        <pre>POST /api/device-servers
+        <pre>POST /api/devices
+{
+  "asset_serial": "R-001",
+  "display_name": "Reaktor 1",
+  "device_type": "reactor_component",
+  "protocol": "generic_text"
+}
+
+POST /api/device-servers
 {
   "server_code": "MOXA-01",
   "display_name": "Moxa NPort 5610-8-DT",
@@ -43,6 +52,17 @@ PUT /api/devices/1/binding
   "connection_id": 1,
   "quality_state": "configured",
   "is_online": false
+}
+
+POST /api/devices/1/commands
+{
+  "command_name": "query_text",
+  "requested_by": "api",
+  "payload": {
+    "text": "STATUS?",
+    "line_ending": "crlf",
+    "expect_response": true
+  }
 }
 
 POST /api/device-connections/1/probe</pre>
