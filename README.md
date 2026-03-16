@@ -185,4 +185,6 @@ python app.py
 
 Beim App-Start werden fehlende Tabellen standardmaessig automatisch angelegt (`AUTO_CREATE_SCHEMA=true`). Das verhindert, dass ein Deployment zwar den Code aktualisiert, aber neue Tabellen wie `device_server` oder `device_connection` in MySQL noch fehlen.
 
+Beim Upgrade von der frueheren USB-/RS-485-Struktur werden veraltete Tabellen `device_binding_current` und `device_binding_history` automatisch als Backup unter Namen wie `device_binding_current_legacy_rs485` archiviert und danach im aktuellen NPort-Format neu erstellt. Die alten Binding-Daten bleiben damit erhalten, werden aber nicht mehr aktiv verwendet.
+
 Fuer produktive Deployments sollte `FLASK_DEBUG` auf `false` bleiben und `API_AUTH_TOKEN` gesetzt sein. Falls ein vorhandenes Datenbankschema noch aus der alten USB/RS-485-Struktur stammt, muessen die Legacy-Tabellen manuell auf das aktuelle NPort-Schema umgestellt werden.
