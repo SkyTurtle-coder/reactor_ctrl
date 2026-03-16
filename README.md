@@ -115,6 +115,53 @@ POST /api/device-connections/1/probe
 
 Aktuell ist als erster Treiber `generic_text` implementiert. Er eignet sich fuer textbasierte RS-232-Protokolle und sendet/empfaengt ASCII oder UTF-8 ueber die dem Geraet zugeordnete `device_connection`.
 
+## Lokaler NPort-Simulator
+
+Solange die echte `Moxa NPort 5610-8-DT` noch nicht vorhanden ist, kann ein lokaler Multi-Port-Simulator verwendet werden. Er verhaelt sich wie ein transparenter TCP-Endpunkt fuer `RS-232 over Ethernet` und stellt standardmaessig Ports `4001..4008` bereit.
+
+Start:
+
+```powershell
+python run_nport_simulator.py
+```
+
+Optional mit eigener Basis-Portnummer:
+
+```powershell
+python run_nport_simulator.py --host 127.0.0.1 --base-tcp-port 5000 --port-count 4
+```
+
+Standardgeraete pro Port:
+
+- Port 1 -> `tcp://127.0.0.1:4001` -> `Reactor-Sim-01`
+- Port 2 -> `tcp://127.0.0.1:4002` -> `Reactor-Sim-02`
+- ...
+
+Unterstuetzte Textkommandos:
+
+- `PING`
+- `HELP?`
+- `IDENT?`
+- `STATUS?`
+- `TEMP?`
+- `PRESSURE?`
+- `START`
+- `STOP`
+- `TEMP=<wert>`
+- `PRESSURE=<wert>`
+
+Beispiel fuer die API mit Simulator statt echter Moxa:
+
+```json
+{
+  "server_code": "SIM-01",
+  "display_name": "Local NPort Simulator",
+  "host": "127.0.0.1"
+}
+```
+
+Danach kann eine `device_connection` fuer `port_number: 1` angelegt werden; der Standard-TCP-Port wird automatisch auf `4001` gesetzt.
+
 ## Start
 
 ```powershell
