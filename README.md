@@ -235,6 +235,45 @@ python -m pip install -r requirements.txt
 python app.py
 ```
 
+Der Befehl oben ist nur fuer lokale Entwicklung gedacht. Fuer einen Server, der durchgaengig laufen und sich bei Fehlern automatisch neu starten soll, wird `gunicorn` unter `systemd` verwendet.
+
+## Dauerbetrieb auf Linux-Server
+
+Die produktive Startkette ist:
+
+`systemd -> gunicorn -> Flask app`
+
+Vorbereitung:
+
+```bash
+cd /home/pthuerlemann/reactor_ctrl
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Service-Datei installieren:
+
+```bash
+sudo cp deploy/reactor_ctrl.service /etc/systemd/system/reactor_ctrl.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now reactor_ctrl
+```
+
+Status und Logs:
+
+```bash
+sudo systemctl status reactor_ctrl
+sudo journalctl -u reactor_ctrl -f
+```
+
+Manuelles Neuladen nach einem `git pull`:
+
+```bash
+sudo systemctl restart reactor_ctrl
+```
+
+Die Gunicorn-Konfiguration liegt in `gunicorn.conf.py` und bindet standardmaessig an `127.0.0.1:5000`. Damit bleibt der Dienst sauber im Hintergrund aktiv, auch wenn die SSH-Verbindung getrennt wird.
+
 ## Server-Hinweis
 
 Beim App-Start werden fehlende Tabellen standardmaessig automatisch angelegt (`AUTO_CREATE_SCHEMA=true`). Das verhindert, dass ein Deployment zwar den Code aktualisiert, aber neue Tabellen wie `device_server` oder `device_connection` in MySQL noch fehlen.

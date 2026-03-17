@@ -1,0 +1,20 @@
+[Unit]
+Description=reactor_ctrl Gunicorn service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pthuerlemann
+Group=pthuerlemann
+WorkingDirectory=/home/pthuerlemann/reactor_ctrl
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pthuerlemann/reactor_ctrl/.venv/bin/gunicorn --config /home/pthuerlemann/reactor_ctrl/gunicorn.conf.py app:app
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
