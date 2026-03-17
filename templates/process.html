@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}View Process | reactor_ctrl{% endblock %}
+
+{% block page_header %}
+<section class="page-header">
+    <span class="eyebrow">Live</span>
+    <h1>View Process</h1>
+    <p class="page-lead">Laufender Prozess, aktuelle Reaktoren, letzte Messwerte und juengste Ausfuehrungen.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="metric-grid compact">
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Reactors</p><p class="metric-value">{{ summary.reactors_total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Configured</p><p class="metric-value">{{ summary.configured_bindings_total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Online</p><p class="metric-value">{{ summary.online_devices_total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Measurements</p><p class="metric-value">{{ summary.measurements_total }}</p></div></article>
+</section>
+
+<section class="content-grid">
+    <article class="card">
+        <div class="card-header">
+            <h2>Reactor status</h2>
+            <p>Gebundene Reaktoren und ihr aktueller Kommunikationszustand.</p>
+        </div>
+        <div class="card-body">
+            {% if devices %}
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Reactor</th>
+                            <th>Protocol</th>
+                            <th>Binding</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for device in devices %}
+                        <tr>
+                            <td>
+                                <strong>{{ device.display_name }}</strong>
+                                <div class="muted">{{ device.asset_serial }}</div>
+                            </td>
+                            <td>{{ device.protocol }}</td>
+                            <td>
+                                {% if device.current_binding %}
+                                {{ device.current_binding.connection.device_server.server_code }} / Port {{ device.current_binding.connection.port_number }}
+                                {% else %}
+                                <span class="muted">not configured</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if device.current_binding %}
+                                <span class="badge {{ bool_badge_class(device.current_binding.is_online) }}">{{ "online" if device.current_binding.is_online else "offline" }}</span>
+                                {% else %}
+                                <span class="badge badge-muted">unbound</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="empty-state">Noch keine Reaktoren fuer den Prozess konfiguriert.</p>
+            {% endif %}
+        </div>
+    </article>
+
+    <article class="card">
+        <div class="card-header">
+            <h2>Latest measurements</h2>
+            <p>Die juengsten aus dem Kontrollpfad gespeicherten Messwerte.</p>
+        </div>
+        <div class="card-body">
+            {% if recent_measurements %}
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Reactor</th>
+                            <th>Channel</th>
+                            <th>Value</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for measurement in recent_measurements %}
+                        <tr>
+                            <td>{{ format_datetime(measurement.measured_at) }}</td>
+                            <td>{{ measurement.device.display_name }}</td>
+                            <td>{{ measurement.channel_code }}</td>
+                            <td>
+                                {% if measurement.numeric_value is not none %}
+                                {{ measurement.numeric_value }} {{ measurement.unit or "" }}
+                                {% else %}
+                                {{ measurement.text_value }}
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="empty-state">Noch keine Messwerte gespeichert.</p>
+            {% endif %}
+        </div>
+    </article>
+
+    <article class="card card-span-2">
+        <div class="card-header">
+            <h2>Execution stream</h2>
+            <p>Aktuelle Command-Ausfuehrungen im Steuerpfad.</p>
+        </div>
+        <div class="card-body">
+            {% if recent_commands %}
+            <div class="table-responsive">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Requested</th>
+                            <th>Reactor</th>
+                            <th>Command</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for command in recent_commands %}
+                        <tr>
+                            <td>{{ format_datetime(command.requested_at) }}</td>
+                            <td>{{ command.device.display_name }}</td>
+                            <td>{{ command.command_name }}</td>
+                            <td><span class="badge {{ status_badge_class(command.status) }}">{{ command.status }}</span></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <p class="empty-state">Noch keine Prozess-Commands protokolliert.</p>
+            {% endif %}
+        </div>
+    </article>
+</section>
+{% endblock %}

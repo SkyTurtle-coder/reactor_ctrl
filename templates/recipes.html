@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}Recipes | reactor_ctrl{% endblock %}
+
+{% block page_header %}
+<section class="page-header">
+    <span class="eyebrow">Steuerung</span>
+    <h1>Recipes</h1>
+    <p class="page-lead">Arbeitsbereich fuer Rezeptdefinitionen, Prozessphasen und spaetere Ausfuehrungslogik.</p>
+</section>
+{% endblock %}
+
+{% block content %}
+<section class="tile-grid tile-grid-compact">
+    {% for section in recipe_sections %}
+    <article class="feature-tile feature-tile-static">
+        <h2>{{ section.title }}</h2>
+        <p>{{ section.text }}</p>
+        <span class="tile-link">Planned workspace</span>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="card">
+    <div class="card-header">
+        <h2>Why this area exists now</h2>
+        <p>Rezepte sind fachlich Teil des Control Systems und sollen deshalb bereits jetzt als eigener Bedienbereich sichtbar sein.</p>
+    </div>
+    <div class="card-body">
+        <p class="empty-state">
+            Die eigentliche Rezeptlogik ist noch nicht implementiert. Die Seite reserviert aber bewusst die Nutzerflaeche,
+            damit das Bedienmodell nicht spaeter erneut umgebaut werden muss.
+        </p>
+    </div>
+</section>
+{% endblock %}

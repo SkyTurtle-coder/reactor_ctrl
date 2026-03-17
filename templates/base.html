@@ -15,14 +15,13 @@
                 <div class="navbar">
                     <a class="brand" href="{{ url_for('web.index') }}">
                         <span class="brand-kicker">reactor_ctrl</span>
-                        <strong>Moxa NPort RS-232 Control</strong>
+                        <strong>Reactor Control System</strong>
                     </a>
                     <nav class="nav">
-                        <a class="nav-link{% if active_page == 'dashboard' %} active{% endif %}" href="{{ url_for('web.index') }}">Dashboard</a>
-                        <a class="nav-link{% if active_page == 'devices' %} active{% endif %}" href="{{ url_for('web.devices_overview') }}">Geraete</a>
-                        <a class="nav-link{% if active_page == 'device_servers' %} active{% endif %}" href="{{ url_for('web.device_servers_overview') }}">Device Server</a>
-                        <a class="nav-link{% if active_page == 'device_connections' %} active{% endif %}" href="{{ url_for('web.device_connections_overview') }}">Verbindungen</a>
-                        <a class="nav-link{% if active_page == 'commands' %} active{% endif %}" href="{{ url_for('web.commands_overview') }}">Commands</a>
+                        <a class="nav-link{% if active_page == 'process' %} active{% endif %}" href="{{ url_for('web.process_view') }}">View Process</a>
+                        <a class="nav-link{% if active_page == 'recipes' %} active{% endif %}" href="{{ url_for('web.recipes_view') }}">Recipes</a>
+                        <a class="nav-link{% if active_page == 'alerts' %} active{% endif %}" href="{{ url_for('web.alerts_view') }}">Alerts</a>
+                        <a class="nav-link{% if active_page == 'reactor_builder' %} active{% endif %}" href="{{ url_for('web.reactor_builder_view') }}">Reactor Builder</a>
                     </nav>
                 </div>
             </div>
@@ -34,25 +33,8 @@
         </main>
 
         <footer class="site-footer">
-            <div class="container footer-grid">
-                <div class="footer-panel">
-                    <h2 class="footer-title">Systembasis</h2>
-                    <p>Flask, MySQL und RS-232 over Ethernet ueber Moxa NPort 5610-8-DT.</p>
-                </div>
-                <div class="footer-panel">
-                    <h2 class="footer-title">Datenbank</h2>
-                    <p><code>{{ database_url }}</code></p>
-                </div>
-                <div class="footer-panel">
-                    <h2 class="footer-title">API-Schutz</h2>
-                    <p>
-                        {% if api_auth_required %}
-                        Schreibende Endpunkte erwarten API-Token.
-                        {% else %}
-                        Schreibende Endpunkte sind derzeit offen.
-                        {% endif %}
-                    </p>
-                </div>
+            <div class="container footer-bar">
+                <p>Control surface for reactor process view, recipe management, alerts and plant configuration.</p>
             </div>
         </footer>
     </div>

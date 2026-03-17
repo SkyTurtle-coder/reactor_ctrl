@@ -1,202 +1,45 @@
 {% extends "base.html" %}
 
-{% block title %}Dashboard | reactor_ctrl{% endblock %}
+{% block title %}Control System | reactor_ctrl{% endblock %}
 
 {% block page_header %}
-<section class="hero-panel">
+<section class="control-hero">
     <div class="page-header">
-        <span class="eyebrow">Leitstand</span>
-        <h1>Grundlage fuer die Anlagensteuerung</h1>
+        <span class="eyebrow">Control System</span>
+        <h1>Reactor control workspace</h1>
         <p class="page-lead">
-            Diese Oberflaeche bildet die aktuelle Basis fuer Device-Server, serielle Verbindungen,
-            Geraetebindings und RS-232-Kommandos ueber den Moxa-NPort-Pfad.
+            Die Startseite zeigt nur noch die eigentlichen Bedienfunktionen des Systems.
+            Technische Infrastruktur bleibt im Hintergrund und tritt nicht mehr als Hauptnavigation auf.
         </p>
     </div>
-    <div class="hero-actions">
-        <a class="btn btn-primary" href="{{ url_for('web.device_connections_overview') }}">Verbindungen pruefen</a>
-        <a class="btn" href="/api/">API-Ressourcen ansehen</a>
+    <div class="hero-callout">
+        <p class="section-label">Live status</p>
+        <div class="status-stack">
+            <div><strong>{{ summary.online_devices_total }}</strong><span>online reactors</span></div>
+            <div><strong>{{ summary.measurements_total }}</strong><span>stored measurements</span></div>
+            <div><strong>{{ summary.alerts_total }}</strong><span>open alerts</span></div>
+        </div>
     </div>
 </section>
 {% endblock %}
 
 {% block content %}
-<section class="metric-grid">
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Geraete</p><p class="metric-value">{{ summary.devices_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Device Server</p><p class="metric-value">{{ summary.device_servers_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Verbindungen</p><p class="metric-value">{{ summary.connections_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Aktive Bindings</p><p class="metric-value">{{ summary.bindings_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Online-Geraete</p><p class="metric-value">{{ summary.online_devices_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Aktive Ports</p><p class="metric-value">{{ summary.enabled_connections_total }}</p></div></article>
-</section>
-
-<section class="content-grid">
-    <article class="card">
-        <div class="card-header">
-            <h2>Quickstart</h2>
-            <p>Direkte Einstiege fuer den aktuellen Systemcheck.</p>
-        </div>
-        <div class="card-body">
-            <ul class="list-group">
-                {% for endpoint in quickstart_endpoints %}
-                <li class="list-group-item">
-                    <div class="item-row">
-                        <a href="{{ endpoint.label }}"><code>{{ endpoint.label }}</code></a>
-                        <span>{{ endpoint.description }}</span>
-                    </div>
-                </li>
-                {% endfor %}
-            </ul>
-            <div class="stack-sm">
-                <p class="section-label">Unterstuetzte Protokolle</p>
-                <div class="badge-row">
-                    {% for protocol in supported_protocols %}
-                    <span class="badge badge-info">{{ protocol }}</span>
-                    {% endfor %}
-                </div>
+<section class="tile-grid">
+    {% for tile in feature_tiles %}
+    <a class="feature-tile" href="{{ url_for(tile.endpoint) }}">
+        <span class="eyebrow">{{ tile.eyebrow }}</span>
+        <h2>{{ tile.title }}</h2>
+        <p>{{ tile.description }}</p>
+        <div class="tile-stats">
+            {% for stat in tile.stats %}
+            <div class="tile-stat">
+                <strong>{{ stat.value }}</strong>
+                <span>{{ stat.label }}</span>
             </div>
+            {% endfor %}
         </div>
-    </article>
-
-    <article class="card">
-        <div class="card-header">
-            <h2>API-Hinweis</h2>
-            <p>Schreibende Requests bleiben bewusst schlank und tokenbasiert.</p>
-        </div>
-        <div class="card-body">
-            <pre class="code-block">Authorization: Bearer &lt;token&gt;
-X-API-Token: &lt;token&gt;</pre>
-            <pre class="code-block">POST /api/devices/1/commands
-{
-  "command_name": "query_text",
-  "requested_by": "web-ui",
-  "payload": {
-    "text": "STATUS?",
-    "line_ending": "crlf",
-    "expect_response": true
-  }
-}</pre>
-        </div>
-    </article>
-
-    <article class="card">
-        <div class="card-header">
-            <h2>Geraete</h2>
-            <p>Erste Uebersicht der aktuell registrierten Reaktorkomponenten.</p>
-        </div>
-        <div class="card-body">
-            {% if devices %}
-            <div class="table-responsive">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Name</th>
-                            <th>Protokoll</th>
-                            <th>Binding</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for device in devices %}
-                        <tr>
-                            <td>
-                                <strong>{{ device.display_name }}</strong>
-                                <div class="muted">{{ device.asset_serial }}</div>
-                            </td>
-                            <td><span class="badge badge-info">{{ device.protocol }}</span></td>
-                            <td>
-                                {% if device.current_binding %}
-                                {{ device.current_binding.connection.device_server.server_code }} / Port {{ device.current_binding.connection.port_number }}
-                                {% else %}
-                                <span class="muted">nicht gebunden</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="empty-state">Noch keine Geraete erfasst.</p>
-            {% endif %}
-        </div>
-    </article>
-
-    <article class="card">
-        <div class="card-header">
-            <h2>Verbindungen</h2>
-            <p>Moxa-Ports und simulierte TCP-Endpunkte im Blick.</p>
-        </div>
-        <div class="card-body">
-            {% if connections %}
-            <div class="table-responsive">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Port</th>
-                            <th>Endpoint</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for connection in connections %}
-                        <tr>
-                            <td>
-                                <strong>{{ connection.device_server.server_code }}</strong>
-                                <div class="muted">Port {{ connection.port_number }}</div>
-                            </td>
-                            <td><code>{{ connection.tcp_host }}:{{ connection.tcp_port }}</code></td>
-                            <td>
-                                {% if connection.current_binding %}
-                                <span class="badge {{ bool_badge_class(connection.current_binding.is_online) }}">
-                                    {{ "online" if connection.current_binding.is_online else "offline" }}
-                                </span>
-                                {% else %}
-                                <span class="badge badge-muted">ungebunden</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="empty-state">Noch keine Device-Verbindungen erfasst.</p>
-            {% endif %}
-        </div>
-    </article>
-
-    <article class="card card-span-2">
-        <div class="card-header">
-            <h2>Letzte Commands</h2>
-            <p>Rueckblick auf die juengsten Steuer- und Probe-Kommandos.</p>
-        </div>
-        <div class="card-body">
-            {% if recent_commands %}
-            <div class="table-responsive">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Zeit</th>
-                            <th>Geraet</th>
-                            <th>Command</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for command in recent_commands %}
-                        <tr>
-                            <td>{{ format_datetime(command.requested_at) }}</td>
-                            <td>{{ command.device.display_name }}</td>
-                            <td>{{ command.command_name }}</td>
-                            <td><span class="badge {{ status_badge_class(command.status) }}">{{ command.status }}</span></td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="empty-state">Bisher wurden keine Commands protokolliert.</p>
-            {% endif %}
-        </div>
-    </article>
+        <span class="tile-link">Open workspace</span>
+    </a>
+    {% endfor %}
 </section>
 {% endblock %}

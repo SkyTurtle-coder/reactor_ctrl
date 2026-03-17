@@ -7,7 +7,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
 from .extensions import db
-from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer
+from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement
 from .services.drivers import list_supported_protocols
 
 
@@ -66,35 +66,85 @@ def _base_context() -> dict[str, Any]:
     }
 
 
-def _dashboard_summary() -> dict[str, int]:
-    devices_total = db.session.query(func.count(Device.device_id)).scalar() or 0
-    device_servers_total = db.session.query(func.count(DeviceServer.device_server_id)).scalar() or 0
-    connections_total = db.session.query(func.count(DeviceConnection.connection_id)).scalar() or 0
-    enabled_connections_total = (
-        db.session.query(func.count(DeviceConnection.connection_id))
-        .filter(DeviceConnection.is_enabled.is_(True))
-        .scalar()
-        or 0
-    )
-    bindings_total = db.session.query(func.count(DeviceBindingCurrent.device_id)).scalar() or 0
+def _control_summary() -> dict[str, int]:
+    reactors_total = db.session.query(func.count(Device.device_id)).scalar() or 0
+    configured_bindings_total = db.session.query(func.count(DeviceBindingCurrent.device_id)).scalar() or 0
     online_devices_total = (
         db.session.query(func.count(DeviceBindingCurrent.device_id))
         .filter(DeviceBindingCurrent.is_online.is_(True))
         .scalar()
         or 0
     )
+    measurements_total = db.session.query(func.count(Measurement.measurement_id)).scalar() or 0
+    alerts_total = (
+        (db.session.query(func.count(ControlCommand.command_id)).filter(ControlCommand.status.in_(("failed", "timeout"))).scalar() or 0)
+        + (db.session.query(func.count(DeviceConnection.connection_id)).filter(DeviceConnection.last_error.is_not(None)).scalar() or 0)
+    )
     return {
-        "devices_total": devices_total,
-        "device_servers_total": device_servers_total,
-        "connections_total": connections_total,
-        "enabled_connections_total": enabled_connections_total,
-        "bindings_total": bindings_total,
+        "reactors_total": reactors_total,
+        "configured_bindings_total": configured_bindings_total,
         "online_devices_total": online_devices_total,
+        "measurements_total": measurements_total,
+        "alerts_total": alerts_total,
     }
 
 
 @web_bp.get("/")
 def index() -> str:
+    summary = _control_summary()
+    feature_tiles = [
+        {
+            "title": "View Process",
+            "endpoint": "web.process_view",
+            "eyebrow": "Live",
+            "description": "Zeigt den laufenden Prozess, aktive Reaktoren, letzte Messwerte und aktuelle Ausfuehrungen.",
+            "stats": [
+                {"label": "Online", "value": summary["online_devices_total"]},
+                {"label": "Measurements", "value": summary["measurements_total"]},
+            ],
+        },
+        {
+            "title": "Recipes",
+            "endpoint": "web.recipes_view",
+            "eyebrow": "Steuerung",
+            "description": "Rezepte fuer die Reaktorsteuerung anlegen, versionieren und spaeter gezielt ausfuehren.",
+            "stats": [
+                {"label": "Status", "value": "Planned"},
+                {"label": "Scope", "value": "Batch"},
+            ],
+        },
+        {
+            "title": "Alerts",
+            "endpoint": "web.alerts_view",
+            "eyebrow": "Sicherheit",
+            "description": "Alle anliegenden Fehler, Kommunikationsprobleme und Command-Abweichungen zentral sichtbar machen.",
+            "stats": [
+                {"label": "Open", "value": summary["alerts_total"]},
+                {"label": "Focus", "value": "Live"},
+            ],
+        },
+        {
+            "title": "Reactor Builder",
+            "endpoint": "web.reactor_builder_view",
+            "eyebrow": "Setup",
+            "description": "Reaktoren mit Aktoren, Sensoren, Ports und Kommunikationspfaden kontrolliert konfigurieren.",
+            "stats": [
+                {"label": "Reactors", "value": summary["reactors_total"]},
+                {"label": "Bindings", "value": summary["configured_bindings_total"]},
+            ],
+        },
+    ]
+    return render_template(
+        "index.html",
+        active_page="home",
+        summary=summary,
+        feature_tiles=feature_tiles,
+        **_base_context(),
+    )
+
+
+@web_bp.get("/process")
+def process_view() -> str:
     devices = (
         Device.query.options(
             joinedload(Device.current_binding)
@@ -102,7 +152,93 @@ def index() -> str:
             .joinedload(DeviceConnection.device_server)
         )
         .order_by(Device.display_name.asc(), Device.device_id.asc())
-        .limit(6)
+        .all()
+    )
+    recent_measurements = (
+        Measurement.query.options(joinedload(Measurement.device))
+        .order_by(Measurement.measured_at.desc(), Measurement.measurement_id.desc())
+        .limit(12)
+        .all()
+    )
+    recent_commands = (
+        ControlCommand.query.options(joinedload(ControlCommand.device))
+        .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
+        .limit(12)
+        .all()
+    )
+    return render_template(
+        "process.html",
+        active_page="process",
+        summary=_control_summary(),
+        devices=devices,
+        recent_measurements=recent_measurements,
+        recent_commands=recent_commands,
+        **_base_context(),
+    )
+
+
+@web_bp.get("/recipes")
+def recipes_view() -> str:
+    recipe_sections = [
+        {
+            "title": "Recipe Library",
+            "text": "Hier entsteht die zentrale Rezeptbibliothek fuer Prozessschritte, Sollwerte und Ablaufdefinitionen.",
+        },
+        {
+            "title": "Versioning",
+            "text": "Rezeptstaende sollen spaeter nachvollziehbar freigegeben, geaendert und pro Lauf dokumentiert werden.",
+        },
+        {
+            "title": "Execution Profiles",
+            "text": "Die Oberflaeche ist fuer Batch-, Halte- und Regelphasen vorgesehen, bleibt aktuell aber bewusst schlank.",
+        },
+    ]
+    return render_template(
+        "recipes.html",
+        active_page="recipes",
+        recipe_sections=recipe_sections,
+        **_base_context(),
+    )
+
+
+@web_bp.get("/alerts")
+def alerts_view() -> str:
+    command_alerts = (
+        ControlCommand.query.options(joinedload(ControlCommand.device))
+        .filter(ControlCommand.status.in_(("failed", "timeout")))
+        .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
+        .limit(20)
+        .all()
+    )
+    connection_alerts = (
+        DeviceConnection.query.options(
+            joinedload(DeviceConnection.device_server),
+            joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
+        )
+        .filter(DeviceConnection.last_error.is_not(None))
+        .order_by(DeviceConnection.updated_at.desc(), DeviceConnection.connection_id.desc())
+        .limit(20)
+        .all()
+    )
+    return render_template(
+        "alerts.html",
+        active_page="alerts",
+        command_alerts=command_alerts,
+        connection_alerts=connection_alerts,
+        summary=_control_summary(),
+        **_base_context(),
+    )
+
+
+@web_bp.get("/reactor-builder")
+def reactor_builder_view() -> str:
+    devices = (
+        Device.query.options(
+            joinedload(Device.current_binding)
+            .joinedload(DeviceBindingCurrent.connection)
+            .joinedload(DeviceConnection.device_server)
+        )
+        .order_by(Device.display_name.asc(), Device.device_id.asc())
         .all()
     )
     connections = (
@@ -111,29 +247,20 @@ def index() -> str:
             joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
         )
         .order_by(DeviceConnection.connection_id.asc())
-        .limit(6)
         .all()
     )
-    recent_commands = (
-        ControlCommand.query.options(joinedload(ControlCommand.device))
-        .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
-        .limit(8)
+    servers = (
+        DeviceServer.query.options(selectinload(DeviceServer.connections))
+        .order_by(DeviceServer.display_name.asc(), DeviceServer.device_server_id.asc())
         .all()
     )
-    quickstart_endpoints = [
-        {"label": "/health", "description": "Flask-Prozess und Webschicht pruefen."},
-        {"label": "/health/db", "description": "DB-Erreichbarkeit gegen MySQL pruefen."},
-        {"label": "/api/", "description": "API-Wurzel mit Ressourcenuebersicht."},
-        {"label": "/api/device-protocols", "description": "Unterstuetzte RS-232-Protokolle anzeigen."},
-    ]
     return render_template(
-        "index.html",
-        active_page="dashboard",
-        summary=_dashboard_summary(),
+        "reactor_builder.html",
+        active_page="reactor_builder",
         devices=devices,
         connections=connections,
-        recent_commands=recent_commands,
-        quickstart_endpoints=quickstart_endpoints,
+        servers=servers,
+        summary=_control_summary(),
         **_base_context(),
     )
 
