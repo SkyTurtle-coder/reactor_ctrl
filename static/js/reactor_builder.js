@@ -450,6 +450,88 @@
         };
     }
 
+    function anchorSide(node, anchorId) {
+        const anchor = getAnchorById(node, anchorId);
+        if (!anchor) {
+            return "east";
+        }
+        return anchor.side || directionToSide("", anchor.x_ratio, anchor.y_ratio);
+    }
+
+    function offsetPoint(point, side, distance) {
+        if (side === "west") {
+            return { x: point.x - distance, y: point.y };
+        }
+        if (side === "east") {
+            return { x: point.x + distance, y: point.y };
+        }
+        if (side === "north") {
+            return { x: point.x, y: point.y - distance };
+        }
+        return { x: point.x, y: point.y + distance };
+    }
+
+    function compressOrthogonalPoints(points) {
+        const compressed = [];
+        for (const point of points) {
+            const rounded = {
+                x: Math.round(point.x * 100) / 100,
+                y: Math.round(point.y * 100) / 100,
+            };
+
+            const previous = compressed[compressed.length - 1];
+            if (previous && previous.x === rounded.x && previous.y === rounded.y) {
+                continue;
+            }
+
+            compressed.push(rounded);
+            if (compressed.length < 3) {
+                continue;
+            }
+
+            const a = compressed[compressed.length - 3];
+            const b = compressed[compressed.length - 2];
+            const c = compressed[compressed.length - 1];
+            const vertical = a.x === b.x && b.x === c.x;
+            const horizontal = a.y === b.y && b.y === c.y;
+            if (vertical || horizontal) {
+                compressed.splice(compressed.length - 2, 1);
+            }
+        }
+        return compressed;
+    }
+
+    function orthogonalEdgePath(sourcePoint, sourceSide, targetPoint, targetSide) {
+        const stubDistance = 28;
+        const sourceStub = offsetPoint(sourcePoint, sourceSide, stubDistance);
+        const targetStub = offsetPoint(targetPoint, targetSide, stubDistance);
+        const sourceHorizontal = sourceSide === "west" || sourceSide === "east";
+        const targetHorizontal = targetSide === "west" || targetSide === "east";
+        const points = [sourcePoint, sourceStub];
+
+        if (sourceHorizontal && targetHorizontal) {
+            const middleX = Math.round(((sourceStub.x + targetStub.x) / 2) * 100) / 100;
+            points.push({ x: middleX, y: sourceStub.y });
+            points.push({ x: middleX, y: targetStub.y });
+        } else if (!sourceHorizontal && !targetHorizontal) {
+            const middleY = Math.round(((sourceStub.y + targetStub.y) / 2) * 100) / 100;
+            points.push({ x: sourceStub.x, y: middleY });
+            points.push({ x: targetStub.x, y: middleY });
+        } else if (sourceHorizontal) {
+            points.push({ x: targetStub.x, y: sourceStub.y });
+        } else {
+            points.push({ x: sourceStub.x, y: targetStub.y });
+        }
+
+        points.push(targetStub);
+        points.push(targetPoint);
+
+        const cleanPoints = compressOrthogonalPoints(points);
+        return cleanPoints
+            .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+            .join(" ");
+    }
+
     function edgeExists(connection) {
         return state.edges.some((edge) => {
             const forward =
@@ -563,21 +645,20 @@
             }
 
             const sourcePoint = anchorPoint(sourceNode, edge.source_anchor_id);
+            const sourceSide = anchorSide(sourceNode, edge.source_anchor_id);
             const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
-            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-            line.setAttribute("x1", String(sourcePoint.x));
-            line.setAttribute("y1", String(sourcePoint.y));
-            line.setAttribute("x2", String(targetPoint.x));
-            line.setAttribute("y2", String(targetPoint.y));
-            line.setAttribute("class", `builder-edge${state.selectedEdgeId === edge.id ? " is-selected" : ""}`);
-            line.dataset.edgeId = edge.id;
-            line.addEventListener("click", (event) => {
+            const targetSide = anchorSide(targetNode, edge.target_anchor_id);
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", orthogonalEdgePath(sourcePoint, sourceSide, targetPoint, targetSide));
+            path.setAttribute("class", `builder-edge${state.selectedEdgeId === edge.id ? " is-selected" : ""}`);
+            path.dataset.edgeId = edge.id;
+            path.addEventListener("click", (event) => {
                 event.stopPropagation();
                 state.selectedEdgeId = edge.id;
                 state.selectedNodeId = null;
                 renderAll();
             });
-            edgeLayer.appendChild(line);
+            edgeLayer.appendChild(path);
         }
 
         if (state.pendingAnchor) {
