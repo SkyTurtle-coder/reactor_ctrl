@@ -563,6 +563,12 @@ h2 {
     gap: 0.65rem;
 }
 
+.builder-toolbar-actions .btn.is-active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fffdfa;
+}
+
 .builder-status {
     margin: 0;
 }
@@ -618,7 +624,16 @@ h2 {
 .builder-node-layer {
     position: absolute;
     inset: 0;
+    z-index: 3;
+}
+
+.builder-edge-layer {
+    position: absolute;
+    inset: 0;
     z-index: 2;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
 }
 
 .builder-node {
@@ -626,37 +641,21 @@ h2 {
     display: grid;
     align-content: start;
     gap: 0.5rem;
-    padding: 0.55rem;
-    border: 1px solid rgba(212, 198, 178, 0.95);
+    padding: 0.35rem;
+    border: 0;
     border-radius: 14px;
-    background: rgba(255, 253, 250, 0.98);
-    box-shadow: 0 10px 22px rgba(24, 35, 33, 0.1);
+    background: transparent;
+    box-shadow: none;
     cursor: grab;
     user-select: none;
 }
 
 .builder-node.is-selected {
-    border-color: rgba(15, 92, 82, 0.7);
-    box-shadow: 0 14px 28px rgba(15, 92, 82, 0.16);
+    filter: drop-shadow(0 0 0.7rem rgba(15, 92, 82, 0.3));
 }
 
 .builder-node.is-dragging {
     cursor: grabbing;
-}
-
-.builder-node-delete {
-    position: absolute;
-    top: 0.35rem;
-    right: 0.35rem;
-    width: 1.7rem;
-    height: 1.7rem;
-    border: 0;
-    border-radius: 999px;
-    background: rgba(154, 47, 36, 0.12);
-    color: var(--danger);
-    font-size: 1rem;
-    line-height: 1;
-    cursor: pointer;
 }
 
 .builder-node-body {
@@ -684,6 +683,26 @@ h2 {
     text-align: center;
     color: var(--text);
     pointer-events: none;
+    text-shadow: 0 1px 0 rgba(255, 253, 250, 0.95);
+}
+
+.builder-edge {
+    fill: none;
+    stroke: rgba(24, 35, 33, 0.6);
+    stroke-width: 3;
+    stroke-linecap: round;
+    pointer-events: stroke;
+    cursor: pointer;
+}
+
+.builder-edge.is-selected {
+    stroke: var(--accent);
+    stroke-width: 4;
+}
+
+.builder-edge.is-pending {
+    stroke: rgba(15, 92, 82, 0.45);
+    stroke-dasharray: 8 6;
 }
 
 .tile-grid {

@@ -405,6 +405,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
         raise ValueError("Field 'definition_json.nodes' must be a list.")
 
     normalized_nodes: list[dict[str, Any]] = []
+    node_ids: set[str] = set()
     for index, node in enumerate(raw_nodes, start=1):
         if not isinstance(node, dict):
             raise ValueError(f"Node {index} in 'definition_json.nodes' must be an object.")
@@ -429,6 +430,9 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
 
         assert node_id is not None
         assert symbol_id is not None
+        if node_id in node_ids:
+            raise ValueError(f"Node id '{node_id}' is duplicated in 'definition_json.nodes'.")
+        node_ids.add(node_id)
         normalized_nodes.append(
             {
                 "id": node_id,
@@ -443,12 +447,59 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             }
         )
 
+    raw_edges = value.get("edges", [])
+    if raw_edges in (None, ""):
+        raw_edges = []
+    if not isinstance(raw_edges, list):
+        raise ValueError("Field 'definition_json.edges' must be a list.")
+
+    normalized_edges: list[dict[str, Any]] = []
+    edge_ids: set[str] = set()
+    for index, edge in enumerate(raw_edges, start=1):
+        if not isinstance(edge, dict):
+            raise ValueError(f"Edge {index} in 'definition_json.edges' must be an object.")
+
+        edge_id = _clean_string(edge.get("id"), field_name=f"definition_json.edges[{index}].id", required=True)
+        source_node_id = _clean_string(
+            edge.get("source_node_id"),
+            field_name=f"definition_json.edges[{index}].source_node_id",
+            required=True,
+        )
+        target_node_id = _clean_string(
+            edge.get("target_node_id"),
+            field_name=f"definition_json.edges[{index}].target_node_id",
+            required=True,
+        )
+
+        assert edge_id is not None
+        assert source_node_id is not None
+        assert target_node_id is not None
+
+        if edge_id in edge_ids:
+            raise ValueError(f"Edge id '{edge_id}' is duplicated in 'definition_json.edges'.")
+        if source_node_id not in node_ids:
+            raise ValueError(f"Edge {edge_id} references missing source node '{source_node_id}'.")
+        if target_node_id not in node_ids:
+            raise ValueError(f"Edge {edge_id} references missing target node '{target_node_id}'.")
+        if source_node_id == target_node_id:
+            raise ValueError(f"Edge {edge_id} must connect two different nodes.")
+
+        edge_ids.add(edge_id)
+        normalized_edges.append(
+            {
+                "id": edge_id,
+                "source_node_id": source_node_id,
+                "target_node_id": target_node_id,
+            }
+        )
+
     return {
         "canvas": {
             "width": canvas_width,
             "height": canvas_height,
         },
         "nodes": normalized_nodes,
+        "edges": normalized_edges,
     }
 
 

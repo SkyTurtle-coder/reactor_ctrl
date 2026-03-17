@@ -4,15 +4,17 @@
         return;
     }
 
+    const edgeLayer = document.getElementById("builder-edge-layer");
     const nodeLayer = document.getElementById("builder-node-layer");
     const emptyState = document.getElementById("builder-canvas-empty");
     const nameInput = document.getElementById("builder-name-input");
     const dateInput = document.getElementById("builder-date-input");
     const userInput = document.getElementById("builder-user-input");
-    const tokenInput = document.getElementById("builder-token-input");
     const saveButton = document.getElementById("builder-save-button");
     const saveAsButton = document.getElementById("builder-save-as-button");
     const deleteNodeButton = document.getElementById("builder-delete-node-button");
+    const selectToolButton = document.getElementById("builder-select-tool");
+    const connectToolButton = document.getElementById("builder-connect-tool");
     const statusElement = document.getElementById("builder-status");
 
     function parseJsonScript(id, fallback) {
@@ -28,10 +30,8 @@
         }
     }
 
-    const categoryData = parseJsonScript("builder-library-data", []);
     const buildData = parseJsonScript("builder-build-data", null);
     const metaData = parseJsonScript("builder-meta-data", {});
-
     const libraryItems = Array.from(document.querySelectorAll(".builder-symbol-item"));
     const libraryById = new Map();
 
@@ -53,16 +53,52 @@
 
     const state = {
         currentBuildId: metaData.currentBuildId || null,
+        mode: "select",
         nodes: [],
+        edges: [],
         selectedNodeId: null,
+        selectedEdgeId: null,
+        pendingConnectionSourceId: null,
         dragMove: null,
+        undoStack: [],
     };
+
+    function cloneSnapshot() {
+        return JSON.parse(JSON.stringify({ nodes: state.nodes, edges: state.edges }));
+    }
+
+    function pushUndoSnapshot() {
+        state.undoStack.push(cloneSnapshot());
+        if (state.undoStack.length > 50) {
+            state.undoStack.shift();
+        }
+    }
+
+    function restoreSnapshot(snapshot) {
+        if (!snapshot) {
+            return;
+        }
+        state.nodes = snapshot.nodes || [];
+        state.edges = snapshot.edges || [];
+        state.selectedNodeId = null;
+        state.selectedEdgeId = null;
+        state.pendingConnectionSourceId = null;
+        renderAll();
+        setStatus("Undo ausgefuehrt.", "muted");
+    }
 
     function generateNodeId() {
         if (window.crypto && typeof window.crypto.randomUUID === "function") {
             return `node-${window.crypto.randomUUID()}`;
         }
         return `node-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    }
+
+    function generateEdgeId() {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+            return `edge-${window.crypto.randomUUID()}`;
+        }
+        return `edge-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     }
 
     function normalizeNode(node) {
@@ -80,17 +116,22 @@
         };
     }
 
-    if (buildData && buildData.definition_json && Array.isArray(buildData.definition_json.nodes)) {
-        state.nodes = buildData.definition_json.nodes.map(normalizeNode);
+    function normalizeEdge(edge) {
+        return {
+            id: String(edge.id || generateEdgeId()),
+            source_node_id: String(edge.source_node_id || ""),
+            target_node_id: String(edge.target_node_id || ""),
+        };
     }
 
-    const storedToken = window.localStorage.getItem("reactorBuilderApiToken");
-    if (storedToken) {
-        tokenInput.value = storedToken;
+    if (buildData && buildData.definition_json) {
+        if (Array.isArray(buildData.definition_json.nodes)) {
+            state.nodes = buildData.definition_json.nodes.map(normalizeNode);
+        }
+        if (Array.isArray(buildData.definition_json.edges)) {
+            state.edges = buildData.definition_json.edges.map(normalizeEdge);
+        }
     }
-    tokenInput.addEventListener("input", () => {
-        window.localStorage.setItem("reactorBuilderApiToken", tokenInput.value.trim());
-    });
 
     function setStatus(message, tone) {
         statusElement.textContent = message;
@@ -104,6 +145,26 @@
             return;
         }
         statusElement.classList.add("muted");
+    }
+
+    function setMode(mode) {
+        state.mode = mode === "connect" ? "connect" : "select";
+        if (state.mode !== "connect") {
+            state.pendingConnectionSourceId = null;
+        }
+        selectToolButton.classList.toggle("is-active", state.mode === "select");
+        connectToolButton.classList.toggle("is-active", state.mode === "connect");
+        renderAll();
+        if (state.mode === "connect") {
+            setStatus("Connection Tool aktiv. Klicke Quelle und danach Ziel.", "muted");
+            return;
+        }
+        setStatus(
+            state.currentBuildId
+                ? `Build #${state.currentBuildId} geladen.`
+                : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.",
+            "muted",
+        );
     }
 
     function clampNode(node) {
@@ -130,9 +191,69 @@
         return state.nodes.find((node) => node.id === state.selectedNodeId) || null;
     }
 
+    function getNodeById(nodeId) {
+        return state.nodes.find((node) => node.id === nodeId) || null;
+    }
+
+    function nodeCenter(node) {
+        return {
+            x: node.x + node.width / 2,
+            y: node.y + node.height / 2,
+        };
+    }
+
     function selectNode(nodeId) {
         state.selectedNodeId = nodeId;
-        renderNodes();
+        state.selectedEdgeId = null;
+        renderAll();
+    }
+
+    function selectEdge(edgeId) {
+        state.selectedEdgeId = edgeId;
+        state.selectedNodeId = null;
+        renderAll();
+    }
+
+    function renderEdges() {
+        while (edgeLayer.firstChild) {
+            edgeLayer.removeChild(edgeLayer.firstChild);
+        }
+        edgeLayer.setAttribute("viewBox", `0 0 ${canvas.clientWidth} ${canvas.clientHeight}`);
+
+        for (const edge of state.edges) {
+            const source = getNodeById(edge.source_node_id);
+            const target = getNodeById(edge.target_node_id);
+            if (!source || !target) {
+                continue;
+            }
+            const sourcePoint = nodeCenter(source);
+            const targetPoint = nodeCenter(target);
+            const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+            line.setAttribute("x1", String(sourcePoint.x));
+            line.setAttribute("y1", String(sourcePoint.y));
+            line.setAttribute("x2", String(targetPoint.x));
+            line.setAttribute("y2", String(targetPoint.y));
+            line.setAttribute("class", `builder-edge${state.selectedEdgeId === edge.id ? " is-selected" : ""}`);
+            line.dataset.edgeId = edge.id;
+            line.addEventListener("click", (event) => {
+                event.stopPropagation();
+                selectEdge(edge.id);
+            });
+            edgeLayer.appendChild(line);
+        }
+
+        if (state.mode === "connect" && state.pendingConnectionSourceId) {
+            const source = getNodeById(state.pendingConnectionSourceId);
+            if (source) {
+                const sourcePoint = nodeCenter(source);
+                const marker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                marker.setAttribute("cx", String(sourcePoint.x));
+                marker.setAttribute("cy", String(sourcePoint.y));
+                marker.setAttribute("r", "8");
+                marker.setAttribute("class", "builder-edge is-pending");
+                edgeLayer.appendChild(marker);
+            }
+        }
     }
 
     function renderNodes() {
@@ -149,16 +270,6 @@
             element.style.top = `${node.y}px`;
             element.style.width = `${node.width}px`;
             element.style.minHeight = `${node.height}px`;
-
-            const deleteButton = document.createElement("button");
-            deleteButton.type = "button";
-            deleteButton.className = "builder-node-delete";
-            deleteButton.textContent = "×";
-            deleteButton.setAttribute("aria-label", `${node.label} entfernen`);
-            deleteButton.addEventListener("click", (event) => {
-                event.stopPropagation();
-                removeNode(node.id);
-            });
 
             const body = document.createElement("div");
             body.className = "builder-node-body";
@@ -178,33 +289,45 @@
 
             body.appendChild(graphic);
             body.appendChild(label);
-            element.appendChild(deleteButton);
             element.appendChild(body);
 
-            element.addEventListener("click", () => {
+            element.addEventListener("click", (event) => {
+                event.stopPropagation();
+                if (state.mode === "connect") {
+                    handleConnectionClick(node.id);
+                    return;
+                }
                 selectNode(node.id);
             });
 
             element.addEventListener("pointerdown", (event) => {
-                if (event.target instanceof HTMLElement && event.target.closest(".builder-node-delete")) {
+                if (state.mode !== "select") {
                     return;
                 }
+                pushUndoSnapshot();
                 const point = pointerToCanvas(event);
+                state.selectedNodeId = node.id;
+                state.selectedEdgeId = null;
+                renderAll();
+                const liveElement = nodeLayer.querySelector(`[data-node-id="${node.id}"]`) || element;
                 state.dragMove = {
                     nodeId: node.id,
                     offsetX: point.x - node.x,
                     offsetY: point.y - node.y,
-                    element,
+                    element: liveElement,
                 };
-                element.classList.add("is-dragging");
-                selectNode(node.id);
+                liveElement.classList.add("is-dragging");
                 window.addEventListener("pointermove", handlePointerMove);
                 window.addEventListener("pointerup", stopPointerMove, { once: true });
             });
 
             nodeLayer.appendChild(element);
         }
+    }
 
+    function renderAll() {
+        renderEdges();
+        renderNodes();
         updateEmptyState();
     }
 
@@ -220,8 +343,11 @@
         node.x = point.x - state.dragMove.offsetX;
         node.y = point.y - state.dragMove.offsetY;
         clampNode(node);
-        state.dragMove.element.style.left = `${node.x}px`;
-        state.dragMove.element.style.top = `${node.y}px`;
+        const liveElement = nodeLayer.querySelector(`[data-node-id="${node.id}"]`) || state.dragMove.element;
+        liveElement.style.left = `${node.x}px`;
+        liveElement.style.top = `${node.y}px`;
+        state.dragMove.element = liveElement;
+        renderEdges();
     }
 
     function stopPointerMove() {
@@ -230,15 +356,80 @@
             state.dragMove.element.classList.remove("is-dragging");
         }
         state.dragMove = null;
+        renderAll();
     }
 
     function removeNode(nodeId) {
+        pushUndoSnapshot();
         state.nodes = state.nodes.filter((node) => node.id !== nodeId);
+        state.edges = state.edges.filter(
+            (edge) => edge.source_node_id !== nodeId && edge.target_node_id !== nodeId,
+        );
         if (state.selectedNodeId === nodeId) {
             state.selectedNodeId = null;
         }
-        renderNodes();
+        if (state.pendingConnectionSourceId === nodeId) {
+            state.pendingConnectionSourceId = null;
+        }
+        renderAll();
         setStatus("Element entfernt. Build noch nicht gespeichert.", "muted");
+    }
+
+    function removeEdge(edgeId) {
+        pushUndoSnapshot();
+        state.edges = state.edges.filter((edge) => edge.id !== edgeId);
+        if (state.selectedEdgeId === edgeId) {
+            state.selectedEdgeId = null;
+        }
+        renderAll();
+        setStatus("Verbindung entfernt. Build noch nicht gespeichert.", "muted");
+    }
+
+    function edgeExists(sourceNodeId, targetNodeId) {
+        return state.edges.some(
+            (edge) =>
+                (edge.source_node_id === sourceNodeId && edge.target_node_id === targetNodeId) ||
+                (edge.source_node_id === targetNodeId && edge.target_node_id === sourceNodeId),
+        );
+    }
+
+    function handleConnectionClick(nodeId) {
+        if (!state.pendingConnectionSourceId) {
+            state.pendingConnectionSourceId = nodeId;
+            state.selectedNodeId = nodeId;
+            state.selectedEdgeId = null;
+            renderAll();
+            setStatus("Quelle gewaehlt. Jetzt Ziel-Element anklicken.", "muted");
+            return;
+        }
+
+        if (state.pendingConnectionSourceId === nodeId) {
+            state.pendingConnectionSourceId = null;
+            state.selectedNodeId = nodeId;
+            renderAll();
+            setStatus("Connection Tool zurueckgesetzt.", "muted");
+            return;
+        }
+
+        if (edgeExists(state.pendingConnectionSourceId, nodeId)) {
+            state.pendingConnectionSourceId = null;
+            renderAll();
+            setStatus("Zwischen diesen Elementen existiert bereits eine Verbindung.", "error");
+            return;
+        }
+
+        pushUndoSnapshot();
+        const edge = normalizeEdge({
+            id: generateEdgeId(),
+            source_node_id: state.pendingConnectionSourceId,
+            target_node_id: nodeId,
+        });
+        state.edges.push(edge);
+        state.selectedEdgeId = edge.id;
+        state.selectedNodeId = null;
+        state.pendingConnectionSourceId = null;
+        renderAll();
+        setStatus("Verbindung erstellt. Weitere Verbindung oder Select-Tool waehlen.", "success");
     }
 
     function addNodeFromSymbol(symbolId, x, y) {
@@ -248,6 +439,7 @@
             return;
         }
 
+        pushUndoSnapshot();
         const node = normalizeNode({
             id: generateNodeId(),
             symbol_id: symbol.id,
@@ -262,7 +454,8 @@
         clampNode(node);
         state.nodes.push(node);
         state.selectedNodeId = node.id;
-        renderNodes();
+        state.selectedEdgeId = null;
+        renderAll();
         setStatus(`${symbol.label} auf dem Canvas platziert.`, "muted");
     }
 
@@ -282,30 +475,56 @@
     });
 
     canvas.addEventListener("click", (event) => {
-        if (event.target === canvas || event.target === nodeLayer) {
+        if (event.target === canvas || event.target === nodeLayer || event.target === edgeLayer) {
             state.selectedNodeId = null;
-            renderNodes();
+            state.selectedEdgeId = null;
+            if (state.mode !== "connect") {
+                state.pendingConnectionSourceId = null;
+            }
+            renderAll();
         }
     });
 
     deleteNodeButton.addEventListener("click", () => {
-        if (!state.selectedNodeId) {
-            setStatus("Kein Element ausgewaehlt.", "error");
+        if (state.selectedNodeId) {
+            removeNode(state.selectedNodeId);
             return;
         }
-        removeNode(state.selectedNodeId);
+        if (state.selectedEdgeId) {
+            removeEdge(state.selectedEdgeId);
+            return;
+        }
+        setStatus("Kein Element oder keine Verbindung ausgewaehlt.", "error");
+    });
+
+    selectToolButton.addEventListener("click", () => {
+        setMode("select");
+    });
+
+    connectToolButton.addEventListener("click", () => {
+        setMode("connect");
     });
 
     document.addEventListener("keydown", (event) => {
-        if (event.key !== "Delete") {
-            return;
-        }
         const activeTag = document.activeElement ? document.activeElement.tagName : "";
-        if (activeTag === "INPUT" || activeTag === "TEXTAREA") {
+        const isFormField = activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT";
+
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z" && !isFormField) {
+            event.preventDefault();
+            const snapshot = state.undoStack.pop();
+            restoreSnapshot(snapshot);
             return;
         }
-        if (state.selectedNodeId) {
-            removeNode(state.selectedNodeId);
+
+        if ((event.key === "Delete" || event.key === "Backspace") && !isFormField) {
+            event.preventDefault();
+            if (state.selectedNodeId) {
+                removeNode(state.selectedNodeId);
+                return;
+            }
+            if (state.selectedEdgeId) {
+                removeEdge(state.selectedEdgeId);
+            }
         }
     });
 
@@ -345,14 +564,18 @@
                     width: node.width,
                     height: node.height,
                 })),
+                edges: state.edges.map((edge) => ({
+                    id: edge.id,
+                    source_node_id: edge.source_node_id,
+                    target_node_id: edge.target_node_id,
+                })),
             },
         };
     }
 
     async function saveBuild(forceCreate) {
-        const token = tokenInput.value.trim();
-        if (!token) {
-            setStatus("Zum Speichern wird ein API Token benoetigt.", "error");
+        if (metaData.apiAuthRequired && !metaData.builderApiToken) {
+            setStatus("Der Server liefert keinen Builder-Token. Speichern ist derzeit nicht verfuegbar.", "error");
             return;
         }
 
@@ -371,12 +594,16 @@
         setStatus("Build wird gespeichert ...", "muted");
 
         try {
+            const headers = {
+                "Content-Type": "application/json",
+            };
+            if (metaData.builderApiToken) {
+                headers.Authorization = `Bearer ${metaData.builderApiToken}`;
+            }
+
             const response = await window.fetch(url, {
                 method,
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${token}`,
-                },
+                headers,
                 body: JSON.stringify(payload),
             });
             const responsePayload = await response.json().catch(() => ({}));
@@ -406,16 +633,6 @@
         void saveBuild(true);
     });
 
-    setStatus(
-        state.currentBuildId
-            ? `Build #${state.currentBuildId} geladen.`
-            : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.",
-        "muted",
-    );
-
-    if (!Array.isArray(categoryData)) {
-        console.warn("Builder category data is missing or invalid.");
-    }
-
-    renderNodes();
+    setMode("select");
+    renderAll();
 })();

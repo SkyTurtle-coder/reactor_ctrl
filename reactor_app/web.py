@@ -335,6 +335,7 @@ def reactor_builder_view() -> str:
         active_page="reactor_builder",
         current_build_id=None if current_build is None else current_build.reactor_build_id,
         current_build=_reactor_build_detail_to_dict(current_build),
+        builder_api_token=current_app.config.get("API_AUTH_TOKEN"),
         builder_name=builder_name,
         builder_user=builder_user,
         builder_date=builder_date,

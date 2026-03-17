@@ -104,15 +104,13 @@
                         <span>User</span>
                         <input id="builder-user-input" type="text" value="{{ builder_user }}" maxlength="120">
                     </label>
-                    <label class="builder-meta-field builder-meta-field-token">
-                        <span>API Token</span>
-                        <input id="builder-token-input" type="password" placeholder="required for save">
-                    </label>
                 </div>
             </header>
 
             <div class="builder-toolbar">
                 <div class="builder-toolbar-actions">
+                    <button id="builder-select-tool" class="btn btn-primary" type="button">Select</button>
+                    <button id="builder-connect-tool" class="btn" type="button">Connection Tool</button>
                     <button id="builder-save-button" class="btn btn-primary" type="button">Save Build</button>
                     <button id="builder-save-as-button" class="btn" type="button">Save as New</button>
                     <button id="builder-delete-node-button" class="btn" type="button">Delete Selected</button>
@@ -132,6 +130,7 @@
                     <h3>Fliessbild-Arbeitsflaeche</h3>
                     <p>Ziehe links ein Element in diese Flaeche und verschiebe es danach direkt im Canvas.</p>
                 </div>
+                <svg class="builder-edge-layer" id="builder-edge-layer" aria-hidden="true"></svg>
                 <div class="builder-node-layer" id="builder-node-layer"></div>
             </div>
         </article>
@@ -140,7 +139,7 @@
 
 <script id="builder-library-data" type="application/json">{{ symbol_categories | tojson }}</script>
 <script id="builder-build-data" type="application/json">{{ current_build | tojson }}</script>
-<script id="builder-meta-data" type="application/json">{{ {"currentBuildId": current_build_id, "apiAuthRequired": api_auth_required} | tojson }}</script>
+<script id="builder-meta-data" type="application/json">{{ {"currentBuildId": current_build_id, "apiAuthRequired": api_auth_required, "builderApiToken": builder_api_token} | tojson }}</script>
 {% endblock %}
 
 {% block scripts %}
