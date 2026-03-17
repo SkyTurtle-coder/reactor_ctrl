@@ -1,0 +1,33 @@
+{
+  "symbols": [
+    {
+      "id": "pump",
+      "label": "Pump",
+      "category": "actuators",
+      "svg_file": "actuators/pump.svg",
+      "default_width": 163,
+      "default_height": 83,
+      "ports": [
+        {
+          "id": "inlet_left",
+          "x": 0,
+          "y": 41,
+          "direction": "west"
+        },
+        {
+          "id": "outlet_right",
+          "x": 163,
+          "y": 41,
+          "direction": "east"
+        }
+      ],
+      "anchors": [
+        {
+          "id": "center",
+          "x": 81.5,
+          "y": 41.5
+        }
+      ]
+    }
+  ]
+}

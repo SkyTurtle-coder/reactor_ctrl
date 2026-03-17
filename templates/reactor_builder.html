@@ -18,6 +18,37 @@
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Measurements</p><p class="metric-value">{{ summary.measurements_total }}</p></div></article>
 </section>
 
+<section class="card">
+    <div class="card-header">
+        <h2>Symbol library</h2>
+        <p>Erster Library-Baustein fuer den spaeteren Fliessbild-Builder. Jedes Symbol braucht SVG, Ports und feste Metadaten.</p>
+    </div>
+    <div class="card-body">
+        {% if symbol_library %}
+        <div class="symbol-library-grid">
+            {% for symbol in symbol_library %}
+            <article class="symbol-card">
+                <div class="symbol-preview">
+                    <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
+                </div>
+                <div class="symbol-meta">
+                    <div class="symbol-title-row">
+                        <h3>{{ symbol.label }}</h3>
+                        <span class="badge badge-info">{{ symbol.category }}</span>
+                    </div>
+                    <p class="muted"><code>{{ symbol.id }}</code></p>
+                    <p class="muted">Default size: {{ symbol.default_width }} x {{ symbol.default_height }}</p>
+                    <p class="muted">Ports: {{ symbol.ports | length }}</p>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="empty-state">Noch keine Symbole in der Library registriert.</p>
+        {% endif %}
+    </div>
+</section>
+
 <section class="content-grid">
     <article class="card">
         <div class="card-header">

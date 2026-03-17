@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, render_template
+from flask import Blueprint, current_app, jsonify, render_template, request
 from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -64,6 +66,37 @@ def _base_context() -> dict[str, Any]:
         "api_auth_required": current_app.config.get("API_AUTH_REQUIRED", True),
         "supported_protocols": list_supported_protocols(),
     }
+
+
+def _load_flowsheet_library() -> list[dict[str, Any]]:
+    manifest_path = current_app.static_folder
+    if manifest_path is None:
+        return []
+
+    try:
+        manifest_file = Path(manifest_path) / "flowsheet" / "library" / "manifest.json"
+        if not manifest_file.exists():
+            return []
+        payload = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        current_app.logger.exception("Failed to load flowsheet library manifest.")
+        return []
+
+    symbols = payload.get("symbols", [])
+    if not isinstance(symbols, list):
+        return []
+
+    normalized_symbols: list[dict[str, Any]] = []
+    for item in symbols:
+        if not isinstance(item, dict):
+            continue
+        svg_file = str(item.get("svg_file", "")).strip()
+        if not svg_file:
+            continue
+        normalized = dict(item)
+        normalized["svg_url"] = f"{current_app.static_url_path}/flowsheet/library/{svg_file}"
+        normalized_symbols.append(normalized)
+    return normalized_symbols
 
 
 def _control_summary() -> dict[str, int]:
@@ -145,34 +178,14 @@ def index() -> str:
 
 @web_bp.get("/process")
 def process_view() -> str:
-    devices = (
-        Device.query.options(
-            joinedload(Device.current_binding)
-            .joinedload(DeviceBindingCurrent.connection)
-            .joinedload(DeviceConnection.device_server)
-        )
-        .order_by(Device.display_name.asc(), Device.device_id.asc())
-        .all()
-    )
-    recent_measurements = (
-        Measurement.query.options(joinedload(Measurement.device))
-        .order_by(Measurement.measured_at.desc(), Measurement.measurement_id.desc())
-        .limit(12)
-        .all()
-    )
-    recent_commands = (
-        ControlCommand.query.options(joinedload(ControlCommand.device))
-        .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
-        .limit(12)
-        .all()
-    )
+    process_title = (request.args.get("title") or "").strip() or "No Active Process"
+    process_step = (request.args.get("step") or "").strip() or "Step pending from recipe"
     return render_template(
         "process.html",
         active_page="process",
         summary=_control_summary(),
-        devices=devices,
-        recent_measurements=recent_measurements,
-        recent_commands=recent_commands,
+        process_title=process_title,
+        process_step=process_step,
         **_base_context(),
     )
 
@@ -260,6 +273,7 @@ def reactor_builder_view() -> str:
         devices=devices,
         connections=connections,
         servers=servers,
+        symbol_library=_load_flowsheet_library(),
         summary=_control_summary(),
         **_base_context(),
     )
