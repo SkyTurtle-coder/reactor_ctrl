@@ -406,6 +406,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
 
     normalized_nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
+    node_anchor_ids: dict[str, set[str]] = {}
     for index, node in enumerate(raw_nodes, start=1):
         if not isinstance(node, dict):
             raise ValueError(f"Node {index} in 'definition_json.nodes' must be an object.")
@@ -433,6 +434,64 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
         if node_id in node_ids:
             raise ValueError(f"Node id '{node_id}' is duplicated in 'definition_json.nodes'.")
         node_ids.add(node_id)
+
+        raw_anchors = node.get("anchors", [])
+        if raw_anchors in (None, ""):
+            raw_anchors = []
+        if not isinstance(raw_anchors, list):
+            raise ValueError(f"Field 'definition_json.nodes[{index}].anchors' must be a list.")
+
+        normalized_anchors: list[dict[str, Any]] = []
+        anchor_ids_for_node: set[str] = set()
+        for anchor_index, anchor in enumerate(raw_anchors, start=1):
+            if not isinstance(anchor, dict):
+                raise ValueError(
+                    f"Anchor {anchor_index} in 'definition_json.nodes[{index}].anchors' must be an object."
+                )
+
+            anchor_id = _clean_string(
+                anchor.get("id"),
+                field_name=f"definition_json.nodes[{index}].anchors[{anchor_index}].id",
+                required=True,
+            )
+            x_ratio = _parse_float(
+                anchor.get("x_ratio"),
+                field_name=f"definition_json.nodes[{index}].anchors[{anchor_index}].x_ratio",
+            )
+            y_ratio = _parse_float(
+                anchor.get("y_ratio"),
+                field_name=f"definition_json.nodes[{index}].anchors[{anchor_index}].y_ratio",
+            )
+            side = _validate_choice(
+                anchor.get("side"),
+                field_name=f"definition_json.nodes[{index}].anchors[{anchor_index}].side",
+                allowed={"north", "south", "east", "west"},
+                required=False,
+            )
+
+            if not 0 <= x_ratio <= 1:
+                raise ValueError(
+                    f"Field 'definition_json.nodes[{index}].anchors[{anchor_index}].x_ratio' must be between 0 and 1."
+                )
+            if not 0 <= y_ratio <= 1:
+                raise ValueError(
+                    f"Field 'definition_json.nodes[{index}].anchors[{anchor_index}].y_ratio' must be between 0 and 1."
+                )
+
+            assert anchor_id is not None
+            if anchor_id in anchor_ids_for_node:
+                raise ValueError(f"Anchor id '{anchor_id}' is duplicated on node '{node_id}'.")
+            anchor_ids_for_node.add(anchor_id)
+            normalized_anchors.append(
+                {
+                    "id": anchor_id,
+                    "x_ratio": round(x_ratio, 6),
+                    "y_ratio": round(y_ratio, 6),
+                    "side": side,
+                }
+            )
+
+        node_anchor_ids[node_id] = anchor_ids_for_node
         normalized_nodes.append(
             {
                 "id": node_id,
@@ -444,6 +503,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 "y": round(y_value, 2),
                 "width": round(width_value, 2),
                 "height": round(height_value, 2),
+                "anchors": normalized_anchors,
             }
         )
 
@@ -470,6 +530,14 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             field_name=f"definition_json.edges[{index}].target_node_id",
             required=True,
         )
+        source_anchor_id = _clean_string(
+            edge.get("source_anchor_id"),
+            field_name=f"definition_json.edges[{index}].source_anchor_id",
+        )
+        target_anchor_id = _clean_string(
+            edge.get("target_anchor_id"),
+            field_name=f"definition_json.edges[{index}].target_anchor_id",
+        )
 
         assert edge_id is not None
         assert source_node_id is not None
@@ -483,13 +551,19 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             raise ValueError(f"Edge {edge_id} references missing target node '{target_node_id}'.")
         if source_node_id == target_node_id:
             raise ValueError(f"Edge {edge_id} must connect two different nodes.")
+        if source_anchor_id is not None and source_anchor_id not in node_anchor_ids.get(source_node_id, set()):
+            raise ValueError(f"Edge {edge_id} references missing source anchor '{source_anchor_id}'.")
+        if target_anchor_id is not None and target_anchor_id not in node_anchor_ids.get(target_node_id, set()):
+            raise ValueError(f"Edge {edge_id} references missing target anchor '{target_anchor_id}'.")
 
         edge_ids.add(edge_id)
         normalized_edges.append(
             {
                 "id": edge_id,
                 "source_node_id": source_node_id,
+                "source_anchor_id": source_anchor_id,
                 "target_node_id": target_node_id,
+                "target_anchor_id": target_anchor_id,
             }
         )
 

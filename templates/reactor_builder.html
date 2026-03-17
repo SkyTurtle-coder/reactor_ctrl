@@ -6,7 +6,7 @@
 <section class="page-header">
     <span class="eyebrow">Setup</span>
     <h1>Reactor Builder</h1>
-    <p class="page-lead">Links gespeicherte Builds und Symbolbibliothek, rechts die interaktive Fliessbildflaeche.</p>
+    <p class="page-lead">Links die Symbolbibliothek, rechts die interaktive Fliessbildflaeche mit gespeicherten Builds im Kopfbereich.</p>
 </section>
 {% endblock %}
 
@@ -14,30 +14,6 @@
 <section class="builder-shell">
     <aside class="card builder-sidebar">
         <div class="card-body builder-sidebar-body">
-            <section class="builder-panel">
-                <div class="builder-panel-header">
-                    <h2>Builds</h2>
-                    <a class="btn" href="{{ url_for('web.reactor_builder_view') }}">New Build</a>
-                </div>
-                {% if saved_builds %}
-                <div class="builder-build-list">
-                    {% for build in saved_builds %}
-                    <a
-                        class="builder-build-link{% if current_build_id == build.reactor_build_id %} active{% endif %}"
-                        href="{{ url_for('web.reactor_builder_view', build_id=build.reactor_build_id) }}"
-                    >
-                        <strong>{{ build.build_name }}</strong>
-                        <span>{{ build.build_date }}</span>
-                        <span>{{ build.updated_by or build.created_by }}</span>
-                        <span>{{ build.node_count }} Elemente</span>
-                    </a>
-                    {% endfor %}
-                </div>
-                {% else %}
-                <p class="empty-state">Noch keine gespeicherten Builds vorhanden.</p>
-                {% endif %}
-            </section>
-
             <section class="builder-panel">
                 <div class="builder-panel-header">
                     <h2>Element Library</h2>
@@ -93,6 +69,20 @@
                         <label for="builder-name-input">Build Name</label>
                         <input id="builder-name-input" type="text" value="{{ builder_name }}" maxlength="120">
                     </div>
+                    <div class="builder-title-row">
+                        <label class="builder-field builder-build-picker">
+                            <span>Saved Builds</span>
+                            <select id="builder-build-select">
+                                <option value="">Current Draft</option>
+                                {% for build in saved_builds %}
+                                <option value="{{ build.reactor_build_id }}"{% if current_build_id == build.reactor_build_id %} selected{% endif %}>
+                                    {{ build.build_name }} | {{ build.build_date }} | {{ build.updated_by or build.created_by }}
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+                        <button id="builder-new-build-button" class="btn" type="button">New Build</button>
+                    </div>
                     <p class="muted">Reaktoren, Pumpen, Ventile und Sensoren aufbauen, verschieben und als Build speichern.</p>
                 </div>
                 <div class="builder-board-meta">
@@ -110,6 +100,7 @@
             <div class="builder-toolbar">
                 <div class="builder-toolbar-actions">
                     <button id="builder-select-tool" class="btn btn-primary" type="button">Select</button>
+                    <button id="builder-anchor-tool" class="btn" type="button">Anchor Tool</button>
                     <button id="builder-connect-tool" class="btn" type="button">Connection Tool</button>
                     <button id="builder-save-button" class="btn btn-primary" type="button">Save Build</button>
                     <button id="builder-save-as-button" class="btn" type="button">Save as New</button>

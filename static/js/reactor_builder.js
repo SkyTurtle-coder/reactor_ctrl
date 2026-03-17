@@ -10,12 +10,16 @@
     const nameInput = document.getElementById("builder-name-input");
     const dateInput = document.getElementById("builder-date-input");
     const userInput = document.getElementById("builder-user-input");
+    const buildSelect = document.getElementById("builder-build-select");
+    const newBuildButton = document.getElementById("builder-new-build-button");
     const saveButton = document.getElementById("builder-save-button");
     const saveAsButton = document.getElementById("builder-save-as-button");
     const deleteNodeButton = document.getElementById("builder-delete-node-button");
     const selectToolButton = document.getElementById("builder-select-tool");
+    const anchorToolButton = document.getElementById("builder-anchor-tool");
     const connectToolButton = document.getElementById("builder-connect-tool");
     const statusElement = document.getElementById("builder-status");
+    const libraryItems = Array.from(document.querySelectorAll(".builder-symbol-item"));
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -30,46 +34,124 @@
         }
     }
 
+    function clamp(value, min, max) {
+        return Math.max(min, Math.min(value, max));
+    }
+
+    function asNumber(value, fallback) {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : fallback;
+    }
+
+    function asString(value, fallback) {
+        const text = String(value ?? "").trim();
+        return text || fallback;
+    }
+
+    function directionToSide(direction, xRatio, yRatio) {
+        const normalized = String(direction || "").trim().toLowerCase();
+        if (normalized === "west" || normalized === "east" || normalized === "north" || normalized === "south") {
+            return normalized;
+        }
+        if (xRatio <= 0) {
+            return "west";
+        }
+        if (xRatio >= 1) {
+            return "east";
+        }
+        if (yRatio <= 0) {
+            return "north";
+        }
+        if (yRatio >= 1) {
+            return "south";
+        }
+        return "east";
+    }
+
+    function parseBuildId(value) {
+        const numeric = Number.parseInt(String(value ?? ""), 10);
+        return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+    }
+
+    function generateId(prefix) {
+        if (window.crypto && typeof window.crypto.randomUUID === "function") {
+            return `${prefix}-${window.crypto.randomUUID()}`;
+        }
+        return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    }
+
+    const libraryCategoryData = parseJsonScript("builder-library-data", []);
     const buildData = parseJsonScript("builder-build-data", null);
     const metaData = parseJsonScript("builder-meta-data", {});
-    const libraryItems = Array.from(document.querySelectorAll(".builder-symbol-item"));
+
     const libraryById = new Map();
+    for (const category of Array.isArray(libraryCategoryData) ? libraryCategoryData : []) {
+        const symbols = Array.isArray(category?.symbols) ? category.symbols : [];
+        for (const rawSymbol of symbols) {
+            const width = Math.max(40, asNumber(rawSymbol.default_width ?? rawSymbol.width, 120));
+            const height = Math.max(40, asNumber(rawSymbol.default_height ?? rawSymbol.height, 80));
+            const ports = Array.isArray(rawSymbol.ports)
+                ? rawSymbol.ports
+                      .filter((port) => port && typeof port === "object")
+                      .map((port, index) => {
+                          const xRatio = clamp(asNumber(port.x, width / 2) / width, 0, 1);
+                          const yRatio = clamp(asNumber(port.y, height / 2) / height, 0, 1);
+                          return {
+                              id: asString(port.id, `port-${index + 1}`),
+                              x_ratio: xRatio,
+                              y_ratio: yRatio,
+                              side: directionToSide(port.direction, xRatio, yRatio),
+                          };
+                      })
+                : [];
+
+            libraryById.set(String(rawSymbol.id || ""), {
+                id: String(rawSymbol.id || ""),
+                label: asString(rawSymbol.label, rawSymbol.id || "Symbol"),
+                category: asString(rawSymbol.category, "uncategorized"),
+                svg_url: asString(rawSymbol.svg_url, ""),
+                width,
+                height,
+                ports,
+            });
+        }
+    }
 
     for (const item of libraryItems) {
-        const symbol = {
-            id: item.dataset.symbolId || "",
-            label: item.dataset.symbolLabel || item.dataset.symbolId || "Symbol",
-            category: item.dataset.symbolCategory || "",
-            svg_url: item.dataset.symbolSvgUrl || "",
-            width: parseFloat(item.dataset.symbolWidth || "120"),
-            height: parseFloat(item.dataset.symbolHeight || "80"),
-        };
-        libraryById.set(symbol.id, symbol);
+        const symbolId = String(item.dataset.symbolId || "");
         item.addEventListener("dragstart", (event) => {
+            if (!libraryById.has(symbolId)) {
+                return;
+            }
             event.dataTransfer.effectAllowed = "copy";
-            event.dataTransfer.setData("text/reactor-symbol-id", symbol.id);
+            event.dataTransfer.setData("text/reactor-symbol-id", symbolId);
         });
     }
 
     const state = {
-        currentBuildId: metaData.currentBuildId || null,
+        currentBuildId: parseBuildId(metaData.currentBuildId),
         mode: "select",
         nodes: [],
         edges: [],
         selectedNodeId: null,
         selectedEdgeId: null,
-        pendingConnectionSourceId: null,
+        pendingAnchor: null,
         dragMove: null,
         undoStack: [],
     };
 
     function cloneSnapshot() {
-        return JSON.parse(JSON.stringify({ nodes: state.nodes, edges: state.edges }));
+        return JSON.parse(
+            JSON.stringify({
+                nodes: state.nodes,
+                edges: state.edges,
+            }),
+        );
     }
 
     function pushUndoSnapshot() {
         state.undoStack.push(cloneSnapshot());
-        if (state.undoStack.length > 50) {
+        if (state.undoStack.length > 80) {
             state.undoStack.shift();
         }
     }
@@ -78,59 +160,13 @@
         if (!snapshot) {
             return;
         }
-        state.nodes = snapshot.nodes || [];
-        state.edges = snapshot.edges || [];
+        state.nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes.map(normalizeNode) : [];
+        state.edges = Array.isArray(snapshot.edges) ? snapshot.edges.map((edge) => normalizeEdge(edge, state.nodes)) : [];
         state.selectedNodeId = null;
         state.selectedEdgeId = null;
-        state.pendingConnectionSourceId = null;
+        state.pendingAnchor = null;
         renderAll();
         setStatus("Undo ausgefuehrt.", "muted");
-    }
-
-    function generateNodeId() {
-        if (window.crypto && typeof window.crypto.randomUUID === "function") {
-            return `node-${window.crypto.randomUUID()}`;
-        }
-        return `node-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-    }
-
-    function generateEdgeId() {
-        if (window.crypto && typeof window.crypto.randomUUID === "function") {
-            return `edge-${window.crypto.randomUUID()}`;
-        }
-        return `edge-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-    }
-
-    function normalizeNode(node) {
-        const symbol = libraryById.get(String(node.symbol_id || ""));
-        return {
-            id: String(node.id || generateNodeId()),
-            symbol_id: String(node.symbol_id || symbol?.id || ""),
-            label: String(node.label || symbol?.label || node.symbol_id || "Symbol"),
-            category: String(node.category || symbol?.category || ""),
-            svg_url: String(node.svg_url || symbol?.svg_url || ""),
-            x: Number(node.x || 0),
-            y: Number(node.y || 0),
-            width: Number(node.width || symbol?.width || 120),
-            height: Number(node.height || symbol?.height || 80),
-        };
-    }
-
-    function normalizeEdge(edge) {
-        return {
-            id: String(edge.id || generateEdgeId()),
-            source_node_id: String(edge.source_node_id || ""),
-            target_node_id: String(edge.target_node_id || ""),
-        };
-    }
-
-    if (buildData && buildData.definition_json) {
-        if (Array.isArray(buildData.definition_json.nodes)) {
-            state.nodes = buildData.definition_json.nodes.map(normalizeNode);
-        }
-        if (Array.isArray(buildData.definition_json.edges)) {
-            state.edges = buildData.definition_json.edges.map(normalizeEdge);
-        }
     }
 
     function setStatus(message, tone) {
@@ -147,36 +183,178 @@
         statusElement.classList.add("muted");
     }
 
-    function setMode(mode) {
-        state.mode = mode === "connect" ? "connect" : "select";
-        if (state.mode !== "connect") {
-            state.pendingConnectionSourceId = null;
+    function currentDraftMessage() {
+        return state.currentBuildId
+            ? `Build #${state.currentBuildId} geladen.`
+            : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.";
+    }
+
+    function symbolAnchors(symbol) {
+        if (!symbol || !Array.isArray(symbol.ports)) {
+            return [];
         }
-        selectToolButton.classList.toggle("is-active", state.mode === "select");
-        connectToolButton.classList.toggle("is-active", state.mode === "connect");
-        renderAll();
-        if (state.mode === "connect") {
-            setStatus("Connection Tool aktiv. Klicke Quelle und danach Ziel.", "muted");
+        return symbol.ports.map((port) => ({
+            id: port.id,
+            x_ratio: clamp(asNumber(port.x_ratio, 0.5), 0, 1),
+            y_ratio: clamp(asNumber(port.y_ratio, 0.5), 0, 1),
+            side: port.side || directionToSide("", port.x_ratio, port.y_ratio),
+        }));
+    }
+
+    function normalizeAnchor(anchor, index) {
+        return {
+            id: asString(anchor?.id, `anchor-${index + 1}`),
+            x_ratio: clamp(asNumber(anchor?.x_ratio, 0.5), 0, 1),
+            y_ratio: clamp(asNumber(anchor?.y_ratio, 0.5), 0, 1),
+            side: anchor?.side ? asString(anchor.side, "") : null,
+        };
+    }
+
+    function normalizeNode(node) {
+        const symbol = libraryById.get(String(node?.symbol_id || ""));
+        const width = Math.max(40, asNumber(node?.width, symbol?.width || 120));
+        const height = Math.max(40, asNumber(node?.height, symbol?.height || 80));
+        const anchors = Array.isArray(node?.anchors) && node.anchors.length > 0
+            ? node.anchors.map(normalizeAnchor)
+            : symbolAnchors(symbol);
+
+        return {
+            id: asString(node?.id, generateId("node")),
+            symbol_id: asString(node?.symbol_id, symbol?.id || ""),
+            label: asString(node?.label, symbol?.label || node?.symbol_id || "Symbol"),
+            category: asString(node?.category, symbol?.category || ""),
+            svg_url: asString(node?.svg_url, symbol?.svg_url || ""),
+            x: asNumber(node?.x, 0),
+            y: asNumber(node?.y, 0),
+            width,
+            height,
+            anchors,
+        };
+    }
+
+    function getNodeById(nodeId) {
+        return state.nodes.find((node) => node.id === nodeId) || null;
+    }
+
+    function getAnchorById(node, anchorId) {
+        if (!node || !Array.isArray(node.anchors) || node.anchors.length === 0) {
+            return null;
+        }
+        if (!anchorId) {
+            return node.anchors[0];
+        }
+        return node.anchors.find((anchor) => anchor.id === anchorId) || node.anchors[0] || null;
+    }
+
+    function normalizeEdge(edge, nodes) {
+        const sourceNode = nodes.find((node) => node.id === String(edge?.source_node_id || "")) || null;
+        const targetNode = nodes.find((node) => node.id === String(edge?.target_node_id || "")) || null;
+        const sourceAnchor = getAnchorById(sourceNode, edge?.source_anchor_id);
+        const targetAnchor = getAnchorById(targetNode, edge?.target_anchor_id);
+        return {
+            id: asString(edge?.id, generateId("edge")),
+            source_node_id: asString(edge?.source_node_id, ""),
+            source_anchor_id: sourceAnchor ? sourceAnchor.id : null,
+            target_node_id: asString(edge?.target_node_id, ""),
+            target_anchor_id: targetAnchor ? targetAnchor.id : null,
+        };
+    }
+
+    function loadDefinition(definition) {
+        const rawNodes = Array.isArray(definition?.nodes) ? definition.nodes : [];
+        state.nodes = rawNodes.map(normalizeNode);
+        const rawEdges = Array.isArray(definition?.edges) ? definition.edges : [];
+        state.edges = rawEdges.map((edge) => normalizeEdge(edge, state.nodes));
+        state.selectedNodeId = null;
+        state.selectedEdgeId = null;
+        state.pendingAnchor = null;
+    }
+
+    function updateHistory(buildId) {
+        const nextUrl = new URL(window.location.href);
+        if (buildId) {
+            nextUrl.searchParams.set("build_id", String(buildId));
+        } else {
+            nextUrl.searchParams.delete("build_id");
+        }
+        window.history.replaceState({}, "", nextUrl.toString());
+    }
+
+    function setBuildSelection(buildId) {
+        if (!buildSelect) {
             return;
         }
-        setStatus(
-            state.currentBuildId
-                ? `Build #${state.currentBuildId} geladen.`
-                : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.",
-            "muted",
+        buildSelect.value = buildId ? String(buildId) : "";
+    }
+
+    function formatBuildOption(build) {
+        return `${build.build_name} | ${build.build_date || ""} | ${build.updated_by || build.created_by || ""}`;
+    }
+
+    function upsertBuildOption(build) {
+        if (!buildSelect || !build?.reactor_build_id) {
+            return;
+        }
+
+        let option = Array.from(buildSelect.options).find(
+            (candidate) => candidate.value === String(build.reactor_build_id),
         );
+        if (!option) {
+            option = document.createElement("option");
+            option.value = String(build.reactor_build_id);
+            const placeholder = buildSelect.querySelector('option[value=""]');
+            if (placeholder && placeholder.nextSibling) {
+                buildSelect.insertBefore(option, placeholder.nextSibling);
+            } else {
+                buildSelect.appendChild(option);
+            }
+        }
+        option.textContent = formatBuildOption(build);
+        setBuildSelection(build.reactor_build_id);
     }
 
-    function clampNode(node) {
-        const padding = 14;
-        const maxX = Math.max(padding, canvas.clientWidth - node.width - padding);
-        const maxY = Math.max(padding, canvas.clientHeight - node.height - padding);
-        node.x = Math.max(padding, Math.min(node.x, maxX));
-        node.y = Math.max(padding, Math.min(node.y, maxY));
+    function applyBuildRecord(build, options) {
+        const clearUndo = Boolean(options?.clearUndo);
+        state.currentBuildId = build?.reactor_build_id || null;
+        nameInput.value = asString(build?.build_name, "Untitled Reactor Build");
+        dateInput.value = asString(build?.build_date, new Date().toISOString().slice(0, 10));
+        userInput.value = asString(build?.updated_by || build?.created_by, userInput.value || "operator");
+        loadDefinition(build?.definition_json || {});
+        if (clearUndo) {
+            state.undoStack = [];
+        }
+        if (state.currentBuildId) {
+            upsertBuildOption(build);
+        } else {
+            setBuildSelection(null);
+        }
+        updateHistory(state.currentBuildId);
+        renderAll();
     }
 
-    function updateEmptyState() {
-        emptyState.classList.toggle("is-hidden", state.nodes.length > 0);
+    function resetDraft() {
+        state.currentBuildId = null;
+        state.nodes = [];
+        state.edges = [];
+        state.selectedNodeId = null;
+        state.selectedEdgeId = null;
+        state.pendingAnchor = null;
+        state.undoStack = [];
+        nameInput.value = "Untitled Reactor Build";
+        if (!dateInput.value) {
+            dateInput.value = new Date().toISOString().slice(0, 10);
+        }
+        if (!userInput.value.trim()) {
+            userInput.value = "operator";
+        }
+        setBuildSelection(null);
+        updateHistory(null);
+        renderAll();
+        setStatus("Neuer Draft aktiv. Bestehende Builds bleiben in der Datenbank gespeichert.", "muted");
+    }
+
+    if (buildData && typeof buildData === "object") {
+        applyBuildRecord(buildData, { clearUndo: true });
     }
 
     function pointerToCanvas(event) {
@@ -187,47 +365,64 @@
         };
     }
 
-    function selectedNode() {
-        return state.nodes.find((node) => node.id === state.selectedNodeId) || null;
+    function clampNode(node) {
+        const padding = 14;
+        const maxX = Math.max(padding, canvas.clientWidth - node.width - padding);
+        const maxY = Math.max(padding, canvas.clientHeight - node.height - padding);
+        node.x = clamp(node.x, padding, maxX);
+        node.y = clamp(node.y, padding, maxY);
     }
 
-    function getNodeById(nodeId) {
-        return state.nodes.find((node) => node.id === nodeId) || null;
-    }
-
-    function nodeCenter(node) {
+    function anchorPoint(node, anchorId) {
+        const anchor = getAnchorById(node, anchorId);
+        if (!anchor) {
+            return {
+                x: node.x + node.width / 2,
+                y: node.y + node.height / 2,
+            };
+        }
         return {
-            x: node.x + node.width / 2,
-            y: node.y + node.height / 2,
+            x: node.x + node.width * anchor.x_ratio,
+            y: node.y + node.height * anchor.y_ratio,
         };
     }
 
-    function selectNode(nodeId) {
-        state.selectedNodeId = nodeId;
-        state.selectedEdgeId = null;
-        renderAll();
+    function edgeExists(connection) {
+        return state.edges.some((edge) => {
+            const forward =
+                edge.source_node_id === connection.source_node_id &&
+                edge.source_anchor_id === connection.source_anchor_id &&
+                edge.target_node_id === connection.target_node_id &&
+                edge.target_anchor_id === connection.target_anchor_id;
+            const reverse =
+                edge.source_node_id === connection.target_node_id &&
+                edge.source_anchor_id === connection.target_anchor_id &&
+                edge.target_node_id === connection.source_node_id &&
+                edge.target_anchor_id === connection.source_anchor_id;
+            return forward || reverse;
+        });
     }
 
-    function selectEdge(edgeId) {
-        state.selectedEdgeId = edgeId;
-        state.selectedNodeId = null;
-        renderAll();
+    function updateEmptyState() {
+        emptyState.classList.toggle("is-hidden", state.nodes.length > 0);
     }
 
     function renderEdges() {
         while (edgeLayer.firstChild) {
             edgeLayer.removeChild(edgeLayer.firstChild);
         }
+
         edgeLayer.setAttribute("viewBox", `0 0 ${canvas.clientWidth} ${canvas.clientHeight}`);
 
         for (const edge of state.edges) {
-            const source = getNodeById(edge.source_node_id);
-            const target = getNodeById(edge.target_node_id);
-            if (!source || !target) {
+            const sourceNode = getNodeById(edge.source_node_id);
+            const targetNode = getNodeById(edge.target_node_id);
+            if (!sourceNode || !targetNode) {
                 continue;
             }
-            const sourcePoint = nodeCenter(source);
-            const targetPoint = nodeCenter(target);
+
+            const sourcePoint = anchorPoint(sourceNode, edge.source_anchor_id);
+            const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
             const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
             line.setAttribute("x1", String(sourcePoint.x));
             line.setAttribute("y1", String(sourcePoint.y));
@@ -237,42 +432,131 @@
             line.dataset.edgeId = edge.id;
             line.addEventListener("click", (event) => {
                 event.stopPropagation();
-                selectEdge(edge.id);
+                state.selectedEdgeId = edge.id;
+                state.selectedNodeId = null;
+                renderAll();
             });
             edgeLayer.appendChild(line);
         }
 
-        if (state.mode === "connect" && state.pendingConnectionSourceId) {
-            const source = getNodeById(state.pendingConnectionSourceId);
-            if (source) {
-                const sourcePoint = nodeCenter(source);
+        if (state.pendingAnchor) {
+            const sourceNode = getNodeById(state.pendingAnchor.nodeId);
+            if (sourceNode) {
+                const point = anchorPoint(sourceNode, state.pendingAnchor.anchorId);
                 const marker = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                marker.setAttribute("cx", String(sourcePoint.x));
-                marker.setAttribute("cy", String(sourcePoint.y));
-                marker.setAttribute("r", "8");
+                marker.setAttribute("cx", String(point.x));
+                marker.setAttribute("cy", String(point.y));
+                marker.setAttribute("r", "7");
                 marker.setAttribute("class", "builder-edge is-pending");
                 edgeLayer.appendChild(marker);
             }
         }
     }
 
+    function shouldShowAnchors(node) {
+        return (
+            Array.isArray(node.anchors) &&
+            node.anchors.length > 0 &&
+            (state.mode === "anchor" || state.mode === "connect" || state.selectedNodeId === node.id)
+        );
+    }
+
+    function snapAnchorToOuterSide(localX, localY, width, height) {
+        const x = clamp(localX, 0, width);
+        const y = clamp(localY, 0, height);
+        const distances = [
+            { side: "west", distance: Math.abs(x), x_ratio: 0, y_ratio: clamp(y / height, 0, 1) },
+            { side: "east", distance: Math.abs(width - x), x_ratio: 1, y_ratio: clamp(y / height, 0, 1) },
+            { side: "north", distance: Math.abs(y), x_ratio: clamp(x / width, 0, 1), y_ratio: 0 },
+            { side: "south", distance: Math.abs(height - y), x_ratio: clamp(x / width, 0, 1), y_ratio: 1 },
+        ];
+
+        distances.sort((left, right) => left.distance - right.distance);
+        return distances[0];
+    }
+
+    function selectNode(nodeId) {
+        state.selectedNodeId = nodeId;
+        state.selectedEdgeId = null;
+        renderAll();
+    }
+
+    function addManualAnchor(nodeId, event) {
+        const node = getNodeById(nodeId);
+        const body = event.currentTarget;
+        if (!node || !body) {
+            return;
+        }
+
+        const rect = body.getBoundingClientRect();
+        const localX = event.clientX - rect.left;
+        const localY = event.clientY - rect.top;
+        const snapped = snapAnchorToOuterSide(localX, localY, node.width, node.height);
+        const duplicate = node.anchors.find(
+            (anchor) =>
+                Math.abs(anchor.x_ratio - snapped.x_ratio) < 0.015 &&
+                Math.abs(anchor.y_ratio - snapped.y_ratio) < 0.015,
+        );
+        if (duplicate) {
+            state.selectedNodeId = nodeId;
+            state.selectedEdgeId = null;
+            renderAll();
+            setStatus("An dieser Position existiert bereits ein Anchor.", "muted");
+            return;
+        }
+
+        pushUndoSnapshot();
+        node.anchors.push({
+            id: generateId("anchor"),
+            x_ratio: snapped.x_ratio,
+            y_ratio: snapped.y_ratio,
+            side: snapped.side,
+        });
+        state.selectedNodeId = nodeId;
+        state.selectedEdgeId = null;
+        renderAll();
+        setStatus("Anchor angelegt. Das Connection Tool snappt auf diese Punkte.", "success");
+    }
+
     function renderNodes() {
         nodeLayer.innerHTML = "";
+
         for (const node of state.nodes) {
             clampNode(node);
+
             const element = document.createElement("article");
             element.className = "builder-node";
             if (state.selectedNodeId === node.id) {
                 element.classList.add("is-selected");
             }
+            if (state.pendingAnchor && state.pendingAnchor.nodeId === node.id) {
+                element.classList.add("is-connect-source");
+            }
             element.dataset.nodeId = node.id;
             element.style.left = `${node.x}px`;
             element.style.top = `${node.y}px`;
             element.style.width = `${node.width}px`;
-            element.style.minHeight = `${node.height}px`;
+            element.style.height = `${node.height}px`;
 
             const body = document.createElement("div");
             body.className = "builder-node-body";
+            body.addEventListener("click", (event) => {
+                event.stopPropagation();
+                if (state.mode === "anchor") {
+                    addManualAnchor(node.id, event);
+                    return;
+                }
+                if (state.mode === "connect") {
+                    selectNode(node.id);
+                    if (node.anchors.length === 0) {
+                        setStatus("Dieses Element hat noch keine Anchorpunkte. Nutze zuerst das Anchor Tool.", "error");
+                    } else {
+                        setStatus("Klicke einen sichtbaren Anchorpunkt, um eine Verbindung zu starten oder zu beenden.", "muted");
+                    }
+                    return;
+                }
+                selectNode(node.id);
+            });
 
             const graphic = document.createElement("div");
             graphic.className = "builder-node-graphic";
@@ -291,19 +575,89 @@
             body.appendChild(label);
             element.appendChild(body);
 
-            element.addEventListener("click", (event) => {
-                event.stopPropagation();
-                if (state.mode === "connect") {
-                    handleConnectionClick(node.id);
-                    return;
+            if (shouldShowAnchors(node)) {
+                const anchorLayer = document.createElement("div");
+                anchorLayer.className = "builder-node-anchor-layer";
+                for (const anchor of node.anchors) {
+                    const anchorButton = document.createElement("button");
+                    anchorButton.type = "button";
+                    anchorButton.className = "builder-anchor";
+                    if (
+                        state.pendingAnchor &&
+                        state.pendingAnchor.nodeId === node.id &&
+                        state.pendingAnchor.anchorId === anchor.id
+                    ) {
+                        anchorButton.classList.add("is-pending");
+                    }
+                    anchorButton.style.left = `${anchor.x_ratio * 100}%`;
+                    anchorButton.style.top = `${anchor.y_ratio * 100}%`;
+                    anchorButton.setAttribute("aria-label", `${node.label} ${anchor.id}`);
+                    anchorButton.addEventListener("click", (event) => {
+                        event.stopPropagation();
+                        if (state.mode !== "connect") {
+                            selectNode(node.id);
+                            return;
+                        }
+
+                        if (!state.pendingAnchor) {
+                            state.pendingAnchor = { nodeId: node.id, anchorId: anchor.id };
+                            state.selectedNodeId = node.id;
+                            state.selectedEdgeId = null;
+                            renderAll();
+                            setStatus("Quell-Anchor gewaehlt. Jetzt den Ziel-Anchor anklicken.", "muted");
+                            return;
+                        }
+
+                        if (state.pendingAnchor.nodeId === node.id && state.pendingAnchor.anchorId === anchor.id) {
+                            state.pendingAnchor = null;
+                            renderAll();
+                            setStatus("Connection Tool zurueckgesetzt.", "muted");
+                            return;
+                        }
+
+                        if (state.pendingAnchor.nodeId === node.id) {
+                            state.pendingAnchor = { nodeId: node.id, anchorId: anchor.id };
+                            renderAll();
+                            setStatus("Quell-Anchor geaendert. Jetzt Ziel-Anchor anklicken.", "muted");
+                            return;
+                        }
+
+                        const nextEdge = {
+                            id: generateId("edge"),
+                            source_node_id: state.pendingAnchor.nodeId,
+                            source_anchor_id: state.pendingAnchor.anchorId,
+                            target_node_id: node.id,
+                            target_anchor_id: anchor.id,
+                        };
+
+                        if (edgeExists(nextEdge)) {
+                            state.pendingAnchor = null;
+                            renderAll();
+                            setStatus("Zwischen diesen Anchors existiert bereits eine Verbindung.", "error");
+                            return;
+                        }
+
+                        pushUndoSnapshot();
+                        state.edges.push(normalizeEdge(nextEdge, state.nodes));
+                        state.pendingAnchor = null;
+                        state.selectedEdgeId = nextEdge.id;
+                        state.selectedNodeId = null;
+                        renderAll();
+                        setStatus("Verbindung erstellt und auf Anchorpunkte gesnappt.", "success");
+                    });
+                    anchorLayer.appendChild(anchorButton);
                 }
-                selectNode(node.id);
-            });
+                element.appendChild(anchorLayer);
+            }
 
             element.addEventListener("pointerdown", (event) => {
-                if (state.mode !== "select") {
+                if (state.mode !== "select" || event.button !== 0) {
                     return;
                 }
+                if (event.target instanceof Element && event.target.closest(".builder-anchor")) {
+                    return;
+                }
+
                 pushUndoSnapshot();
                 const point = pointerToCanvas(event);
                 state.selectedNodeId = node.id;
@@ -326,6 +680,7 @@
     }
 
     function renderAll() {
+        state.nodes.forEach(clampNode);
         renderEdges();
         renderNodes();
         updateEmptyState();
@@ -335,14 +690,15 @@
         if (!state.dragMove) {
             return;
         }
-        const node = selectedNode();
-        if (!node || node.id !== state.dragMove.nodeId) {
+        const node = getNodeById(state.dragMove.nodeId);
+        if (!node) {
             return;
         }
         const point = pointerToCanvas(event);
         node.x = point.x - state.dragMove.offsetX;
         node.y = point.y - state.dragMove.offsetY;
         clampNode(node);
+
         const liveElement = nodeLayer.querySelector(`[data-node-id="${node.id}"]`) || state.dragMove.element;
         liveElement.style.left = `${node.x}px`;
         liveElement.style.top = `${node.y}px`;
@@ -352,7 +708,7 @@
 
     function stopPointerMove() {
         window.removeEventListener("pointermove", handlePointerMove);
-        if (state.dragMove && state.dragMove.element) {
+        if (state.dragMove?.element) {
             state.dragMove.element.classList.remove("is-dragging");
         }
         state.dragMove = null;
@@ -365,11 +721,9 @@
         state.edges = state.edges.filter(
             (edge) => edge.source_node_id !== nodeId && edge.target_node_id !== nodeId,
         );
-        if (state.selectedNodeId === nodeId) {
-            state.selectedNodeId = null;
-        }
-        if (state.pendingConnectionSourceId === nodeId) {
-            state.pendingConnectionSourceId = null;
+        state.selectedNodeId = null;
+        if (state.pendingAnchor?.nodeId === nodeId) {
+            state.pendingAnchor = null;
         }
         renderAll();
         setStatus("Element entfernt. Build noch nicht gespeichert.", "muted");
@@ -378,58 +732,30 @@
     function removeEdge(edgeId) {
         pushUndoSnapshot();
         state.edges = state.edges.filter((edge) => edge.id !== edgeId);
-        if (state.selectedEdgeId === edgeId) {
-            state.selectedEdgeId = null;
-        }
+        state.selectedEdgeId = null;
         renderAll();
         setStatus("Verbindung entfernt. Build noch nicht gespeichert.", "muted");
     }
 
-    function edgeExists(sourceNodeId, targetNodeId) {
-        return state.edges.some(
-            (edge) =>
-                (edge.source_node_id === sourceNodeId && edge.target_node_id === targetNodeId) ||
-                (edge.source_node_id === targetNodeId && edge.target_node_id === sourceNodeId),
-        );
-    }
-
-    function handleConnectionClick(nodeId) {
-        if (!state.pendingConnectionSourceId) {
-            state.pendingConnectionSourceId = nodeId;
-            state.selectedNodeId = nodeId;
-            state.selectedEdgeId = null;
-            renderAll();
-            setStatus("Quelle gewaehlt. Jetzt Ziel-Element anklicken.", "muted");
-            return;
+    function setMode(mode) {
+        state.mode = mode === "anchor" || mode === "connect" ? mode : "select";
+        if (state.mode !== "connect") {
+            state.pendingAnchor = null;
         }
-
-        if (state.pendingConnectionSourceId === nodeId) {
-            state.pendingConnectionSourceId = null;
-            state.selectedNodeId = nodeId;
-            renderAll();
-            setStatus("Connection Tool zurueckgesetzt.", "muted");
-            return;
-        }
-
-        if (edgeExists(state.pendingConnectionSourceId, nodeId)) {
-            state.pendingConnectionSourceId = null;
-            renderAll();
-            setStatus("Zwischen diesen Elementen existiert bereits eine Verbindung.", "error");
-            return;
-        }
-
-        pushUndoSnapshot();
-        const edge = normalizeEdge({
-            id: generateEdgeId(),
-            source_node_id: state.pendingConnectionSourceId,
-            target_node_id: nodeId,
-        });
-        state.edges.push(edge);
-        state.selectedEdgeId = edge.id;
-        state.selectedNodeId = null;
-        state.pendingConnectionSourceId = null;
+        selectToolButton.classList.toggle("is-active", state.mode === "select");
+        anchorToolButton.classList.toggle("is-active", state.mode === "anchor");
+        connectToolButton.classList.toggle("is-active", state.mode === "connect");
         renderAll();
-        setStatus("Verbindung erstellt. Weitere Verbindung oder Select-Tool waehlen.", "success");
+
+        if (state.mode === "anchor") {
+            setStatus("Anchor Tool aktiv. Klicke auf ein Element, um einen Anchor am naechsten Rand anzulegen.", "muted");
+            return;
+        }
+        if (state.mode === "connect") {
+            setStatus("Connection Tool aktiv. Verbindungen starten und enden auf sichtbaren Anchorpunkten.", "muted");
+            return;
+        }
+        setStatus(currentDraftMessage(), "muted");
     }
 
     function addNodeFromSymbol(symbolId, x, y) {
@@ -441,7 +767,7 @@
 
         pushUndoSnapshot();
         const node = normalizeNode({
-            id: generateNodeId(),
+            id: generateId("node"),
             symbol_id: symbol.id,
             label: symbol.label,
             category: symbol.category,
@@ -450,6 +776,7 @@
             height: symbol.height,
             x: x - symbol.width / 2,
             y: y - symbol.height / 2,
+            anchors: symbolAnchors(symbol),
         });
         clampNode(node);
         state.nodes.push(node);
@@ -458,75 +785,6 @@
         renderAll();
         setStatus(`${symbol.label} auf dem Canvas platziert.`, "muted");
     }
-
-    canvas.addEventListener("dragover", (event) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
-    });
-
-    canvas.addEventListener("drop", (event) => {
-        event.preventDefault();
-        const symbolId = event.dataTransfer.getData("text/reactor-symbol-id");
-        if (!symbolId) {
-            return;
-        }
-        const point = pointerToCanvas(event);
-        addNodeFromSymbol(symbolId, point.x, point.y);
-    });
-
-    canvas.addEventListener("click", (event) => {
-        if (event.target === canvas || event.target === nodeLayer || event.target === edgeLayer) {
-            state.selectedNodeId = null;
-            state.selectedEdgeId = null;
-            if (state.mode !== "connect") {
-                state.pendingConnectionSourceId = null;
-            }
-            renderAll();
-        }
-    });
-
-    deleteNodeButton.addEventListener("click", () => {
-        if (state.selectedNodeId) {
-            removeNode(state.selectedNodeId);
-            return;
-        }
-        if (state.selectedEdgeId) {
-            removeEdge(state.selectedEdgeId);
-            return;
-        }
-        setStatus("Kein Element oder keine Verbindung ausgewaehlt.", "error");
-    });
-
-    selectToolButton.addEventListener("click", () => {
-        setMode("select");
-    });
-
-    connectToolButton.addEventListener("click", () => {
-        setMode("connect");
-    });
-
-    document.addEventListener("keydown", (event) => {
-        const activeTag = document.activeElement ? document.activeElement.tagName : "";
-        const isFormField = activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT";
-
-        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z" && !isFormField) {
-            event.preventDefault();
-            const snapshot = state.undoStack.pop();
-            restoreSnapshot(snapshot);
-            return;
-        }
-
-        if ((event.key === "Delete" || event.key === "Backspace") && !isFormField) {
-            event.preventDefault();
-            if (state.selectedNodeId) {
-                removeNode(state.selectedNodeId);
-                return;
-            }
-            if (state.selectedEdgeId) {
-                removeEdge(state.selectedEdgeId);
-            }
-        }
-    });
 
     function buildPayload() {
         const buildName = nameInput.value.trim();
@@ -563,14 +821,31 @@
                     y: node.y,
                     width: node.width,
                     height: node.height,
+                    anchors: node.anchors.map((anchor) => ({
+                        id: anchor.id,
+                        x_ratio: anchor.x_ratio,
+                        y_ratio: anchor.y_ratio,
+                        side: anchor.side,
+                    })),
                 })),
                 edges: state.edges.map((edge) => ({
                     id: edge.id,
                     source_node_id: edge.source_node_id,
+                    source_anchor_id: edge.source_anchor_id,
                     target_node_id: edge.target_node_id,
+                    target_anchor_id: edge.target_anchor_id,
                 })),
             },
         };
+    }
+
+    async function fetchJson(url, options) {
+        const response = await window.fetch(url, options);
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(payload.error || "Request fehlgeschlagen.");
+        }
+        return payload;
     }
 
     async function saveBuild(forceCreate) {
@@ -590,40 +865,98 @@
         const isCreate = forceCreate || !state.currentBuildId;
         const url = isCreate ? "/api/reactor-builds" : `/api/reactor-builds/${state.currentBuildId}`;
         const method = isCreate ? "POST" : "PATCH";
+        const headers = {
+            "Content-Type": "application/json",
+        };
+
+        if (metaData.builderApiToken) {
+            headers.Authorization = `Bearer ${metaData.builderApiToken}`;
+        }
 
         setStatus("Build wird gespeichert ...", "muted");
 
         try {
-            const headers = {
-                "Content-Type": "application/json",
-            };
-            if (metaData.builderApiToken) {
-                headers.Authorization = `Bearer ${metaData.builderApiToken}`;
-            }
-
-            const response = await window.fetch(url, {
+            const savedBuild = await fetchJson(url, {
                 method,
                 headers,
                 body: JSON.stringify(payload),
             });
-            const responsePayload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(responsePayload.error || "Speichern fehlgeschlagen.");
-            }
 
-            const nextBuildId = responsePayload.reactor_build_id;
-            if (!nextBuildId) {
-                throw new Error("Build gespeichert, aber es wurde keine Build-ID zurueckgegeben.");
-            }
-
-            setStatus("Build gespeichert. Seite wird neu geladen ...", "success");
-            const nextUrl = new URL(window.location.href);
-            nextUrl.searchParams.set("build_id", String(nextBuildId));
-            window.location.assign(nextUrl.toString());
+            applyBuildRecord(savedBuild, { clearUndo: false });
+            setStatus("Build gespeichert. SQL-Stand und Builder sind synchron.", "success");
         } catch (error) {
             setStatus(error.message || "Speichern fehlgeschlagen.", "error");
         }
     }
+
+    async function loadBuild(buildId) {
+        if (!buildId) {
+            resetDraft();
+            return;
+        }
+
+        setStatus("Build wird geladen ...", "muted");
+        try {
+            const build = await fetchJson(`/api/reactor-builds/${buildId}`, {
+                method: "GET",
+            });
+            applyBuildRecord(build, { clearUndo: true });
+            setStatus(`Build #${buildId} geladen.`, "success");
+        } catch (error) {
+            setBuildSelection(state.currentBuildId);
+            setStatus(error.message || "Build konnte nicht geladen werden.", "error");
+        }
+    }
+
+    canvas.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+    });
+
+    canvas.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const symbolId = event.dataTransfer.getData("text/reactor-symbol-id");
+        if (!symbolId) {
+            return;
+        }
+        const point = pointerToCanvas(event);
+        addNodeFromSymbol(symbolId, point.x, point.y);
+    });
+
+    canvas.addEventListener("click", (event) => {
+        if (event.target === canvas || event.target === nodeLayer || event.target === edgeLayer) {
+            state.selectedNodeId = null;
+            state.selectedEdgeId = null;
+            if (state.mode !== "connect") {
+                state.pendingAnchor = null;
+            }
+            renderAll();
+        }
+    });
+
+    deleteNodeButton.addEventListener("click", () => {
+        if (state.selectedNodeId) {
+            removeNode(state.selectedNodeId);
+            return;
+        }
+        if (state.selectedEdgeId) {
+            removeEdge(state.selectedEdgeId);
+            return;
+        }
+        setStatus("Kein Element oder keine Verbindung ausgewaehlt.", "error");
+    });
+
+    selectToolButton.addEventListener("click", () => {
+        setMode("select");
+    });
+
+    anchorToolButton.addEventListener("click", () => {
+        setMode("anchor");
+    });
+
+    connectToolButton.addEventListener("click", () => {
+        setMode("connect");
+    });
 
     saveButton.addEventListener("click", () => {
         void saveBuild(false);
@@ -633,6 +966,42 @@
         void saveBuild(true);
     });
 
+    if (newBuildButton) {
+        newBuildButton.addEventListener("click", () => {
+            resetDraft();
+        });
+    }
+
+    if (buildSelect) {
+        buildSelect.addEventListener("change", () => {
+            void loadBuild(parseBuildId(buildSelect.value));
+        });
+    }
+
+    document.addEventListener("keydown", (event) => {
+        const activeTag = document.activeElement ? document.activeElement.tagName : "";
+        const isFormField = activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT";
+
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z" && !isFormField) {
+            event.preventDefault();
+            const snapshot = state.undoStack.pop();
+            restoreSnapshot(snapshot);
+            return;
+        }
+
+        if ((event.key === "Delete" || event.key === "Backspace") && !isFormField) {
+            event.preventDefault();
+            if (state.selectedNodeId) {
+                removeNode(state.selectedNodeId);
+                return;
+            }
+            if (state.selectedEdgeId) {
+                removeEdge(state.selectedEdgeId);
+            }
+        }
+    });
+
+    setBuildSelection(state.currentBuildId);
     setMode("select");
     renderAll();
 })();

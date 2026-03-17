@@ -36,6 +36,12 @@ def _format_datetime(value) -> str:
     return value.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _dt(value) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
 def _status_badge_class(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"success", "succeeded", "completed", "acked", "ok", "online", "active", "configured"}:
