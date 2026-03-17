@@ -6,44 +6,81 @@
 <section class="page-header">
     <span class="eyebrow">Setup</span>
     <h1>Reactor Builder</h1>
-    <p class="page-lead">Links die Symbolbibliothek, rechts die grosse Fliessbildflaeche fuer den spaeteren Anlagenaufbau.</p>
+    <p class="page-lead">Links gespeicherte Builds und Symbolbibliothek, rechts die interaktive Fliessbildflaeche.</p>
 </section>
 {% endblock %}
 
 {% block content %}
 <section class="builder-shell">
     <aside class="card builder-sidebar">
-        <div class="card-header builder-sidebar-header">
-            <h2>Element Library</h2>
-            <p>Die Elemente sind nach Kategorie geordnet und bilden spaeter die Auswahl fuer den Fliessbild-Builder.</p>
-        </div>
         <div class="card-body builder-sidebar-body">
-            {% if symbol_categories %}
-            {% for category in symbol_categories %}
-            <section class="builder-category">
-                <div class="builder-category-header">
-                    <h3>{{ category.label }}</h3>
-                    <span class="badge badge-info">{{ category.symbols | length }}</span>
+            <section class="builder-panel">
+                <div class="builder-panel-header">
+                    <h2>Builds</h2>
+                    <a class="btn" href="{{ url_for('web.reactor_builder_view') }}">New Build</a>
                 </div>
-                <div class="builder-symbol-list">
-                    {% for symbol in category.symbols %}
-                    <article class="builder-symbol-item">
-                        <div class="builder-symbol-thumb">
-                            <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
-                        </div>
-                        <div class="builder-symbol-copy">
-                            <strong>{{ symbol.label }}</strong>
-                            <p><code>{{ symbol.id }}</code></p>
-                            <p>{{ symbol.port_count }} Ports</p>
-                        </div>
-                    </article>
+                {% if saved_builds %}
+                <div class="builder-build-list">
+                    {% for build in saved_builds %}
+                    <a
+                        class="builder-build-link{% if current_build_id == build.reactor_build_id %} active{% endif %}"
+                        href="{{ url_for('web.reactor_builder_view', build_id=build.reactor_build_id) }}"
+                    >
+                        <strong>{{ build.build_name }}</strong>
+                        <span>{{ build.build_date }}</span>
+                        <span>{{ build.updated_by or build.created_by }}</span>
+                        <span>{{ build.node_count }} Elemente</span>
+                    </a>
                     {% endfor %}
                 </div>
+                {% else %}
+                <p class="empty-state">Noch keine gespeicherten Builds vorhanden.</p>
+                {% endif %}
             </section>
-            {% endfor %}
-            {% else %}
-            <p class="empty-state">Noch keine Symbole in der Library registriert.</p>
-            {% endif %}
+
+            <section class="builder-panel">
+                <div class="builder-panel-header">
+                    <h2>Element Library</h2>
+                    <p>Alle Bibliothekselemente koennen per Drag-and-Drop auf die Fliessbildflaeche gezogen werden.</p>
+                </div>
+                {% if symbol_categories %}
+                <div class="builder-library">
+                    {% for category in symbol_categories %}
+                    <details class="builder-category" open>
+                        <summary class="builder-category-summary">
+                            <span>{{ category.label }}</span>
+                            <span class="badge badge-info">{{ category.symbols | length }}</span>
+                        </summary>
+                        <div class="builder-symbol-list">
+                            {% for symbol in category.symbols %}
+                            <article
+                                class="builder-symbol-item"
+                                draggable="true"
+                                data-symbol-id="{{ symbol.id }}"
+                                data-symbol-label="{{ symbol.label }}"
+                                data-symbol-category="{{ symbol.category }}"
+                                data-symbol-svg-url="{{ symbol.svg_url }}"
+                                data-symbol-width="{{ symbol.default_width }}"
+                                data-symbol-height="{{ symbol.default_height }}"
+                            >
+                                <div class="builder-symbol-thumb">
+                                    <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
+                                </div>
+                                <div class="builder-symbol-copy">
+                                    <strong>{{ symbol.label }}</strong>
+                                    <p><code>{{ symbol.id }}</code></p>
+                                    <p>{{ symbol.port_count }} Ports</p>
+                                </div>
+                            </article>
+                            {% endfor %}
+                        </div>
+                    </details>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p class="empty-state">Noch keine Symbole in der Library registriert.</p>
+                {% endif %}
+            </section>
         </div>
     </aside>
 
@@ -52,36 +89,60 @@
             <header class="builder-board-header">
                 <div class="builder-board-title">
                     <span class="eyebrow">Build</span>
-                    <h2>{{ builder_name }}</h2>
-                    <p class="muted">Arbeitsflaeche fuer Reaktoren, Pumpen, Ventile, Sensoren und Port-Zuweisungen.</p>
+                    <div class="builder-field builder-field-title">
+                        <label for="builder-name-input">Build Name</label>
+                        <input id="builder-name-input" type="text" value="{{ builder_name }}" maxlength="120">
+                    </div>
+                    <p class="muted">Reaktoren, Pumpen, Ventile und Sensoren aufbauen, verschieben und als Build speichern.</p>
                 </div>
                 <div class="builder-board-meta">
-                    <div class="builder-meta-item">
+                    <label class="builder-meta-field">
                         <span>Date</span>
-                        <strong>{{ builder_date }}</strong>
-                    </div>
-                    <div class="builder-meta-item">
+                        <input id="builder-date-input" type="date" value="{{ builder_date }}">
+                    </label>
+                    <label class="builder-meta-field">
                         <span>User</span>
-                        <strong>{{ builder_user }}</strong>
-                    </div>
-                    <div class="builder-meta-item">
-                        <span>Symbols</span>
-                        <strong>{{ library_symbol_total }}</strong>
-                    </div>
+                        <input id="builder-user-input" type="text" value="{{ builder_user }}" maxlength="120">
+                    </label>
+                    <label class="builder-meta-field builder-meta-field-token">
+                        <span>API Token</span>
+                        <input id="builder-token-input" type="password" placeholder="required for save">
+                    </label>
                 </div>
             </header>
 
-            <div class="builder-canvas">
-                <div class="builder-canvas-note">
+            <div class="builder-toolbar">
+                <div class="builder-toolbar-actions">
+                    <button id="builder-save-button" class="btn btn-primary" type="button">Save Build</button>
+                    <button id="builder-save-as-button" class="btn" type="button">Save as New</button>
+                    <button id="builder-delete-node-button" class="btn" type="button">Delete Selected</button>
+                </div>
+                <p id="builder-status" class="builder-status muted">
+                    {% if current_build_id %}
+                    Build #{{ current_build_id }} geladen.
+                    {% else %}
+                    Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.
+                    {% endif %}
+                </p>
+            </div>
+
+            <div class="builder-canvas" id="builder-canvas">
+                <div class="builder-canvas-empty" id="builder-canvas-empty">
                     <span class="section-label">Canvas</span>
                     <h3>Fliessbild-Arbeitsflaeche</h3>
-                    <p>
-                        Hier wird spaeter das Reaktor-Fliessbild aufgebaut. Die linke Library liefert die Symbole,
-                        die grosse Flaeche rechts dient als Aufbau- und Verdrahtungsbereich.
-                    </p>
+                    <p>Ziehe links ein Element in diese Flaeche und verschiebe es danach direkt im Canvas.</p>
                 </div>
+                <div class="builder-node-layer" id="builder-node-layer"></div>
             </div>
         </article>
     </section>
 </section>
+
+<script id="builder-library-data" type="application/json">{{ symbol_categories | tojson }}</script>
+<script id="builder-build-data" type="application/json">{{ current_build | tojson }}</script>
+<script id="builder-meta-data" type="application/json">{{ {"currentBuildId": current_build_id, "apiAuthRequired": api_auth_required} | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/reactor_builder.js') }}"></script>
 {% endblock %}

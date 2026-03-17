@@ -251,6 +251,23 @@ CREATE TABLE IF NOT EXISTS soft_sensor_estimate (
     ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS reactor_build (
+  reactor_build_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  build_name VARCHAR(120) NOT NULL,
+  build_date DATE NOT NULL,
+  created_by VARCHAR(120) NOT NULL,
+  updated_by VARCHAR(120) NULL,
+  definition_json JSON NOT NULL,
+  notes TEXT NULL,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (reactor_build_id),
+  KEY idx_reactor_build_name (build_name),
+  KEY idx_reactor_build_active (is_active),
+  KEY idx_reactor_build_date (build_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE OR REPLACE VIEW v_latest_measurement_per_channel AS
 SELECT m.*
 FROM measurement m

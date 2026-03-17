@@ -10,7 +10,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
 from .extensions import db
-from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement
+from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild
 from .services.drivers import list_supported_protocols
 
 
@@ -134,6 +134,31 @@ def _group_flowsheet_library(symbols: list[dict[str, Any]]) -> list[dict[str, An
             ),
         )
     return ordered_groups
+
+
+def _reactor_build_summary_to_dict(item: ReactorBuild) -> dict[str, Any]:
+    definition = item.definition_json if isinstance(item.definition_json, dict) else {}
+    nodes = definition.get("nodes", []) if isinstance(definition, dict) else []
+    return {
+        "reactor_build_id": item.reactor_build_id,
+        "build_name": item.build_name,
+        "build_date": item.build_date.isoformat() if item.build_date else "",
+        "created_by": item.created_by,
+        "updated_by": item.updated_by,
+        "updated_at": _dt(item.updated_at),
+        "node_count": len(nodes) if isinstance(nodes, list) else 0,
+    }
+
+
+def _reactor_build_detail_to_dict(item: ReactorBuild | None) -> dict[str, Any] | None:
+    if item is None:
+        return None
+    payload = _reactor_build_summary_to_dict(item)
+    payload["definition_json"] = item.definition_json if isinstance(item.definition_json, dict) else {}
+    payload["notes"] = item.notes
+    payload["is_active"] = item.is_active
+    payload["created_at"] = _dt(item.created_at)
+    return payload
 
 
 def _control_summary() -> dict[str, int]:
@@ -283,18 +308,39 @@ def alerts_view() -> str:
 @web_bp.get("/reactor-builder")
 def reactor_builder_view() -> str:
     symbol_library = _load_flowsheet_library()
-    builder_name = (request.args.get("name") or "").strip() or "Untitled Reactor Build"
-    builder_user = (request.args.get("user") or "").strip() or "operator"
-    builder_date = (request.args.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    saved_builds = (
+        ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
+    )
+    build_id = request.args.get("build_id", type=int)
+    current_build = db.session.get(ReactorBuild, build_id) if build_id else None
+
+    builder_name = (
+        current_build.build_name
+        if current_build is not None
+        else (request.args.get("name") or "").strip() or "Untitled Reactor Build"
+    )
+    builder_user = (
+        current_build.updated_by or current_build.created_by
+        if current_build is not None
+        else (request.args.get("user") or "").strip() or "operator"
+    )
+    builder_date = (
+        current_build.build_date.isoformat()
+        if current_build is not None and current_build.build_date is not None
+        else (request.args.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    )
 
     return render_template(
         "reactor_builder.html",
         active_page="reactor_builder",
+        current_build_id=None if current_build is None else current_build.reactor_build_id,
+        current_build=_reactor_build_detail_to_dict(current_build),
         builder_name=builder_name,
         builder_user=builder_user,
         builder_date=builder_date,
         library_symbol_total=len(symbol_library),
         symbol_categories=_group_flowsheet_library(symbol_library),
+        saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
         summary=_control_summary(),
         **_base_context(),
     )

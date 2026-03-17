@@ -351,10 +351,6 @@ h2 {
     overflow: hidden;
 }
 
-.builder-sidebar-header h2 {
-    margin-top: 0.1rem;
-}
-
 .builder-sidebar-body {
     display: grid;
     gap: 1rem;
@@ -362,22 +358,82 @@ h2 {
     overflow-y: auto;
 }
 
-.builder-category + .builder-category {
+.builder-panel {
+    display: grid;
+    gap: 0.9rem;
+}
+
+.builder-panel + .builder-panel {
     padding-top: 1rem;
     border-top: 1px solid rgba(212, 198, 178, 0.75);
 }
 
-.builder-category-header {
+.builder-panel-header {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.builder-panel-header h2 {
+    margin-top: 0.1rem;
+}
+
+.builder-build-list,
+.builder-library {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.builder-build-link {
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.85rem 0.9rem;
+    border: 1px solid rgba(212, 198, 178, 0.8);
+    border-radius: var(--radius-sm);
+    background: var(--surface-alt);
+    color: var(--text);
+    transition: border-color 0.18s ease, transform 0.18s ease;
+}
+
+.builder-build-link span {
+    color: var(--muted);
+    font-size: 0.88rem;
+}
+
+.builder-build-link:hover,
+.builder-build-link.active {
+    border-color: rgba(15, 92, 82, 0.35);
+    transform: translateY(-1px);
+    text-decoration: none;
+}
+
+.builder-category {
+    border: 1px solid rgba(212, 198, 178, 0.75);
+    border-radius: var(--radius-sm);
+    background: rgba(248, 242, 232, 0.65);
+}
+
+.builder-category[open] {
+    background: var(--surface-alt);
+}
+
+.builder-category-summary {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    margin-bottom: 0.75rem;
+    padding: 0.85rem 0.95rem;
+    cursor: pointer;
+    list-style: none;
+}
+
+.builder-category-summary::-webkit-details-marker {
+    display: none;
 }
 
 .builder-symbol-list {
     display: grid;
     gap: 0.75rem;
+    padding: 0 0.85rem 0.85rem;
 }
 
 .builder-symbol-item {
@@ -388,6 +444,12 @@ h2 {
     border: 1px solid rgba(212, 198, 178, 0.8);
     border-radius: var(--radius-sm);
     background: var(--surface-alt);
+    cursor: grab;
+    user-select: none;
+}
+
+.builder-symbol-item:active {
+    cursor: grabbing;
 }
 
 .builder-symbol-thumb {
@@ -432,9 +494,8 @@ h2 {
 }
 
 .builder-board-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
     gap: 1rem;
     padding: 1.35rem 1.4rem 1.25rem;
     border-bottom: 1px solid rgba(212, 198, 178, 0.75);
@@ -445,23 +506,14 @@ h2 {
     font-size: clamp(1.8rem, 4vw, 2.5rem);
 }
 
-.builder-board-meta {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 0.75rem;
+.builder-field,
+.builder-meta-field {
+    display: grid;
+    gap: 0.35rem;
 }
 
-.builder-meta-item {
-    min-width: 120px;
-    padding: 0.75rem 0.85rem;
-    border: 1px solid rgba(212, 198, 178, 0.75);
-    border-radius: var(--radius-sm);
-    background: var(--surface-alt);
-}
-
-.builder-meta-item span {
-    display: block;
+.builder-field label,
+.builder-meta-field span {
     color: var(--muted);
     font-size: 0.78rem;
     font-weight: 700;
@@ -469,10 +521,54 @@ h2 {
     text-transform: uppercase;
 }
 
-.builder-meta-item strong {
-    display: block;
-    margin-top: 0.3rem;
-    font-size: 1rem;
+.builder-field input,
+.builder-meta-field input {
+    width: 100%;
+    min-height: 2.8rem;
+    padding: 0.7rem 0.85rem;
+    border: 1px solid rgba(212, 198, 178, 0.9);
+    border-radius: 10px;
+    background: rgba(255, 253, 250, 0.95);
+    color: var(--text);
+    font: inherit;
+}
+
+.builder-field-title input {
+    font-size: clamp(1.3rem, 3vw, 2rem);
+    font-weight: 700;
+}
+
+.builder-board-meta {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.builder-meta-field-token input {
+    font-family: "IBM Plex Mono", "Consolas", monospace;
+}
+
+.builder-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.95rem 1.4rem;
+    border-bottom: 1px solid rgba(212, 198, 178, 0.7);
+    background: rgba(248, 242, 232, 0.7);
+}
+
+.builder-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+}
+
+.builder-status {
+    margin: 0;
+}
+
+.builder-status-success {
+    color: var(--success);
 }
 
 .builder-canvas {
@@ -484,6 +580,7 @@ h2 {
         linear-gradient(90deg, rgba(15, 92, 82, 0.045) 1px, transparent 1px),
         linear-gradient(180deg, rgba(255, 253, 250, 0.92), rgba(248, 242, 232, 0.86));
     background-size: 28px 28px, 28px 28px, auto;
+    overflow: hidden;
 }
 
 .builder-canvas::after {
@@ -495,7 +592,7 @@ h2 {
     pointer-events: none;
 }
 
-.builder-canvas-note {
+.builder-canvas-empty {
     position: relative;
     z-index: 1;
     max-width: 420px;
@@ -505,13 +602,88 @@ h2 {
     background: rgba(255, 253, 250, 0.88);
 }
 
-.builder-canvas-note h3 {
+.builder-canvas-empty.is-hidden {
+    display: none;
+}
+
+.builder-canvas-empty h3 {
     margin-top: 0.15rem;
 }
 
-.builder-canvas-note p {
+.builder-canvas-empty p {
     margin: 0.6rem 0 0;
     color: var(--muted);
+}
+
+.builder-node-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+}
+
+.builder-node {
+    position: absolute;
+    display: grid;
+    align-content: start;
+    gap: 0.5rem;
+    padding: 0.55rem;
+    border: 1px solid rgba(212, 198, 178, 0.95);
+    border-radius: 14px;
+    background: rgba(255, 253, 250, 0.98);
+    box-shadow: 0 10px 22px rgba(24, 35, 33, 0.1);
+    cursor: grab;
+    user-select: none;
+}
+
+.builder-node.is-selected {
+    border-color: rgba(15, 92, 82, 0.7);
+    box-shadow: 0 14px 28px rgba(15, 92, 82, 0.16);
+}
+
+.builder-node.is-dragging {
+    cursor: grabbing;
+}
+
+.builder-node-delete {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.35rem;
+    width: 1.7rem;
+    height: 1.7rem;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(154, 47, 36, 0.12);
+    color: var(--danger);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.builder-node-body {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.builder-node-graphic {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 72px;
+}
+
+.builder-node-graphic img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    pointer-events: none;
+}
+
+.builder-node-label {
+    font-size: 0.88rem;
+    font-weight: 700;
+    text-align: center;
+    color: var(--text);
+    pointer-events: none;
 }
 
 .tile-grid {

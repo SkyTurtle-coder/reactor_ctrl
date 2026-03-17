@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hmac
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
@@ -17,6 +17,7 @@ from .models import (
     DeviceConnection,
     DeviceServer,
     Measurement,
+    ReactorBuild,
 )
 from .services import DeviceCommandError, TcpSocketConfig, execute_device_command, list_supported_protocols, probe_tcp_socket
 
@@ -147,6 +148,17 @@ def _parse_datetime(value: Any, *, field_name: str) -> datetime | None:
     raise ValueError(f"Field '{field_name}' must be an ISO datetime string.")
 
 
+def _parse_date(value: Any, *, field_name: str) -> date:
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError(f"Field '{field_name}' must be an ISO date string (YYYY-MM-DD).") from exc
+    raise ValueError(f"Field '{field_name}' must be an ISO date string (YYYY-MM-DD).")
+
+
 def _validate_choice(value: str | None, *, field_name: str, allowed: set[str], required: bool = False) -> str | None:
     cleaned = _clean_string(value, field_name=field_name, required=required)
     if cleaned is None:
@@ -157,6 +169,13 @@ def _validate_choice(value: str | None, *, field_name: str, allowed: set[str], r
         choices = ", ".join(sorted(allowed))
         raise ValueError(f"Field '{field_name}' must be one of: {choices}.")
     return normalized
+
+
+def _parse_float(value: Any, *, field_name: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Field '{field_name}' must be a number.") from exc
 
 
 def _default_nport_tcp_port(port_number: int) -> int:
@@ -344,6 +363,118 @@ def _measurement_to_dict(item: Measurement) -> dict[str, Any]:
     }
 
 
+def _reactor_build_to_dict(item: ReactorBuild, *, include_definition: bool = True) -> dict[str, Any]:
+    definition = item.definition_json if isinstance(item.definition_json, dict) else {}
+    nodes = definition.get("nodes", []) if isinstance(definition, dict) else []
+    payload = {
+        "reactor_build_id": item.reactor_build_id,
+        "build_name": item.build_name,
+        "build_date": item.build_date.isoformat() if item.build_date else None,
+        "created_by": item.created_by,
+        "updated_by": item.updated_by,
+        "notes": item.notes,
+        "is_active": item.is_active,
+        "created_at": _dt(item.created_at),
+        "updated_at": _dt(item.updated_at),
+        "node_count": len(nodes) if isinstance(nodes, list) else 0,
+    }
+    if include_definition:
+        payload["definition_json"] = definition
+    return payload
+
+
+def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("Field 'definition_json' must be a JSON object.")
+
+    canvas_value = value.get("canvas", {})
+    if canvas_value in (None, ""):
+        canvas_value = {}
+    if not isinstance(canvas_value, dict):
+        raise ValueError("Field 'definition_json.canvas' must be a JSON object.")
+
+    canvas_width = int(round(_parse_float(canvas_value.get("width", 2400), field_name="definition_json.canvas.width")))
+    canvas_height = int(round(_parse_float(canvas_value.get("height", 1600), field_name="definition_json.canvas.height")))
+    if canvas_width < 200 or canvas_height < 200:
+        raise ValueError("Field 'definition_json.canvas' must be at least 200x200.")
+
+    raw_nodes = value.get("nodes", [])
+    if raw_nodes in (None, ""):
+        raw_nodes = []
+    if not isinstance(raw_nodes, list):
+        raise ValueError("Field 'definition_json.nodes' must be a list.")
+
+    normalized_nodes: list[dict[str, Any]] = []
+    for index, node in enumerate(raw_nodes, start=1):
+        if not isinstance(node, dict):
+            raise ValueError(f"Node {index} in 'definition_json.nodes' must be an object.")
+
+        node_id = _clean_string(node.get("id"), field_name=f"definition_json.nodes[{index}].id", required=True)
+        symbol_id = _clean_string(
+            node.get("symbol_id"),
+            field_name=f"definition_json.nodes[{index}].symbol_id",
+            required=True,
+        )
+        label = _clean_string(node.get("label"), field_name=f"definition_json.nodes[{index}].label") or symbol_id
+        category = _clean_string(node.get("category"), field_name=f"definition_json.nodes[{index}].category")
+        svg_url = _clean_string(node.get("svg_url"), field_name=f"definition_json.nodes[{index}].svg_url")
+
+        x_value = _parse_float(node.get("x", 0), field_name=f"definition_json.nodes[{index}].x")
+        y_value = _parse_float(node.get("y", 0), field_name=f"definition_json.nodes[{index}].y")
+        width_value = _parse_float(node.get("width", 120), field_name=f"definition_json.nodes[{index}].width")
+        height_value = _parse_float(node.get("height", 80), field_name=f"definition_json.nodes[{index}].height")
+
+        if width_value <= 0 or height_value <= 0:
+            raise ValueError(f"Node {index} width and height must be > 0.")
+
+        assert node_id is not None
+        assert symbol_id is not None
+        normalized_nodes.append(
+            {
+                "id": node_id,
+                "symbol_id": symbol_id,
+                "label": label,
+                "category": category,
+                "svg_url": svg_url,
+                "x": round(x_value, 2),
+                "y": round(y_value, 2),
+                "width": round(width_value, 2),
+                "height": round(height_value, 2),
+            }
+        )
+
+    return {
+        "canvas": {
+            "width": canvas_width,
+            "height": canvas_height,
+        },
+        "nodes": normalized_nodes,
+    }
+
+
+def _apply_reactor_build_payload(item: ReactorBuild, payload: dict[str, Any], *, partial: bool) -> None:
+    if not partial or "build_name" in payload:
+        item.build_name = _clean_string(payload.get("build_name"), field_name="build_name", required=True)
+    if not partial or "build_date" in payload:
+        item.build_date = _parse_date(payload.get("build_date"), field_name="build_date")
+    if not partial or "created_by" in payload:
+        item.created_by = _clean_string(payload.get("created_by"), field_name="created_by", required=True)
+    if "updated_by" in payload:
+        item.updated_by = _clean_string(payload.get("updated_by"), field_name="updated_by")
+    elif not partial:
+        item.updated_by = item.created_by
+    if not partial or "definition_json" in payload:
+        item.definition_json = _validate_reactor_build_definition(payload.get("definition_json"))
+    if "notes" in payload:
+        item.notes = _clean_string(payload.get("notes"), field_name="notes")
+    elif not partial:
+        item.notes = None
+    if "is_active" in payload:
+        item.is_active = _parse_bool(payload.get("is_active"), field_name="is_active")
+    if item.updated_by is None:
+        item.updated_by = item.created_by
+
+
 def _apply_device_payload(item: Device, payload: dict[str, Any], *, partial: bool) -> None:
     if not partial or "asset_serial" in payload:
         item.asset_serial = _clean_string(payload.get("asset_serial"), field_name="asset_serial", required=True)
@@ -525,6 +656,7 @@ def api_index():
             "resources": {
                 "devices": "/api/devices",
                 "device_protocols": "/api/device-protocols",
+                "reactor_builds": "/api/reactor-builds",
                 "device_servers": "/api/device-servers",
                 "device_connections": "/api/device-connections",
                 "device_binding_example": "/api/devices/<device_id>/binding",
@@ -539,6 +671,56 @@ def api_index():
 @api_bp.get("/device-protocols")
 def list_device_protocol_options():
     return jsonify({"items": list_supported_protocols()})
+
+
+@api_bp.get("/reactor-builds")
+def list_reactor_builds():
+    items = (
+        ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
+    )
+    return jsonify({"items": [_reactor_build_to_dict(item, include_definition=False) for item in items]})
+
+
+@api_bp.post("/reactor-builds")
+def create_reactor_build():
+    try:
+        payload = _load_json_payload()
+        item = ReactorBuild()
+        _apply_reactor_build_payload(item, payload, partial=False)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    db.session.add(item)
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify(_reactor_build_to_dict(item, include_definition=True)), 201
+
+
+@api_bp.get("/reactor-builds/<int:reactor_build_id>")
+def get_reactor_build(reactor_build_id: int):
+    item, error_response = _get_or_404(ReactorBuild, reactor_build_id, "ReactorBuild")
+    if error_response:
+        return error_response
+    return jsonify(_reactor_build_to_dict(item, include_definition=True))
+
+
+@api_bp.patch("/reactor-builds/<int:reactor_build_id>")
+def update_reactor_build(reactor_build_id: int):
+    item, error_response = _get_or_404(ReactorBuild, reactor_build_id, "ReactorBuild")
+    if error_response:
+        return error_response
+
+    try:
+        payload = _load_json_payload()
+        _apply_reactor_build_payload(item, payload, partial=True)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify(_reactor_build_to_dict(item, include_definition=True))
 
 
 @api_bp.get("/devices")
