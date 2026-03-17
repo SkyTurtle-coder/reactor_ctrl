@@ -18,6 +18,16 @@
     const selectToolButton = document.getElementById("builder-select-tool");
     const anchorToolButton = document.getElementById("builder-anchor-tool");
     const connectToolButton = document.getElementById("builder-connect-tool");
+    const layoutViewTabButton = document.getElementById("builder-layout-view-tab");
+    const communicationViewTabButton = document.getElementById("builder-communication-view-tab");
+    const layoutView = document.getElementById("builder-layout-view");
+    const communicationView = document.getElementById("builder-communication-view");
+    const communicationBody = document.getElementById("builder-communication-body");
+    const instanceModal = document.getElementById("builder-instance-modal");
+    const instanceModalCopy = document.getElementById("builder-instance-modal-copy");
+    const instanceIdInput = document.getElementById("builder-instance-id-input");
+    const instanceCancelButton = document.getElementById("builder-instance-cancel-button");
+    const instanceConfirmButton = document.getElementById("builder-instance-confirm-button");
     const statusElement = document.getElementById("builder-status");
     const libraryItems = Array.from(document.querySelectorAll(".builder-symbol-item"));
 
@@ -130,12 +140,14 @@
 
     const state = {
         currentBuildId: parseBuildId(metaData.currentBuildId),
+        currentView: "layout",
         mode: "select",
         nodes: [],
         edges: [],
         selectedNodeId: null,
         selectedEdgeId: null,
         pendingAnchor: null,
+        pendingPlacement: null,
         dragMove: null,
         undoStack: [],
     };
@@ -189,6 +201,50 @@
             : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.";
     }
 
+    function fallbackInstanceId(symbolId, nodeId) {
+        const base = String(symbolId || "item")
+            .replace(/[^a-z0-9]+/gi, "-")
+            .replace(/^-+|-+$/g, "")
+            .toUpperCase() || "ITEM";
+        const tail = String(nodeId || "").replace(/[^a-z0-9]/gi, "").slice(-4).toUpperCase() || "0001";
+        return `${base}-${tail}`;
+    }
+
+    function normalizeCommunication(communication) {
+        const payload = communication && typeof communication === "object" ? communication : {};
+        return {
+            device_server_code: asString(payload.device_server_code, ""),
+            connection_label: asString(payload.connection_label, ""),
+            protocol: asString(payload.protocol, ""),
+            notes: asString(payload.notes, ""),
+        };
+    }
+
+    function hasDuplicateInstanceId(candidate, excludeNodeId) {
+        const normalized = String(candidate || "").trim().toLowerCase();
+        if (!normalized) {
+            return false;
+        }
+        return state.nodes.some(
+            (node) => node.id !== excludeNodeId && String(node.instance_id || "").trim().toLowerCase() === normalized,
+        );
+    }
+
+    function suggestionForSymbol(symbolId) {
+        const symbol = libraryById.get(symbolId);
+        const base = String(symbol?.id || symbolId || "item")
+            .replace(/[^a-z0-9]+/gi, "-")
+            .replace(/^-+|-+$/g, "")
+            .toUpperCase() || "ITEM";
+        let index = 1;
+        let candidate = `${base}-${String(index).padStart(2, "0")}`;
+        while (hasDuplicateInstanceId(candidate, null)) {
+            index += 1;
+            candidate = `${base}-${String(index).padStart(2, "0")}`;
+        }
+        return candidate;
+    }
+
     function symbolAnchors(symbol) {
         if (!symbol || !Array.isArray(symbol.ports)) {
             return [];
@@ -217,10 +273,16 @@
         const anchors = Array.isArray(node?.anchors) && node.anchors.length > 0
             ? node.anchors.map(normalizeAnchor)
             : symbolAnchors(symbol);
+        const nodeId = asString(node?.id, generateId("node"));
+        const instanceId = asString(
+            node?.instance_id,
+            node?.label && node?.label !== symbol?.label ? node.label : fallbackInstanceId(symbol?.id, nodeId),
+        );
 
         return {
-            id: asString(node?.id, generateId("node")),
+            id: nodeId,
             symbol_id: asString(node?.symbol_id, symbol?.id || ""),
+            instance_id: instanceId,
             label: asString(node?.label, symbol?.label || node?.symbol_id || "Symbol"),
             category: asString(node?.category, symbol?.category || ""),
             svg_url: asString(node?.svg_url, symbol?.svg_url || ""),
@@ -228,6 +290,7 @@
             y: asNumber(node?.y, 0),
             width,
             height,
+            communication: normalizeCommunication(node?.communication),
             anchors,
         };
     }
@@ -407,6 +470,84 @@
         emptyState.classList.toggle("is-hidden", state.nodes.length > 0);
     }
 
+    function renderCommunicationTable() {
+        if (!communicationBody) {
+            return;
+        }
+
+        communicationBody.innerHTML = "";
+        if (state.nodes.length === 0) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 6;
+            cell.className = "muted";
+            cell.textContent = "Noch keine Elemente im aktuellen Build.";
+            row.appendChild(cell);
+            communicationBody.appendChild(row);
+            return;
+        }
+
+        const orderedNodes = [...state.nodes].sort((left, right) =>
+            String(left.instance_id || "").localeCompare(String(right.instance_id || "")),
+        );
+
+        for (const node of orderedNodes) {
+            const row = document.createElement("tr");
+
+            const instanceCell = document.createElement("td");
+            const instanceInput = document.createElement("input");
+            instanceInput.type = "text";
+            instanceInput.value = node.instance_id;
+            instanceInput.maxLength = 80;
+            instanceInput.addEventListener("change", () => {
+                const nextValue = instanceInput.value.trim();
+                if (!nextValue) {
+                    instanceInput.value = node.instance_id;
+                    setStatus("Element ID darf nicht leer sein.", "error");
+                    return;
+                }
+                if (hasDuplicateInstanceId(nextValue, node.id)) {
+                    instanceInput.value = node.instance_id;
+                    setStatus(`Element ID ${nextValue} existiert bereits im Build.`, "error");
+                    return;
+                }
+                pushUndoSnapshot();
+                node.instance_id = nextValue;
+                renderAll();
+                setStatus("Element ID aktualisiert. Build noch nicht gespeichert.", "muted");
+            });
+            instanceCell.appendChild(instanceInput);
+            row.appendChild(instanceCell);
+
+            const typeCell = document.createElement("td");
+            typeCell.textContent = node.symbol_id;
+            row.appendChild(typeCell);
+
+            const communicationFields = [
+                { key: "device_server_code", placeholder: "MOXA-01" },
+                { key: "connection_label", placeholder: "Port 3 / COM" },
+                { key: "protocol", placeholder: "RS-232 / ASCII" },
+                { key: "notes", placeholder: "optional" },
+            ];
+
+            for (const field of communicationFields) {
+                const cell = document.createElement("td");
+                const input = document.createElement("input");
+                input.type = "text";
+                input.value = node.communication[field.key] || "";
+                input.placeholder = field.placeholder;
+                input.addEventListener("change", () => {
+                    node.communication[field.key] = input.value.trim();
+                    setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
+                });
+                cell.appendChild(input);
+                row.appendChild(cell);
+            }
+
+            communicationBody.appendChild(row);
+        }
+    }
+
     function renderEdges() {
         while (edgeLayer.firstChild) {
             edgeLayer.removeChild(edgeLayer.firstChild);
@@ -569,7 +710,14 @@
 
             const label = document.createElement("div");
             label.className = "builder-node-label";
-            label.textContent = node.label;
+            const instance = document.createElement("span");
+            instance.className = "builder-node-instance";
+            instance.textContent = node.instance_id;
+            const type = document.createElement("span");
+            type.className = "builder-node-type";
+            type.textContent = node.symbol_id;
+            label.appendChild(instance);
+            label.appendChild(type);
 
             body.appendChild(graphic);
             body.appendChild(label);
@@ -684,6 +832,7 @@
         renderEdges();
         renderNodes();
         updateEmptyState();
+        renderCommunicationTable();
     }
 
     function handlePointerMove(event) {
@@ -758,7 +907,61 @@
         setStatus(currentDraftMessage(), "muted");
     }
 
-    function addNodeFromSymbol(symbolId, x, y) {
+    function setView(viewName) {
+        state.currentView = viewName === "communication" ? "communication" : "layout";
+        layoutView.classList.toggle("is-hidden", state.currentView !== "layout");
+        communicationView.classList.toggle("is-hidden", state.currentView !== "communication");
+        layoutViewTabButton.classList.toggle("btn-primary", state.currentView === "layout");
+        communicationViewTabButton.classList.toggle("btn-primary", state.currentView === "communication");
+    }
+
+    function closeInstanceModal() {
+        state.pendingPlacement = null;
+        instanceIdInput.value = "";
+        instanceModal.classList.add("is-hidden");
+    }
+
+    function openInstanceModal(symbolId, x, y) {
+        const symbol = libraryById.get(symbolId);
+        if (!symbol) {
+            setStatus(`Symbol ${symbolId} ist nicht in der Library registriert.`, "error");
+            return;
+        }
+        state.pendingPlacement = { symbolId, x, y };
+        instanceModalCopy.textContent = `Vergib eine eindeutige ID für ${symbol.label}. Diese ID wird im Canvas angezeigt und für die Kommunikationszuordnung verwendet.`;
+        instanceIdInput.value = suggestionForSymbol(symbolId);
+        instanceModal.classList.remove("is-hidden");
+        window.setTimeout(() => {
+            instanceIdInput.focus();
+            instanceIdInput.select();
+        }, 0);
+    }
+
+    function confirmInstancePlacement() {
+        if (!state.pendingPlacement) {
+            closeInstanceModal();
+            return;
+        }
+
+        const instanceId = instanceIdInput.value.trim();
+        if (!instanceId) {
+            setStatus("Element ID darf nicht leer sein.", "error");
+            instanceIdInput.focus();
+            return;
+        }
+        if (hasDuplicateInstanceId(instanceId, null)) {
+            setStatus(`Element ID ${instanceId} existiert bereits im Build.`, "error");
+            instanceIdInput.focus();
+            instanceIdInput.select();
+            return;
+        }
+
+        const placement = state.pendingPlacement;
+        closeInstanceModal();
+        addNodeFromSymbol(placement.symbolId, placement.x, placement.y, instanceId);
+    }
+
+    function addNodeFromSymbol(symbolId, x, y, instanceId) {
         const symbol = libraryById.get(symbolId);
         if (!symbol) {
             setStatus(`Symbol ${symbolId} ist nicht in der Library registriert.`, "error");
@@ -769,6 +972,7 @@
         const node = normalizeNode({
             id: generateId("node"),
             symbol_id: symbol.id,
+            instance_id: instanceId,
             label: symbol.label,
             category: symbol.category,
             svg_url: symbol.svg_url,
@@ -776,6 +980,7 @@
             height: symbol.height,
             x: x - symbol.width / 2,
             y: y - symbol.height / 2,
+            communication: {},
             anchors: symbolAnchors(symbol),
         });
         clampNode(node);
@@ -783,7 +988,7 @@
         state.selectedNodeId = node.id;
         state.selectedEdgeId = null;
         renderAll();
-        setStatus(`${symbol.label} auf dem Canvas platziert.`, "muted");
+        setStatus(`${symbol.label} als ${instanceId} auf dem Canvas platziert.`, "muted");
     }
 
     function buildPayload() {
@@ -814,6 +1019,7 @@
                 nodes: state.nodes.map((node) => ({
                     id: node.id,
                     symbol_id: node.symbol_id,
+                    instance_id: node.instance_id,
                     label: node.label,
                     category: node.category,
                     svg_url: node.svg_url,
@@ -821,6 +1027,12 @@
                     y: node.y,
                     width: node.width,
                     height: node.height,
+                    communication: {
+                        device_server_code: node.communication.device_server_code || null,
+                        connection_label: node.communication.connection_label || null,
+                        protocol: node.communication.protocol || null,
+                        notes: node.communication.notes || null,
+                    },
                     anchors: node.anchors.map((anchor) => ({
                         id: anchor.id,
                         x_ratio: anchor.x_ratio,
@@ -920,7 +1132,7 @@
             return;
         }
         const point = pointerToCanvas(event);
-        addNodeFromSymbol(symbolId, point.x, point.y);
+        openInstanceModal(symbolId, point.x, point.y);
     });
 
     canvas.addEventListener("click", (event) => {
@@ -978,9 +1190,50 @@
         });
     }
 
+    layoutViewTabButton.addEventListener("click", () => {
+        setView("layout");
+    });
+
+    communicationViewTabButton.addEventListener("click", () => {
+        setView("communication");
+    });
+
+    instanceCancelButton.addEventListener("click", () => {
+        closeInstanceModal();
+        setStatus("Platzierung abgebrochen.", "muted");
+    });
+
+    instanceConfirmButton.addEventListener("click", () => {
+        confirmInstancePlacement();
+    });
+
+    instanceIdInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            confirmInstancePlacement();
+            return;
+        }
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeInstanceModal();
+        }
+    });
+
+    instanceModal.addEventListener("click", (event) => {
+        if (event.target === instanceModal) {
+            closeInstanceModal();
+        }
+    });
+
     document.addEventListener("keydown", (event) => {
         const activeTag = document.activeElement ? document.activeElement.tagName : "";
         const isFormField = activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT";
+
+        if (event.key === "Escape" && !instanceModal.classList.contains("is-hidden")) {
+            event.preventDefault();
+            closeInstanceModal();
+            return;
+        }
 
         if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z" && !isFormField) {
             event.preventDefault();
@@ -1003,5 +1256,6 @@
 
     setBuildSelection(state.currentBuildId);
     setMode("select");
+    setView("layout");
     renderAll();
 })();

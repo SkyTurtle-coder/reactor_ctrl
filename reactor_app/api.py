@@ -406,6 +406,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
 
     normalized_nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
+    instance_ids: set[str] = set()
     node_anchor_ids: dict[str, set[str]] = {}
     for index, node in enumerate(raw_nodes, start=1):
         if not isinstance(node, dict):
@@ -415,6 +416,11 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
         symbol_id = _clean_string(
             node.get("symbol_id"),
             field_name=f"definition_json.nodes[{index}].symbol_id",
+            required=True,
+        )
+        instance_id = _clean_string(
+            node.get("instance_id"),
+            field_name=f"definition_json.nodes[{index}].instance_id",
             required=True,
         )
         label = _clean_string(node.get("label"), field_name=f"definition_json.nodes[{index}].label") or symbol_id
@@ -434,6 +440,35 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
         if node_id in node_ids:
             raise ValueError(f"Node id '{node_id}' is duplicated in 'definition_json.nodes'.")
         node_ids.add(node_id)
+        assert instance_id is not None
+        if instance_id.lower() in instance_ids:
+            raise ValueError(f"Element ID '{instance_id}' is duplicated in 'definition_json.nodes'.")
+        instance_ids.add(instance_id.lower())
+
+        communication_value = node.get("communication", {})
+        if communication_value in (None, ""):
+            communication_value = {}
+        if not isinstance(communication_value, dict):
+            raise ValueError(f"Field 'definition_json.nodes[{index}].communication' must be an object.")
+
+        communication_payload = {
+            "device_server_code": _clean_string(
+                communication_value.get("device_server_code"),
+                field_name=f"definition_json.nodes[{index}].communication.device_server_code",
+            ),
+            "connection_label": _clean_string(
+                communication_value.get("connection_label"),
+                field_name=f"definition_json.nodes[{index}].communication.connection_label",
+            ),
+            "protocol": _clean_string(
+                communication_value.get("protocol"),
+                field_name=f"definition_json.nodes[{index}].communication.protocol",
+            ),
+            "notes": _clean_string(
+                communication_value.get("notes"),
+                field_name=f"definition_json.nodes[{index}].communication.notes",
+            ),
+        }
 
         raw_anchors = node.get("anchors", [])
         if raw_anchors in (None, ""):
@@ -496,6 +531,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             {
                 "id": node_id,
                 "symbol_id": symbol_id,
+                "instance_id": instance_id,
                 "label": label,
                 "category": category,
                 "svg_url": svg_url,
@@ -503,6 +539,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 "y": round(y_value, 2),
                 "width": round(width_value, 2),
                 "height": round(height_value, 2),
+                "communication": communication_payload,
                 "anchors": normalized_anchors,
             }
         )

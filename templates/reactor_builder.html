@@ -115,18 +115,71 @@
                 </p>
             </div>
 
-            <div class="builder-canvas" id="builder-canvas">
-                <div class="builder-canvas-empty" id="builder-canvas-empty">
-                    <span class="section-label">Canvas</span>
-                    <h3>Fliessbild-Arbeitsflaeche</h3>
-                    <p>Ziehe links ein Element in diese Flaeche und verschiebe es danach direkt im Canvas.</p>
-                </div>
-                <svg class="builder-edge-layer" id="builder-edge-layer" aria-hidden="true"></svg>
-                <div class="builder-node-layer" id="builder-node-layer"></div>
+            <div class="builder-view-tabs">
+                <button id="builder-layout-view-tab" class="btn btn-primary" type="button">Flowsheet</button>
+                <button id="builder-communication-view-tab" class="btn" type="button">Communication</button>
             </div>
+
+            <section class="builder-view" id="builder-layout-view">
+                <div class="builder-canvas" id="builder-canvas">
+                    <div class="builder-canvas-empty" id="builder-canvas-empty">
+                        <span class="section-label">Canvas</span>
+                        <h3>Fliessbild-Arbeitsflaeche</h3>
+                        <p>Ziehe links ein Element in diese Flaeche. Danach wird sofort eine eindeutige Element-ID abgefragt.</p>
+                    </div>
+                    <svg class="builder-edge-layer" id="builder-edge-layer" aria-hidden="true"></svg>
+                    <div class="builder-node-layer" id="builder-node-layer"></div>
+                </div>
+            </section>
+
+            <section class="builder-view is-hidden" id="builder-communication-view">
+                <div class="card-body builder-communication-panel">
+                    <div class="builder-panel-header">
+                        <h2>Communication Mapping</h2>
+                        <p>Jedes Element verwendet seine eindeutige Element-ID als Grundlage für die spätere Moxa-, Port- und Protokollzuordnung.</p>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table builder-communication-table">
+                            <thead>
+                                <tr>
+                                    <th>Element ID</th>
+                                    <th>Type</th>
+                                    <th>Moxa / Device Server</th>
+                                    <th>Port / Connection</th>
+                                    <th>Protocol</th>
+                                    <th>Notes</th>
+                                </tr>
+                            </thead>
+                            <tbody id="builder-communication-body">
+                                <tr>
+                                    <td colspan="6" class="muted">Noch keine Elemente im aktuellen Build.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
         </article>
     </section>
 </section>
+
+<div class="builder-modal is-hidden" id="builder-instance-modal">
+    <div class="builder-modal-dialog">
+        <div class="builder-panel-header">
+            <h2>Element ID vergeben</h2>
+            <p id="builder-instance-modal-copy">Vergib eine eindeutige ID für das neue Element.</p>
+        </div>
+        <label class="builder-field">
+            <span>Element ID</span>
+            <input id="builder-instance-id-input" type="text" maxlength="80" placeholder="z. B. P-101">
+        </label>
+        <p class="muted">Diese ID wird im Fliessbild angezeigt und später für Kommunikationszuordnung, Ports und Protokolle verwendet.</p>
+        <div class="builder-modal-actions">
+            <button id="builder-instance-cancel-button" class="btn" type="button">Cancel</button>
+            <button id="builder-instance-confirm-button" class="btn btn-primary" type="button">Add Element</button>
+        </div>
+    </div>
+</div>
 
 <script id="builder-library-data" type="application/json">{{ symbol_categories | tojson }}</script>
 <script id="builder-build-data" type="application/json">{{ current_build | tojson }}</script>
