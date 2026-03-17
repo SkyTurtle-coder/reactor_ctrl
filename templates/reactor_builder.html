@@ -6,163 +6,82 @@
 <section class="page-header">
     <span class="eyebrow">Setup</span>
     <h1>Reactor Builder</h1>
-    <p class="page-lead">Arbeitsbereich fuer die Konfiguration von Reaktoren, Ports, Sensorik und Aktorik.</p>
+    <p class="page-lead">Links die Symbolbibliothek, rechts die grosse Fliessbildflaeche fuer den spaeteren Anlagenaufbau.</p>
 </section>
 {% endblock %}
 
 {% block content %}
-<section class="metric-grid compact">
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Reactors</p><p class="metric-value">{{ summary.reactors_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Bindings</p><p class="metric-value">{{ summary.configured_bindings_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Online</p><p class="metric-value">{{ summary.online_devices_total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Measurements</p><p class="metric-value">{{ summary.measurements_total }}</p></div></article>
-</section>
-
-<section class="card">
-    <div class="card-header">
-        <h2>Symbol library</h2>
-        <p>Erster Library-Baustein fuer den spaeteren Fliessbild-Builder. Jedes Symbol braucht SVG, Ports und feste Metadaten.</p>
-    </div>
-    <div class="card-body">
-        {% if symbol_library %}
-        <div class="symbol-library-grid">
-            {% for symbol in symbol_library %}
-            <article class="symbol-card">
-                <div class="symbol-preview">
-                    <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
+<section class="builder-shell">
+    <aside class="card builder-sidebar">
+        <div class="card-header builder-sidebar-header">
+            <h2>Element Library</h2>
+            <p>Die Elemente sind nach Kategorie geordnet und bilden spaeter die Auswahl fuer den Fliessbild-Builder.</p>
+        </div>
+        <div class="card-body builder-sidebar-body">
+            {% if symbol_categories %}
+            {% for category in symbol_categories %}
+            <section class="builder-category">
+                <div class="builder-category-header">
+                    <h3>{{ category.label }}</h3>
+                    <span class="badge badge-info">{{ category.symbols | length }}</span>
                 </div>
-                <div class="symbol-meta">
-                    <div class="symbol-title-row">
-                        <h3>{{ symbol.label }}</h3>
-                        <span class="badge badge-info">{{ symbol.category }}</span>
-                    </div>
-                    <p class="muted"><code>{{ symbol.id }}</code></p>
-                    <p class="muted">Default size: {{ symbol.default_width }} x {{ symbol.default_height }}</p>
-                    <p class="muted">Ports: {{ symbol.ports | length }}</p>
+                <div class="builder-symbol-list">
+                    {% for symbol in category.symbols %}
+                    <article class="builder-symbol-item">
+                        <div class="builder-symbol-thumb">
+                            <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
+                        </div>
+                        <div class="builder-symbol-copy">
+                            <strong>{{ symbol.label }}</strong>
+                            <p><code>{{ symbol.id }}</code></p>
+                            <p>{{ symbol.port_count }} Ports</p>
+                        </div>
+                    </article>
+                    {% endfor %}
                 </div>
-            </article>
+            </section>
             {% endfor %}
-        </div>
-        {% else %}
-        <p class="empty-state">Noch keine Symbole in der Library registriert.</p>
-        {% endif %}
-    </div>
-</section>
-
-<section class="content-grid">
-    <article class="card">
-        <div class="card-header">
-            <h2>Configured reactors</h2>
-            <p>Aktuelle Reaktorkomponenten und ihre Port-Zuordnung.</p>
-        </div>
-        <div class="card-body">
-            {% if devices %}
-            <div class="table-responsive">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Reactor</th>
-                            <th>Type</th>
-                            <th>Protocol</th>
-                            <th>Binding</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for device in devices %}
-                        <tr>
-                            <td>{{ device.display_name }}</td>
-                            <td>{{ device.device_type }}</td>
-                            <td>{{ device.protocol }}</td>
-                            <td>
-                                {% if device.current_binding %}
-                                {{ device.current_binding.connection.device_server.server_code }} / Port {{ device.current_binding.connection.port_number }}
-                                {% else %}
-                                <span class="muted">not configured</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
             {% else %}
-            <p class="empty-state">Noch keine Reaktoren definiert.</p>
+            <p class="empty-state">Noch keine Symbole in der Library registriert.</p>
             {% endif %}
         </div>
-    </article>
+    </aside>
 
-    <article class="card">
-        <div class="card-header">
-            <h2>Port mapping</h2>
-            <p>Verfuegbare Verbindungen fuer Sensoren und Aktoren.</p>
-        </div>
-        <div class="card-body">
-            {% if connections %}
-            <div class="table-responsive">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Connection</th>
-                            <th>Endpoint</th>
-                            <th>Bound reactor</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for connection in connections %}
-                        <tr>
-                            <td>{{ connection.device_server.server_code }} / Port {{ connection.port_number }}</td>
-                            <td><code>{{ connection.tcp_host }}:{{ connection.tcp_port }}</code></td>
-                            <td>
-                                {% if connection.current_binding %}
-                                {{ connection.current_binding.device.display_name }}
-                                {% else %}
-                                <span class="muted">free</span>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="empty-state">Noch keine Verbindungen angelegt.</p>
-            {% endif %}
-        </div>
-    </article>
+    <section class="builder-main">
+        <article class="card builder-board">
+            <header class="builder-board-header">
+                <div class="builder-board-title">
+                    <span class="eyebrow">Build</span>
+                    <h2>{{ builder_name }}</h2>
+                    <p class="muted">Arbeitsflaeche fuer Reaktoren, Pumpen, Ventile, Sensoren und Port-Zuweisungen.</p>
+                </div>
+                <div class="builder-board-meta">
+                    <div class="builder-meta-item">
+                        <span>Date</span>
+                        <strong>{{ builder_date }}</strong>
+                    </div>
+                    <div class="builder-meta-item">
+                        <span>User</span>
+                        <strong>{{ builder_user }}</strong>
+                    </div>
+                    <div class="builder-meta-item">
+                        <span>Symbols</span>
+                        <strong>{{ library_symbol_total }}</strong>
+                    </div>
+                </div>
+            </header>
 
-    <article class="card card-span-2">
-        <div class="card-header">
-            <h2>Available control infrastructure</h2>
-            <p>Die technischen Elemente bleiben fuer den Builder verfuegbar, aber treten nicht mehr als Hauptnavigation auf.</p>
-        </div>
-        <div class="card-body">
-            {% if servers %}
-            <div class="table-responsive">
-                <table class="table">
-                    <thead>
-                        <tr>
-                            <th>Server</th>
-                            <th>Host</th>
-                            <th>Model</th>
-                            <th>Ports</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for server in servers %}
-                        <tr>
-                            <td>{{ server.display_name }}</td>
-                            <td><code>{{ server.host }}</code></td>
-                            <td>{{ server.model or "n/a" }}</td>
-                            <td>{{ server.port_count }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
+            <div class="builder-canvas">
+                <div class="builder-canvas-note">
+                    <span class="section-label">Canvas</span>
+                    <h3>Fliessbild-Arbeitsflaeche</h3>
+                    <p>
+                        Hier wird spaeter das Reaktor-Fliessbild aufgebaut. Die linke Library liefert die Symbole,
+                        die grosse Flaeche rechts dient als Aufbau- und Verdrahtungsbereich.
+                    </p>
+                </div>
             </div>
-            {% else %}
-            <p class="empty-state">Noch keine Control-Infrastruktur angelegt.</p>
-            {% endif %}
-        </div>
-    </article>
+        </article>
+    </section>
 </section>
 {% endblock %}

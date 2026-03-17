@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
@@ -95,8 +96,44 @@ def _load_flowsheet_library() -> list[dict[str, Any]]:
             continue
         normalized = dict(item)
         normalized["svg_url"] = f"{current_app.static_url_path}/flowsheet/library/{svg_file}"
+        ports = normalized.get("ports", [])
+        normalized["port_count"] = len(ports) if isinstance(ports, list) else 0
         normalized_symbols.append(normalized)
     return normalized_symbols
+
+
+def _format_library_category(value: str | None) -> str:
+    normalized = str(value or "").strip().replace("-", " ").replace("_", " ")
+    if not normalized:
+        return "Uncategorized"
+    return " ".join(part.capitalize() for part in normalized.split())
+
+
+def _group_flowsheet_library(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+
+    for symbol in symbols:
+        category_id = str(symbol.get("category") or "").strip() or "uncategorized"
+        group = groups.setdefault(
+            category_id,
+            {
+                "id": category_id,
+                "label": _format_library_category(category_id),
+                "symbols": [],
+            },
+        )
+        group["symbols"].append(symbol)
+
+    ordered_groups = sorted(groups.values(), key=lambda item: str(item["label"]).lower())
+    for group in ordered_groups:
+        group["symbols"] = sorted(
+            group["symbols"],
+            key=lambda item: (
+                str(item.get("label") or "").lower(),
+                str(item.get("id") or "").lower(),
+            ),
+        )
+    return ordered_groups
 
 
 def _control_summary() -> dict[str, int]:
@@ -245,35 +282,19 @@ def alerts_view() -> str:
 
 @web_bp.get("/reactor-builder")
 def reactor_builder_view() -> str:
-    devices = (
-        Device.query.options(
-            joinedload(Device.current_binding)
-            .joinedload(DeviceBindingCurrent.connection)
-            .joinedload(DeviceConnection.device_server)
-        )
-        .order_by(Device.display_name.asc(), Device.device_id.asc())
-        .all()
-    )
-    connections = (
-        DeviceConnection.query.options(
-            joinedload(DeviceConnection.device_server),
-            joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
-        )
-        .order_by(DeviceConnection.connection_id.asc())
-        .all()
-    )
-    servers = (
-        DeviceServer.query.options(selectinload(DeviceServer.connections))
-        .order_by(DeviceServer.display_name.asc(), DeviceServer.device_server_id.asc())
-        .all()
-    )
+    symbol_library = _load_flowsheet_library()
+    builder_name = (request.args.get("name") or "").strip() or "Untitled Reactor Build"
+    builder_user = (request.args.get("user") or "").strip() or "operator"
+    builder_date = (request.args.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+
     return render_template(
         "reactor_builder.html",
         active_page="reactor_builder",
-        devices=devices,
-        connections=connections,
-        servers=servers,
-        symbol_library=_load_flowsheet_library(),
+        builder_name=builder_name,
+        builder_user=builder_user,
+        builder_date=builder_date,
+        library_symbol_total=len(symbol_library),
+        symbol_categories=_group_flowsheet_library(symbol_library),
         summary=_control_summary(),
         **_base_context(),
     )
