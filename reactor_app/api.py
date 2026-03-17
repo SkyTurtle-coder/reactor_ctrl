@@ -16,6 +16,7 @@ from .models import (
     DeviceBindingHistory,
     DeviceConnection,
     DeviceServer,
+    Measurement,
 )
 from .services import DeviceCommandError, TcpSocketConfig, execute_device_command, list_supported_protocols, probe_tcp_socket
 
@@ -325,6 +326,24 @@ def _control_command_to_dict(item: ControlCommand, *, include_events: bool = Fal
     return payload
 
 
+def _measurement_to_dict(item: Measurement) -> dict[str, Any]:
+    quality_score = None if item.quality_score is None else float(item.quality_score)
+    return {
+        "measurement_id": item.measurement_id,
+        "device_id": item.device_id,
+        "channel_id": item.channel_id,
+        "channel_code": item.channel_code,
+        "measured_at": _dt(item.measured_at),
+        "ingested_at": _dt(item.ingested_at),
+        "numeric_value": item.numeric_value,
+        "text_value": item.text_value,
+        "unit": item.unit,
+        "quality_score": quality_score,
+        "raw_payload": item.raw_payload,
+        "source": item.source,
+    }
+
+
 def _apply_device_payload(item: Device, payload: dict[str, Any], *, partial: bool) -> None:
     if not partial or "asset_serial" in payload:
         item.asset_serial = _clean_string(payload.get("asset_serial"), field_name="asset_serial", required=True)
@@ -510,6 +529,7 @@ def api_index():
                 "device_connections": "/api/device-connections",
                 "device_binding_example": "/api/devices/<device_id>/binding",
                 "device_commands": "/api/devices/<device_id>/commands",
+                "device_measurements": "/api/devices/<device_id>/measurements",
                 "device_connection_probe": "/api/device-connections/<connection_id>/probe",
             }
         }
@@ -662,6 +682,30 @@ def delete_device(device_id: int):
     return "", 204
 
 
+@api_bp.get("/devices/<int:device_id>/measurements")
+def list_device_measurements(device_id: int):
+    device, error_response = _get_or_404(Device, device_id, "Device")
+    if error_response:
+        return error_response
+
+    try:
+        limit_raw = request.args.get("limit", 100)
+        limit = _parse_int(limit_raw, field_name="limit", min_value=1, max_value=1000)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    channel_code = _clean_string(request.args.get("channel_code"), field_name="channel_code")
+    query = Measurement.query.filter_by(device_id=device.device_id)
+    if channel_code:
+        query = query.filter(Measurement.channel_code == channel_code)
+    items = (
+        query.order_by(Measurement.measured_at.desc(), Measurement.measurement_id.desc())
+        .limit(limit)
+        .all()
+    )
+    return jsonify({"items": [_measurement_to_dict(item) for item in items]})
+
+
 @api_bp.get("/devices/<int:device_id>/commands")
 def list_device_commands(device_id: int):
     device, error_response = _get_or_404(Device, device_id, "Device")
@@ -732,6 +776,7 @@ def execute_command_for_device(device_id: int):
                     "response_hex": execution.result.response_hex,
                     "metadata": execution.result.metadata,
                 },
+                "measurement": None if execution.measurement is None else _measurement_to_dict(execution.measurement),
             }
         ),
         201,

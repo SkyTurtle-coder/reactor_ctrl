@@ -28,6 +28,7 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 - `GET|PATCH|DELETE /api/devices/<device_id>`
 - `PUT|DELETE /api/devices/<device_id>/binding`
 - `GET|POST /api/devices/<device_id>/commands`
+- `GET /api/devices/<device_id>/measurements`
 - `GET /api/commands/<command_id>`
 
 ## Web-Oberflaeche
@@ -127,6 +128,41 @@ POST /api/device-connections/1/probe
 
 Aktuell ist als erster Treiber `generic_text` implementiert. Er eignet sich fuer textbasierte RS-232-Protokolle und sendet/empfaengt ASCII oder UTF-8 ueber die dem Geraet zugeordnete `device_connection`.
 
+## Messwerte aus Command-Antworten speichern
+
+Ein erfolgreicher RS-232-Command kann optional direkt als `measurement` in SQL persistiert werden.
+
+Beispiel fuer Antworten wie `OK;TEMP_C=24.0`:
+
+```json
+{
+  "command_name": "query_text",
+  "requested_by": "poller",
+  "payload": {
+    "text": "TEMP?",
+    "line_ending": "crlf",
+    "expect_response": true,
+    "measurement": {
+      "channel_code": "temp_c",
+      "display_name": "Temperature",
+      "unit": "C",
+      "parser": "float",
+      "key": "TEMP_C",
+      "source": "poller"
+    }
+  }
+}
+```
+
+Unterstuetzte Parser:
+
+- `text`
+- `float`
+- `int`
+- `bool`
+
+Gespeicherte Messwerte koennen danach ueber `GET /api/devices/<device_id>/measurements` gelesen werden.
+
 ## Lokaler NPort-Simulator
 
 Solange die echte `Moxa NPort 5610-8-DT` noch nicht vorhanden ist, kann ein lokaler Multi-Port-Simulator verwendet werden. Er verhaelt sich wie ein transparenter TCP-Endpunkt fuer `RS-232 over Ethernet` und stellt standardmaessig Ports `4001..4008` bereit.
@@ -173,6 +209,24 @@ Beispiel fuer die API mit Simulator statt echter Moxa:
 ```
 
 Danach kann eine `device_connection` fuer `port_number: 1` angelegt werden; der Standard-TCP-Port wird automatisch auf `4001` gesetzt.
+
+## Wiederholbarer Funktionstest
+
+Der End-to-End-Test prueft genau den spaeter benoetigten Zielpfad:
+
+`RS-232-Geraet -> Moxa/NPort TCP-Port -> Flask-Server -> SQL measurement`
+
+Start gegen den lokalen Server:
+
+```powershell
+python run_function_test.py --base-url http://127.0.0.1:5000 --api-token <token> --server-host 127.0.0.1
+```
+
+Spaeter gegen die echte Moxa nur `--server-host` anpassen:
+
+```powershell
+python run_function_test.py --base-url http://127.0.0.1:5000 --api-token <token> --server-host 192.168.1.50 --port-number 1
+```
 
 ## Start
 

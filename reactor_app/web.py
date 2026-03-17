@@ -35,11 +35,11 @@ def _format_datetime(value) -> str:
 
 def _status_badge_class(value: str | None) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"success", "succeeded", "completed", "ok", "online", "active", "configured"}:
+    if normalized in {"success", "succeeded", "completed", "acked", "ok", "online", "active", "configured"}:
         return "badge-success"
-    if normalized in {"queued", "pending", "running", "processing"}:
+    if normalized in {"queued", "pending", "running", "processing", "sent"}:
         return "badge-warning"
-    if normalized in {"error", "failed", "offline", "disabled"}:
+    if normalized in {"error", "failed", "timeout", "offline", "disabled"}:
         return "badge-danger"
     return "badge-muted"
 
@@ -222,8 +222,8 @@ def commands_overview() -> str:
     summary = {
         "total": len(commands),
         "queued": sum(1 for item in commands if item.status == "queued"),
-        "completed": sum(1 for item in commands if item.status == "completed"),
-        "failed": sum(1 for item in commands if item.status == "failed"),
+        "acked": sum(1 for item in commands if item.status == "acked"),
+        "failed": sum(1 for item in commands if item.status in {"failed", "timeout"}),
     }
     return render_template(
         "commands.html",
