@@ -150,7 +150,7 @@
         pendingPlacement: null,
         dragMove: null,
         anchorMove: null,
-        edgePointMove: null,
+        edgeSegmentMove: null,
         undoStack: [],
     };
 
@@ -180,7 +180,7 @@
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
         state.anchorMove = null;
-        state.edgePointMove = null;
+        state.edgeSegmentMove = null;
         renderAll();
         setStatus("Undo ausgefuehrt.", "muted");
     }
@@ -344,7 +344,7 @@
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
         state.anchorMove = null;
-        state.edgePointMove = null;
+        state.edgeSegmentMove = null;
     }
 
     function updateHistory(buildId) {
@@ -417,7 +417,7 @@
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
         state.anchorMove = null;
-        state.edgePointMove = null;
+        state.edgeSegmentMove = null;
         state.undoStack = [];
         nameInput.value = "Untitled Reactor Build";
         if (!dateInput.value) {
@@ -575,6 +575,15 @@
             .join(" ");
     }
 
+    function edgeRoutePointsFromPolyline(points) {
+        return compressOrthogonalPoints(points)
+            .slice(1, -1)
+            .map((point) => ({
+                x: roundCanvasValue(point.x),
+                y: roundCanvasValue(point.y),
+            }));
+    }
+
     function edgeExists(connection) {
         return state.edges.some((edge) => {
             const forward =
@@ -705,29 +714,28 @@
             edgeLayer.appendChild(path);
 
             if (state.mode === "connect" && state.selectedEdgeId === edge.id) {
-                const routePoints = edgeRoutePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide);
-                routePoints.forEach((point, routePointIndex) => {
-                    const handle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                    handle.setAttribute("cx", String(point.x));
-                    handle.setAttribute("cy", String(point.y));
-                    handle.setAttribute("r", "7");
-                    handle.setAttribute(
+                for (let segmentIndex = 1; segmentIndex < polylinePoints.length - 2; segmentIndex += 1) {
+                    const segmentStart = polylinePoints[segmentIndex];
+                    const segmentEnd = polylinePoints[segmentIndex + 1];
+                    const segment = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    const isVertical = Math.abs(segmentStart.x - segmentEnd.x) < 0.01;
+                    const active =
+                        state.edgeSegmentMove?.edgeId === edge.id && state.edgeSegmentMove?.segmentIndex === segmentIndex;
+                    segment.setAttribute("x1", String(segmentStart.x));
+                    segment.setAttribute("y1", String(segmentStart.y));
+                    segment.setAttribute("x2", String(segmentEnd.x));
+                    segment.setAttribute("y2", String(segmentEnd.y));
+                    segment.setAttribute(
                         "class",
-                        `builder-edge-handle${state.edgePointMove?.edgeId === edge.id && state.edgePointMove?.routePointIndex === routePointIndex ? " is-active" : ""}`,
+                        `builder-edge-segment-hit${active ? " is-active" : ""}${isVertical ? " is-vertical" : " is-horizontal"}`,
                     );
-                    handle.dataset.edgeId = edge.id;
-                    handle.dataset.routePointIndex = String(routePointIndex);
-                    handle.addEventListener("pointerdown", (event) => {
-                        startEdgeRoutePointMove(edge.id, routePointIndex, event);
+                    segment.dataset.edgeId = edge.id;
+                    segment.dataset.segmentIndex = String(segmentIndex);
+                    segment.addEventListener("pointerdown", (event) => {
+                        startEdgeSegmentMove(edge.id, segmentIndex, event);
                     });
-                    handle.addEventListener("click", (event) => {
-                        event.stopPropagation();
-                        state.selectedEdgeId = edge.id;
-                        state.selectedNodeId = null;
-                        renderAll();
-                    });
-                    edgeLayer.appendChild(handle);
-                });
+                    edgeLayer.appendChild(segment);
+                }
             }
         }
 
@@ -873,26 +881,26 @@
         return edge;
     }
 
-    function stopEdgeRoutePointMove() {
-        window.removeEventListener("pointermove", handleEdgeRoutePointMove);
-        window.removeEventListener("pointerup", stopEdgeRoutePointMove);
-        window.removeEventListener("pointercancel", stopEdgeRoutePointMove);
+    function stopEdgeSegmentMove() {
+        window.removeEventListener("pointermove", handleEdgeSegmentMove);
+        window.removeEventListener("pointerup", stopEdgeSegmentMove);
+        window.removeEventListener("pointercancel", stopEdgeSegmentMove);
 
-        const activeMove = state.edgePointMove;
+        const activeMove = state.edgeSegmentMove;
         if (!activeMove) {
             return;
         }
 
         const didMove = activeMove.moved;
-        state.edgePointMove = null;
+        state.edgeSegmentMove = null;
         renderAll();
         if (didMove) {
             setStatus("Leitungsverlauf aktualisiert. Build noch nicht gespeichert.", "success");
         }
     }
 
-    function handleEdgeRoutePointMove(event) {
-        const activeMove = state.edgePointMove;
+    function handleEdgeSegmentMove(event) {
+        const activeMove = state.edgeSegmentMove;
         if (!activeMove) {
             return;
         }
@@ -903,44 +911,81 @@
         }
 
         const edge = ensureEdgeRoutePoints(activeMove.edgeId);
-        if (!edge || !Array.isArray(edge.route_points) || !edge.route_points[activeMove.routePointIndex]) {
+        if (!edge) {
             return;
         }
 
-        const point = pointerToCanvas(event);
-        edge.route_points[activeMove.routePointIndex] = {
-            x: roundCanvasValue(point.x),
-            y: roundCanvasValue(point.y),
-        };
+        const baseStart = activeMove.basePoints[activeMove.segmentIndex];
+        const baseEnd = activeMove.basePoints[activeMove.segmentIndex + 1];
+        if (!baseStart || !baseEnd) {
+            return;
+        }
+
+        const pointer = pointerToCanvas(event);
+        const nextPoints = activeMove.basePoints.map((point) => ({ x: point.x, y: point.y }));
+        if (activeMove.isVertical) {
+            const nextX = roundCanvasValue(activeMove.baseCoordinate + (pointer.x - activeMove.startPointer.x));
+            nextPoints[activeMove.segmentIndex].x = nextX;
+            nextPoints[activeMove.segmentIndex + 1].x = nextX;
+        } else {
+            const nextY = roundCanvasValue(activeMove.baseCoordinate + (pointer.y - activeMove.startPointer.y));
+            nextPoints[activeMove.segmentIndex].y = nextY;
+            nextPoints[activeMove.segmentIndex + 1].y = nextY;
+        }
+
+        edge.route_points = edgeRoutePointsFromPolyline(nextPoints);
         activeMove.moved = true;
         renderEdges();
     }
 
-    function startEdgeRoutePointMove(edgeId, routePointIndex, event) {
+    function startEdgeSegmentMove(edgeId, segmentIndex, event) {
         if (state.mode !== "connect" || event.button !== 0) {
             return;
         }
 
         const edge = ensureEdgeRoutePoints(edgeId);
-        if (!edge || !Array.isArray(edge.route_points) || !edge.route_points[routePointIndex]) {
+        if (!edge) {
+            return;
+        }
+
+        const sourceNode = getNodeById(edge.source_node_id);
+        const targetNode = getNodeById(edge.target_node_id);
+        if (!sourceNode || !targetNode) {
+            return;
+        }
+
+        const sourcePoint = anchorPoint(sourceNode, edge.source_anchor_id);
+        const sourceSide = anchorSide(sourceNode, edge.source_anchor_id);
+        const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
+        const targetSide = anchorSide(targetNode, edge.target_anchor_id);
+        const polylinePoints = edgePolylinePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide);
+        const segmentStart = polylinePoints[segmentIndex];
+        const segmentEnd = polylinePoints[segmentIndex + 1];
+        if (!segmentStart || !segmentEnd) {
             return;
         }
 
         event.preventDefault();
         event.stopPropagation();
+        const pointer = pointerToCanvas(event);
+        const isVertical = Math.abs(segmentStart.x - segmentEnd.x) < 0.01;
         state.selectedEdgeId = edgeId;
         state.selectedNodeId = null;
-        state.edgePointMove = {
+        state.edgeSegmentMove = {
             edgeId,
-            routePointIndex,
+            segmentIndex,
+            basePoints: polylinePoints.map((point) => ({ x: point.x, y: point.y })),
+            baseCoordinate: isVertical ? segmentStart.x : segmentStart.y,
+            startPointer: pointer,
+            isVertical,
             moved: false,
             snapshotTaken: false,
         };
         renderEdges();
 
-        window.addEventListener("pointermove", handleEdgeRoutePointMove);
-        window.addEventListener("pointerup", stopEdgeRoutePointMove);
-        window.addEventListener("pointercancel", stopEdgeRoutePointMove);
+        window.addEventListener("pointermove", handleEdgeSegmentMove);
+        window.addEventListener("pointerup", stopEdgeSegmentMove);
+        window.addEventListener("pointercancel", stopEdgeSegmentMove);
     }
 
     function startAnchorMove(nodeId, anchorId, event) {
@@ -1266,8 +1311,8 @@
         if (state.mode !== "anchor" && state.anchorMove) {
             stopAnchorPointerMove();
         }
-        if (state.mode !== "connect" && state.edgePointMove) {
-            stopEdgeRoutePointMove();
+        if (state.mode !== "connect" && state.edgeSegmentMove) {
+            stopEdgeSegmentMove();
         }
         selectToolButton.classList.toggle("is-active", state.mode === "select");
         anchorToolButton.classList.toggle("is-active", state.mode === "anchor");
@@ -1279,7 +1324,7 @@
             return;
         }
         if (state.mode === "connect") {
-            setStatus("Connection Tool aktiv. Verbindungen an Anchors erstellen und vorhandene Leitungen ueber die Handles anpassen.", "muted");
+            setStatus("Connection Tool aktiv. Verbindungen an Anchors erstellen und Leitungssegmente direkt verschieben.", "muted");
             return;
         }
         setStatus(currentDraftMessage(), "muted");

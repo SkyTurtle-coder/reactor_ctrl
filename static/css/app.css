@@ -824,16 +824,22 @@ h2 {
     stroke-dasharray: 8 6;
 }
 
-.builder-edge-handle {
-    fill: #fffdfa;
-    stroke: var(--accent);
-    stroke-width: 2;
-    cursor: move;
-    pointer-events: all;
+.builder-edge-segment-hit {
+    stroke: rgba(15, 92, 82, 0.001);
+    stroke-width: 18;
+    pointer-events: stroke;
 }
 
-.builder-edge-handle.is-active {
-    fill: var(--accent);
+.builder-edge-segment-hit.is-horizontal {
+    cursor: row-resize;
+}
+
+.builder-edge-segment-hit.is-vertical {
+    cursor: col-resize;
+}
+
+.builder-edge-segment-hit.is-active {
+    stroke: rgba(15, 92, 82, 0.16);
 }
 
 .tile-grid {
