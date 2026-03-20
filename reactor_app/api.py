@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -9,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .builder_auth import REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
 from .extensions import db
+from .flowsheet_library import build_symbol_index, load_flowsheet_library
 from .models import (
     ControlCommand,
     ControlCommandEvent,
@@ -25,6 +27,12 @@ from .services import DeviceCommandError, TcpSocketConfig, execute_device_comman
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_MAX_REACTOR_BUILD_CANVAS_DIMENSION = 10000
+_MAX_REACTOR_BUILD_NODES = 400
+_MAX_REACTOR_BUILD_EDGES = 800
+_MAX_REACTOR_BUILD_ANCHORS_PER_NODE = 64
+_MAX_REACTOR_BUILD_ROUTE_POINTS = 64
+_INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -211,6 +219,63 @@ def _parse_float(value: Any, *, field_name: str) -> float:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Field '{field_name}' must be a number.") from exc
+
+
+def _builder_symbol_lookup() -> dict[str, dict[str, Any]]:
+    symbols = load_flowsheet_library(
+        static_folder=current_app.static_folder,
+        static_url_path=current_app.static_url_path,
+    )
+    return build_symbol_index(symbols)
+
+
+def _validate_instance_id(value: str, *, field_name: str) -> str:
+    if not _INSTANCE_ID_PATTERN.fullmatch(value):
+        raise ValueError(
+            f"Field '{field_name}' must contain only letters, numbers, '.', '_' or '-' and no spaces."
+        )
+    return value
+
+
+def _anchor_point_for_validation(node: dict[str, Any], anchor_id: str | None) -> dict[str, float]:
+    anchors = node.get("anchors", [])
+    if isinstance(anchors, list) and anchors:
+        anchor = None
+        if anchor_id is not None:
+            anchor = next((item for item in anchors if item.get("id") == anchor_id), None)
+        if anchor is None:
+            anchor = anchors[0]
+        return {
+            "x": round(float(node["x"]) + float(node["width"]) * float(anchor["x_ratio"]), 2),
+            "y": round(float(node["y"]) + float(node["height"]) * float(anchor["y_ratio"]), 2),
+        }
+
+    return {
+        "x": round(float(node["x"]) + float(node["width"]) / 2, 2),
+        "y": round(float(node["y"]) + float(node["height"]) / 2, 2),
+    }
+
+
+def _validate_orthogonal_route_points(
+    edge_id: str,
+    route_points: list[dict[str, float]],
+    *,
+    source_point: dict[str, float],
+    target_point: dict[str, float],
+) -> None:
+    if not route_points:
+        return
+
+    points = [source_point, *route_points, target_point]
+    for index in range(1, len(points)):
+        previous = points[index - 1]
+        current = points[index]
+        same_x = previous["x"] == current["x"]
+        same_y = previous["y"] == current["y"]
+        if same_x and same_y:
+            raise ValueError(f"Edge '{edge_id}' contains a zero-length routed segment.")
+        if not same_x and not same_y:
+            raise ValueError(f"Edge '{edge_id}' must keep an orthogonal route with 90 degree segments only.")
 
 
 def _default_nport_tcp_port(port_number: int) -> int:
@@ -432,12 +497,22 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
     canvas_height = int(round(_parse_float(canvas_value.get("height", 1600), field_name="definition_json.canvas.height")))
     if canvas_width < 200 or canvas_height < 200:
         raise ValueError("Field 'definition_json.canvas' must be at least 200x200.")
+    if canvas_width > _MAX_REACTOR_BUILD_CANVAS_DIMENSION or canvas_height > _MAX_REACTOR_BUILD_CANVAS_DIMENSION:
+        raise ValueError(
+            f"Field 'definition_json.canvas' must not exceed {_MAX_REACTOR_BUILD_CANVAS_DIMENSION}x{_MAX_REACTOR_BUILD_CANVAS_DIMENSION}."
+        )
+
+    symbol_lookup = _builder_symbol_lookup()
+    if not symbol_lookup:
+        raise ValueError("The flowsheet library is not available on the server.")
 
     raw_nodes = value.get("nodes", [])
     if raw_nodes in (None, ""):
         raw_nodes = []
     if not isinstance(raw_nodes, list):
         raise ValueError("Field 'definition_json.nodes' must be a list.")
+    if len(raw_nodes) > _MAX_REACTOR_BUILD_NODES:
+        raise ValueError(f"Field 'definition_json.nodes' must not contain more than {_MAX_REACTOR_BUILD_NODES} items.")
 
     normalized_nodes: list[dict[str, Any]] = []
     node_ids: set[str] = set()
@@ -458,9 +533,6 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             field_name=f"definition_json.nodes[{index}].instance_id",
             required=True,
         )
-        label = _clean_string(node.get("label"), field_name=f"definition_json.nodes[{index}].label") or symbol_id
-        category = _clean_string(node.get("category"), field_name=f"definition_json.nodes[{index}].category")
-        svg_url = _clean_string(node.get("svg_url"), field_name=f"definition_json.nodes[{index}].svg_url")
 
         x_value = _parse_float(node.get("x", 0), field_name=f"definition_json.nodes[{index}].x")
         y_value = _parse_float(node.get("y", 0), field_name=f"definition_json.nodes[{index}].y")
@@ -472,10 +544,17 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
 
         assert node_id is not None
         assert symbol_id is not None
+        symbol = symbol_lookup.get(symbol_id)
+        if symbol is None:
+            raise ValueError(f"Symbol '{symbol_id}' is not registered in the flowsheet library.")
         if node_id in node_ids:
             raise ValueError(f"Node id '{node_id}' is duplicated in 'definition_json.nodes'.")
         node_ids.add(node_id)
         assert instance_id is not None
+        instance_id = _validate_instance_id(
+            instance_id,
+            field_name=f"definition_json.nodes[{index}].instance_id",
+        )
         if instance_id.lower() in instance_ids:
             raise ValueError(f"Element ID '{instance_id}' is duplicated in 'definition_json.nodes'.")
         instance_ids.add(instance_id.lower())
@@ -510,6 +589,10 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             raw_anchors = []
         if not isinstance(raw_anchors, list):
             raise ValueError(f"Field 'definition_json.nodes[{index}].anchors' must be a list.")
+        if len(raw_anchors) > _MAX_REACTOR_BUILD_ANCHORS_PER_NODE:
+            raise ValueError(
+                f"Field 'definition_json.nodes[{index}].anchors' must not contain more than {_MAX_REACTOR_BUILD_ANCHORS_PER_NODE} items."
+            )
 
         normalized_anchors: list[dict[str, Any]] = []
         anchor_ids_for_node: set[str] = set()
@@ -567,9 +650,16 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 "id": node_id,
                 "symbol_id": symbol_id,
                 "instance_id": instance_id,
-                "label": label,
-                "category": category,
-                "svg_url": svg_url,
+                "label": _clean_string(symbol.get("label"), field_name=f"definition_json.nodes[{index}].label")
+                or symbol_id,
+                "category": _clean_string(
+                    symbol.get("category"),
+                    field_name=f"definition_json.nodes[{index}].category",
+                ),
+                "svg_url": _clean_string(
+                    symbol.get("svg_url"),
+                    field_name=f"definition_json.nodes[{index}].svg_url",
+                ),
                 "x": round(x_value, 2),
                 "y": round(y_value, 2),
                 "width": round(width_value, 2),
@@ -584,9 +674,13 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
         raw_edges = []
     if not isinstance(raw_edges, list):
         raise ValueError("Field 'definition_json.edges' must be a list.")
+    if len(raw_edges) > _MAX_REACTOR_BUILD_EDGES:
+        raise ValueError(f"Field 'definition_json.edges' must not contain more than {_MAX_REACTOR_BUILD_EDGES} items.")
 
     normalized_edges: list[dict[str, Any]] = []
+    normalized_node_lookup = {node["id"]: node for node in normalized_nodes}
     edge_ids: set[str] = set()
+    edge_connections: set[tuple[str, str]] = set()
     for index, edge in enumerate(raw_edges, start=1):
         if not isinstance(edge, dict):
             raise ValueError(f"Edge {index} in 'definition_json.edges' must be an object.")
@@ -615,6 +709,10 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             raw_route_points = []
         if not isinstance(raw_route_points, list):
             raise ValueError(f"Field 'definition_json.edges[{index}].route_points' must be a list.")
+        if len(raw_route_points) > _MAX_REACTOR_BUILD_ROUTE_POINTS:
+            raise ValueError(
+                f"Field 'definition_json.edges[{index}].route_points' must not contain more than {_MAX_REACTOR_BUILD_ROUTE_POINTS} items."
+            )
 
         assert edge_id is not None
         assert source_node_id is not None
@@ -632,6 +730,16 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             raise ValueError(f"Edge {edge_id} references missing source anchor '{source_anchor_id}'.")
         if target_anchor_id is not None and target_anchor_id not in node_anchor_ids.get(target_node_id, set()):
             raise ValueError(f"Edge {edge_id} references missing target anchor '{target_anchor_id}'.")
+        connection_key = tuple(
+            sorted(
+                (
+                    f"{source_node_id}:{source_anchor_id or ''}",
+                    f"{target_node_id}:{target_anchor_id or ''}",
+                )
+            )
+        )
+        if connection_key in edge_connections:
+            raise ValueError(f"Edge '{edge_id}' duplicates an existing connection.")
 
         normalized_route_points: list[dict[str, float]] = []
         for point_index, point in enumerate(raw_route_points, start=1):
@@ -655,7 +763,15 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 }
             )
 
+        _validate_orthogonal_route_points(
+            edge_id,
+            normalized_route_points,
+            source_point=_anchor_point_for_validation(normalized_node_lookup[source_node_id], source_anchor_id),
+            target_point=_anchor_point_for_validation(normalized_node_lookup[target_node_id], target_anchor_id),
+        )
+
         edge_ids.add(edge_id)
+        edge_connections.add(connection_key)
         normalized_edges.append(
             {
                 "id": edge_id,
@@ -682,7 +798,7 @@ def _apply_reactor_build_payload(item: ReactorBuild, payload: dict[str, Any], *,
         item.build_name = _clean_string(payload.get("build_name"), field_name="build_name", required=True)
     if not partial or "build_date" in payload:
         item.build_date = _parse_date(payload.get("build_date"), field_name="build_date")
-    if not partial or "created_by" in payload:
+    if not partial:
         item.created_by = _clean_string(payload.get("created_by"), field_name="created_by", required=True)
     if "updated_by" in payload:
         item.updated_by = _clean_string(payload.get("updated_by"), field_name="updated_by")

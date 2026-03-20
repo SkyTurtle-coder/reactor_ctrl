@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import json
-from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, render_template, request
@@ -11,6 +9,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from .builder_auth import REACTOR_BUILDER_WRITE_SCOPE, create_scoped_token
 from .extensions import db
+from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
 from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild
 from .services.drivers import list_supported_protocols
 
@@ -74,73 +73,6 @@ def _base_context() -> dict[str, Any]:
         "api_auth_required": current_app.config.get("API_AUTH_REQUIRED", True),
         "supported_protocols": list_supported_protocols(),
     }
-
-
-def _load_flowsheet_library() -> list[dict[str, Any]]:
-    manifest_path = current_app.static_folder
-    if manifest_path is None:
-        return []
-
-    try:
-        manifest_file = Path(manifest_path) / "flowsheet" / "library" / "manifest.json"
-        if not manifest_file.exists():
-            return []
-        payload = json.loads(manifest_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        current_app.logger.exception("Failed to load flowsheet library manifest.")
-        return []
-
-    symbols = payload.get("symbols", [])
-    if not isinstance(symbols, list):
-        return []
-
-    normalized_symbols: list[dict[str, Any]] = []
-    for item in symbols:
-        if not isinstance(item, dict):
-            continue
-        svg_file = str(item.get("svg_file", "")).strip()
-        if not svg_file:
-            continue
-        normalized = dict(item)
-        normalized["svg_url"] = f"{current_app.static_url_path}/flowsheet/library/{svg_file}"
-        ports = normalized.get("ports", [])
-        normalized["port_count"] = len(ports) if isinstance(ports, list) else 0
-        normalized_symbols.append(normalized)
-    return normalized_symbols
-
-
-def _format_library_category(value: str | None) -> str:
-    normalized = str(value or "").strip().replace("-", " ").replace("_", " ")
-    if not normalized:
-        return "Uncategorized"
-    return " ".join(part.capitalize() for part in normalized.split())
-
-
-def _group_flowsheet_library(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    groups: dict[str, dict[str, Any]] = {}
-
-    for symbol in symbols:
-        category_id = str(symbol.get("category") or "").strip() or "uncategorized"
-        group = groups.setdefault(
-            category_id,
-            {
-                "id": category_id,
-                "label": _format_library_category(category_id),
-                "symbols": [],
-            },
-        )
-        group["symbols"].append(symbol)
-
-    ordered_groups = sorted(groups.values(), key=lambda item: str(item["label"]).lower())
-    for group in ordered_groups:
-        group["symbols"] = sorted(
-            group["symbols"],
-            key=lambda item: (
-                str(item.get("label") or "").lower(),
-                str(item.get("id") or "").lower(),
-            ),
-        )
-    return ordered_groups
 
 
 def _reactor_build_summary_to_dict(item: ReactorBuild) -> dict[str, Any]:
@@ -314,7 +246,10 @@ def alerts_view() -> str:
 
 @web_bp.get("/reactor-builder")
 def reactor_builder_view() -> str:
-    symbol_library = _load_flowsheet_library()
+    symbol_library = load_flowsheet_library(
+        static_folder=current_app.static_folder,
+        static_url_path=current_app.static_url_path,
+    )
     saved_builds = (
         ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
     )
@@ -356,7 +291,7 @@ def reactor_builder_view() -> str:
         builder_user=builder_user,
         builder_date=builder_date,
         library_symbol_total=len(symbol_library),
-        symbol_categories=_group_flowsheet_library(symbol_library),
+        symbol_categories=group_flowsheet_library(symbol_library),
         saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
         summary=_control_summary(),
         **_base_context(),

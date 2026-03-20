@@ -30,6 +30,15 @@
     const instanceConfirmButton = document.getElementById("builder-instance-confirm-button");
     const statusElement = document.getElementById("builder-status");
     const libraryItems = Array.from(document.querySelectorAll(".builder-symbol-item"));
+    const librarySearchInput = document.getElementById("builder-library-search-input");
+    const librarySearchClearButton = document.getElementById("builder-library-search-clear");
+    const libraryEmptyState = document.getElementById("builder-library-empty");
+    const symbolAddButtons = Array.from(document.querySelectorAll("[data-symbol-add]"));
+    const libraryCategories = Array.from(document.querySelectorAll(".builder-category"));
+    const currentBuildElement = document.getElementById("builder-current-build");
+    const nodeCountElement = document.getElementById("builder-node-count");
+    const edgeCountElement = document.getElementById("builder-edge-count");
+    const saveStateElement = document.getElementById("builder-save-state");
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -90,6 +99,23 @@
         return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
     }
 
+    function normalizeInstanceIdInput(value) {
+        return String(value ?? "")
+            .trim()
+            .replace(/\s+/g, "-");
+    }
+
+    function validateInstanceIdInput(value) {
+        const normalized = normalizeInstanceIdInput(value);
+        if (!normalized) {
+            throw new Error("Element ID darf nicht leer sein.");
+        }
+        if (!/^[A-Za-z0-9._-]+$/.test(normalized)) {
+            throw new Error("Element IDs duerfen nur Buchstaben, Zahlen, Punkt, Unterstrich oder Bindestrich enthalten.");
+        }
+        return normalized;
+    }
+
     const libraryCategoryData = parseJsonScript("builder-library-data", []);
     const buildData = parseJsonScript("builder-build-data", null);
     const metaData = parseJsonScript("builder-meta-data", {});
@@ -138,12 +164,25 @@
         });
     }
 
+    for (const button of symbolAddButtons) {
+        const symbolId = String(button.dataset.symbolAdd || "");
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            openInstanceModal(symbolId, canvas.clientWidth / 2, canvas.clientHeight / 2);
+        });
+    }
+
     const state = {
         currentBuildId: parseBuildId(metaData.currentBuildId),
         currentView: "layout",
         mode: "select",
         nodes: [],
         edges: [],
+        persistedSnapshot: "",
+        isDirty: false,
+        isSaving: false,
+        isLoading: false,
         selectedNodeId: null,
         selectedEdgeId: null,
         pendingAnchor: null,
@@ -152,7 +191,133 @@
         anchorMove: null,
         edgeSegmentMove: null,
         undoStack: [],
+        modalReturnFocus: null,
     };
+
+    function buildDefinitionPayload() {
+        return {
+            canvas: {
+                width: canvas.clientWidth,
+                height: canvas.clientHeight,
+            },
+            nodes: state.nodes.map((node) => ({
+                id: node.id,
+                symbol_id: node.symbol_id,
+                instance_id: node.instance_id,
+                label: node.label,
+                category: node.category,
+                svg_url: node.svg_url,
+                x: node.x,
+                y: node.y,
+                width: node.width,
+                height: node.height,
+                communication: {
+                    device_server_code: node.communication.device_server_code || null,
+                    connection_label: node.communication.connection_label || null,
+                    protocol: node.communication.protocol || null,
+                    notes: node.communication.notes || null,
+                },
+                anchors: node.anchors.map((anchor) => ({
+                    id: anchor.id,
+                    x_ratio: anchor.x_ratio,
+                    y_ratio: anchor.y_ratio,
+                    side: anchor.side,
+                })),
+            })),
+            edges: state.edges.map((edge) => ({
+                id: edge.id,
+                source_node_id: edge.source_node_id,
+                source_anchor_id: edge.source_anchor_id,
+                target_node_id: edge.target_node_id,
+                target_anchor_id: edge.target_anchor_id,
+                route_points: (edge.route_points || []).map((point) => ({
+                    x: roundCanvasValue(point.x),
+                    y: roundCanvasValue(point.y),
+                })),
+            })),
+        };
+    }
+
+    function comparableState() {
+        const definition = buildDefinitionPayload();
+        return {
+            build_name: nameInput.value.trim(),
+            build_date: dateInput.value.trim(),
+            build_user: userInput.value.trim(),
+            definition_json: {
+                nodes: definition.nodes,
+                edges: definition.edges,
+            },
+        };
+    }
+
+    function capturePersistedSnapshot() {
+        state.persistedSnapshot = JSON.stringify(comparableState());
+        state.isDirty = false;
+        syncUiState();
+    }
+
+    function syncDirtyState() {
+        state.isDirty = JSON.stringify(comparableState()) !== state.persistedSnapshot;
+        syncUiState();
+    }
+
+    function syncUiState() {
+        const busy = state.isSaving || state.isLoading;
+        const saveBlocked = busy || (metaData.apiAuthRequired && !metaData.builderWriteToken);
+        const selectionExists = Boolean(state.selectedNodeId || state.selectedEdgeId);
+
+        if (currentBuildElement) {
+            currentBuildElement.textContent = state.currentBuildId ? `#${state.currentBuildId}` : "Aktueller Draft";
+        }
+        if (nodeCountElement) {
+            nodeCountElement.textContent = String(state.nodes.length);
+        }
+        if (edgeCountElement) {
+            edgeCountElement.textContent = String(state.edges.length);
+        }
+        if (saveStateElement) {
+            saveStateElement.className = "badge";
+            if (state.isSaving) {
+                saveStateElement.classList.add("badge-warning");
+                saveStateElement.textContent = "Speichert ...";
+            } else if (state.isLoading) {
+                saveStateElement.classList.add("badge-info");
+                saveStateElement.textContent = "Laedt ...";
+            } else if (state.isDirty) {
+                saveStateElement.classList.add("badge-warning");
+                saveStateElement.textContent = "Ungespeichert";
+            } else {
+                saveStateElement.classList.add("badge-success");
+                saveStateElement.textContent = "Gespeichert";
+            }
+        }
+
+        deleteNodeButton.disabled = busy || !selectionExists;
+        saveButton.disabled = saveBlocked;
+        saveAsButton.disabled = saveBlocked;
+        if (buildSelect) {
+            buildSelect.disabled = busy;
+        }
+        if (newBuildButton) {
+            newBuildButton.disabled = busy;
+        }
+
+        selectToolButton.setAttribute("aria-pressed", String(state.mode === "select"));
+        anchorToolButton.setAttribute("aria-pressed", String(state.mode === "anchor"));
+        connectToolButton.setAttribute("aria-pressed", String(state.mode === "connect"));
+
+        document.title = `${state.isDirty ? "* " : ""}Reactor Builder | reactor_ctrl`;
+    }
+
+    function confirmDiscardDirtyChanges(actionLabel) {
+        if (!state.isDirty) {
+            return true;
+        }
+        return window.confirm(
+            `${actionLabel}?\n\nEs gibt ungespeicherte Aenderungen im aktuellen Build. Diese Aenderungen gehen verloren.`,
+        );
+    }
 
     function cloneSnapshot() {
         return JSON.parse(
@@ -203,6 +368,43 @@
         return state.currentBuildId
             ? `Build #${state.currentBuildId} geladen.`
             : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.";
+    }
+
+    function applyLibraryFilter() {
+        const query = String(librarySearchInput?.value || "")
+            .trim()
+            .toLowerCase();
+        let visibleItemCount = 0;
+
+        for (const item of libraryItems) {
+            const haystack = [
+                item.dataset.symbolId || "",
+                item.dataset.symbolLabel || "",
+                item.dataset.symbolCategory || "",
+            ]
+                .join(" ")
+                .toLowerCase();
+            const matches = !query || haystack.includes(query);
+            item.hidden = !matches;
+            if (matches) {
+                visibleItemCount += 1;
+            }
+        }
+
+        for (const category of libraryCategories) {
+            const visibleInCategory = Array.from(category.querySelectorAll(".builder-symbol-item")).some((item) => !item.hidden);
+            category.hidden = !visibleInCategory;
+            if (query && visibleInCategory) {
+                category.open = true;
+            }
+        }
+
+        if (libraryEmptyState) {
+            libraryEmptyState.classList.toggle("is-hidden", !query || visibleItemCount > 0);
+        }
+        if (librarySearchClearButton) {
+            librarySearchClearButton.disabled = !query;
+        }
     }
 
     function fallbackInstanceId(symbolId, nodeId) {
@@ -407,6 +609,7 @@
         }
         updateHistory(state.currentBuildId);
         renderAll();
+        capturePersistedSnapshot();
     }
 
     function resetDraft() {
@@ -429,6 +632,7 @@
         setBuildSelection(null);
         updateHistory(null);
         renderAll();
+        capturePersistedSnapshot();
         setStatus("Neuer Draft aktiv. Bestehende Builds bleiben in der Datenbank gespeichert.", "muted");
     }
 
@@ -634,10 +838,12 @@
             instanceInput.value = node.instance_id;
             instanceInput.maxLength = 80;
             instanceInput.addEventListener("change", () => {
-                const nextValue = instanceInput.value.trim();
-                if (!nextValue) {
+                let nextValue;
+                try {
+                    nextValue = validateInstanceIdInput(instanceInput.value);
+                } catch (error) {
                     instanceInput.value = node.instance_id;
-                    setStatus("Element ID darf nicht leer sein.", "error");
+                    setStatus(error.message || "Element ID ist ungueltig.", "error");
                     return;
                 }
                 if (hasDuplicateInstanceId(nextValue, node.id)) {
@@ -645,8 +851,13 @@
                     setStatus(`Element ID ${nextValue} existiert bereits im Build.`, "error");
                     return;
                 }
+                if (nextValue === node.instance_id) {
+                    instanceInput.value = nextValue;
+                    return;
+                }
                 pushUndoSnapshot();
                 node.instance_id = nextValue;
+                instanceInput.value = nextValue;
                 renderAll();
                 setStatus("Element ID aktualisiert. Build noch nicht gespeichert.", "muted");
             });
@@ -671,7 +882,14 @@
                 input.value = node.communication[field.key] || "";
                 input.placeholder = field.placeholder;
                 input.addEventListener("change", () => {
-                    node.communication[field.key] = input.value.trim();
+                    const nextValue = input.value.trim();
+                    if (nextValue === (node.communication[field.key] || "")) {
+                        return;
+                    }
+                    pushUndoSnapshot();
+                    node.communication[field.key] = nextValue;
+                    input.value = nextValue;
+                    syncDirtyState();
                     setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
                 });
                 cell.appendChild(input);
@@ -1223,7 +1441,6 @@
                     return;
                 }
 
-                pushUndoSnapshot();
                 const point = pointerToCanvas(event);
                 state.selectedNodeId = node.id;
                 state.selectedEdgeId = null;
@@ -1234,6 +1451,8 @@
                     offsetX: point.x - node.x,
                     offsetY: point.y - node.y,
                     element: liveElement,
+                    moved: false,
+                    snapshotTaken: false,
                 };
                 liveElement.classList.add("is-dragging");
                 window.addEventListener("pointermove", handlePointerMove);
@@ -1250,11 +1469,16 @@
         renderNodes();
         updateEmptyState();
         renderCommunicationTable();
+        syncDirtyState();
     }
 
     function handlePointerMove(event) {
         if (!state.dragMove) {
             return;
+        }
+        if (!state.dragMove.snapshotTaken) {
+            pushUndoSnapshot();
+            state.dragMove.snapshotTaken = true;
         }
         const node = getNodeById(state.dragMove.nodeId);
         if (!node) {
@@ -1269,6 +1493,7 @@
         liveElement.style.left = `${node.x}px`;
         liveElement.style.top = `${node.y}px`;
         state.dragMove.element = liveElement;
+        state.dragMove.moved = true;
         renderEdges();
     }
 
@@ -1277,8 +1502,12 @@
         if (state.dragMove?.element) {
             state.dragMove.element.classList.remove("is-dragging");
         }
+        const didMove = Boolean(state.dragMove?.moved);
         state.dragMove = null;
         renderAll();
+        if (didMove) {
+            setStatus("Element verschoben. Build noch nicht gespeichert.", "muted");
+        }
     }
 
     function removeNode(nodeId) {
@@ -1342,6 +1571,10 @@
         state.pendingPlacement = null;
         instanceIdInput.value = "";
         instanceModal.classList.add("is-hidden");
+        if (state.modalReturnFocus && typeof state.modalReturnFocus.focus === "function") {
+            state.modalReturnFocus.focus();
+        }
+        state.modalReturnFocus = null;
     }
 
     function openInstanceModal(symbolId, x, y) {
@@ -1350,6 +1583,7 @@
             setStatus(`Symbol ${symbolId} ist nicht in der Library registriert.`, "error");
             return;
         }
+        state.modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         state.pendingPlacement = { symbolId, x, y };
         instanceModalCopy.textContent = `Vergib eine eindeutige ID für ${symbol.label}. Diese ID wird im Canvas angezeigt und für die Kommunikationszuordnung verwendet.`;
         instanceIdInput.value = suggestionForSymbol(symbolId);
@@ -1366,10 +1600,13 @@
             return;
         }
 
-        const instanceId = instanceIdInput.value.trim();
-        if (!instanceId) {
-            setStatus("Element ID darf nicht leer sein.", "error");
+        let instanceId;
+        try {
+            instanceId = validateInstanceIdInput(instanceIdInput.value);
+        } catch (error) {
+            setStatus(error.message || "Element ID ist ungueltig.", "error");
             instanceIdInput.focus();
+            instanceIdInput.select();
             return;
         }
         if (hasDuplicateInstanceId(instanceId, null)) {
@@ -1390,12 +1627,23 @@
             setStatus(`Symbol ${symbolId} ist nicht in der Library registriert.`, "error");
             return;
         }
+        let safeInstanceId;
+        try {
+            safeInstanceId = validateInstanceIdInput(instanceId);
+        } catch (error) {
+            setStatus(error.message || "Element ID ist ungueltig.", "error");
+            return;
+        }
+        if (hasDuplicateInstanceId(safeInstanceId, null)) {
+            setStatus(`Element ID ${safeInstanceId} existiert bereits im Build.`, "error");
+            return;
+        }
 
         pushUndoSnapshot();
         const node = normalizeNode({
             id: generateId("node"),
             symbol_id: symbol.id,
-            instance_id: instanceId,
+            instance_id: safeInstanceId,
             label: symbol.label,
             category: symbol.category,
             svg_url: symbol.svg_url,
@@ -1411,10 +1659,10 @@
         state.selectedNodeId = node.id;
         state.selectedEdgeId = null;
         renderAll();
-        setStatus(`${symbol.label} als ${instanceId} auf dem Canvas platziert.`, "muted");
+        setStatus(`${symbol.label} als ${safeInstanceId} auf dem Canvas platziert.`, "muted");
     }
 
-    function buildPayload() {
+    function buildPayload(isCreate) {
         const buildName = nameInput.value.trim();
         const buildDate = dateInput.value.trim();
         const buildUser = userInput.value.trim();
@@ -1429,79 +1677,70 @@
             throw new Error("User darf nicht leer sein.");
         }
 
-        return {
+        const payload = {
             build_name: buildName,
             build_date: buildDate,
-            created_by: buildUser,
             updated_by: buildUser,
-            definition_json: {
-                canvas: {
-                    width: canvas.clientWidth,
-                    height: canvas.clientHeight,
-                },
-                nodes: state.nodes.map((node) => ({
-                    id: node.id,
-                    symbol_id: node.symbol_id,
-                    instance_id: node.instance_id,
-                    label: node.label,
-                    category: node.category,
-                    svg_url: node.svg_url,
-                    x: node.x,
-                    y: node.y,
-                    width: node.width,
-                    height: node.height,
-                    communication: {
-                        device_server_code: node.communication.device_server_code || null,
-                        connection_label: node.communication.connection_label || null,
-                        protocol: node.communication.protocol || null,
-                        notes: node.communication.notes || null,
-                    },
-                    anchors: node.anchors.map((anchor) => ({
-                        id: anchor.id,
-                        x_ratio: anchor.x_ratio,
-                        y_ratio: anchor.y_ratio,
-                        side: anchor.side,
-                    })),
-                })),
-                edges: state.edges.map((edge) => ({
-                    id: edge.id,
-                    source_node_id: edge.source_node_id,
-                    source_anchor_id: edge.source_anchor_id,
-                    target_node_id: edge.target_node_id,
-                    target_anchor_id: edge.target_anchor_id,
-                    route_points: (edge.route_points || []).map((point) => ({
-                        x: roundCanvasValue(point.x),
-                        y: roundCanvasValue(point.y),
-                    })),
-                })),
-            },
+            definition_json: buildDefinitionPayload(),
         };
-    }
-
-    async function fetchJson(url, options) {
-        const response = await window.fetch(url, options);
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            throw new Error(payload.error || "Request fehlgeschlagen.");
+        if (isCreate) {
+            payload.created_by = buildUser;
         }
         return payload;
     }
 
+    async function fetchJson(url, options) {
+        const timeoutMs = asNumber(options?.timeoutMs, 20000);
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+            const response = await window.fetch(url, {
+                ...(options || {}),
+                headers: {
+                    Accept: "application/json",
+                    ...((options && options.headers) || {}),
+                },
+                cache: "no-store",
+                credentials: "same-origin",
+                signal: controller.signal,
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                const message = [payload.error || "Request fehlgeschlagen.", payload.details || ""]
+                    .filter(Boolean)
+                    .join(" ");
+                throw new Error(message);
+            }
+            return payload;
+        } catch (error) {
+            if (error && error.name === "AbortError") {
+                throw new Error("Request Timeout. Bitte Verbindung und Serverstatus pruefen.");
+            }
+            throw error;
+        } finally {
+            window.clearTimeout(timer);
+        }
+    }
+
     async function saveBuild(forceCreate) {
+        if (state.isSaving || state.isLoading) {
+            return;
+        }
         if (metaData.apiAuthRequired && !metaData.builderWriteToken) {
             setStatus("Der Server liefert keinen Builder-Token. Speichern ist derzeit nicht verfuegbar.", "error");
             return;
         }
 
+        const isCreate = forceCreate || !state.currentBuildId;
         let payload;
         try {
-            payload = buildPayload();
+            payload = buildPayload(isCreate);
         } catch (error) {
             setStatus(error.message || "Build-Daten sind ungueltig.", "error");
             return;
         }
 
-        const isCreate = forceCreate || !state.currentBuildId;
         const url = isCreate ? "/api/reactor-builds" : `/api/reactor-builds/${state.currentBuildId}`;
         const method = isCreate ? "POST" : "PATCH";
         const headers = {
@@ -1512,6 +1751,8 @@
             headers["X-Reactor-Builder-Token"] = metaData.builderWriteToken;
         }
 
+        state.isSaving = true;
+        syncUiState();
         setStatus("Build wird gespeichert ...", "muted");
 
         try {
@@ -1525,15 +1766,23 @@
             setStatus("Build gespeichert. SQL-Stand und Builder sind synchron.", "success");
         } catch (error) {
             setStatus(error.message || "Speichern fehlgeschlagen.", "error");
+        } finally {
+            state.isSaving = false;
+            syncUiState();
         }
     }
 
     async function loadBuild(buildId) {
+        if (state.isSaving || state.isLoading) {
+            return;
+        }
         if (!buildId) {
             resetDraft();
             return;
         }
 
+        state.isLoading = true;
+        syncUiState();
         setStatus("Build wird geladen ...", "muted");
         try {
             const build = await fetchJson(`/api/reactor-builds/${buildId}`, {
@@ -1544,6 +1793,9 @@
         } catch (error) {
             setBuildSelection(state.currentBuildId);
             setStatus(error.message || "Build konnte nicht geladen werden.", "error");
+        } finally {
+            state.isLoading = false;
+            syncUiState();
         }
     }
 
@@ -1605,15 +1857,49 @@
         void saveBuild(true);
     });
 
+    nameInput.addEventListener("input", () => {
+        syncDirtyState();
+    });
+    dateInput.addEventListener("change", () => {
+        syncDirtyState();
+    });
+    userInput.addEventListener("input", () => {
+        syncDirtyState();
+    });
+
     if (newBuildButton) {
         newBuildButton.addEventListener("click", () => {
+            if (!confirmDiscardDirtyChanges("Neuen Draft starten")) {
+                return;
+            }
             resetDraft();
         });
     }
 
     if (buildSelect) {
         buildSelect.addEventListener("change", () => {
-            void loadBuild(parseBuildId(buildSelect.value));
+            const nextBuildId = parseBuildId(buildSelect.value);
+            if (!confirmDiscardDirtyChanges(nextBuildId ? `Build #${nextBuildId} laden` : "Zum Draft wechseln")) {
+                setBuildSelection(state.currentBuildId);
+                return;
+            }
+            void loadBuild(nextBuildId);
+        });
+    }
+
+    if (librarySearchInput) {
+        librarySearchInput.addEventListener("input", () => {
+            applyLibraryFilter();
+        });
+    }
+    if (librarySearchClearButton) {
+        librarySearchClearButton.addEventListener("click", () => {
+            if (!librarySearchInput) {
+                return;
+            }
+            librarySearchInput.value = "";
+            applyLibraryFilter();
+            librarySearchInput.focus();
         });
     }
 
@@ -1662,11 +1948,39 @@
             return;
         }
 
+        if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            if (!instanceModal.classList.contains("is-hidden")) {
+                confirmInstancePlacement();
+                return;
+            }
+            void saveBuild(false);
+            return;
+        }
+
         if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === "z" && !isFormField) {
             event.preventDefault();
             const snapshot = state.undoStack.pop();
             restoreSnapshot(snapshot);
             return;
+        }
+
+        if (!isFormField && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            if (event.key === "1") {
+                event.preventDefault();
+                setMode("select");
+                return;
+            }
+            if (event.key === "2") {
+                event.preventDefault();
+                setMode("anchor");
+                return;
+            }
+            if (event.key === "3") {
+                event.preventDefault();
+                setMode("connect");
+                return;
+            }
         }
 
         if ((event.key === "Delete" || event.key === "Backspace") && !isFormField) {
@@ -1681,8 +1995,18 @@
         }
     });
 
+    window.addEventListener("beforeunload", (event) => {
+        if (!state.isDirty) {
+            return;
+        }
+        event.preventDefault();
+        event.returnValue = "";
+    });
+
     setBuildSelection(state.currentBuildId);
     setMode("select");
     setView("layout");
+    applyLibraryFilter();
     renderAll();
+    capturePersistedSnapshot();
 })();
