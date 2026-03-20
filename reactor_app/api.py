@@ -610,6 +610,11 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             edge.get("target_anchor_id"),
             field_name=f"definition_json.edges[{index}].target_anchor_id",
         )
+        raw_route_points = edge.get("route_points", [])
+        if raw_route_points in (None, ""):
+            raw_route_points = []
+        if not isinstance(raw_route_points, list):
+            raise ValueError(f"Field 'definition_json.edges[{index}].route_points' must be a list.")
 
         assert edge_id is not None
         assert source_node_id is not None
@@ -628,6 +633,28 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
         if target_anchor_id is not None and target_anchor_id not in node_anchor_ids.get(target_node_id, set()):
             raise ValueError(f"Edge {edge_id} references missing target anchor '{target_anchor_id}'.")
 
+        normalized_route_points: list[dict[str, float]] = []
+        for point_index, point in enumerate(raw_route_points, start=1):
+            if not isinstance(point, dict):
+                raise ValueError(
+                    f"Route point {point_index} in 'definition_json.edges[{index}].route_points' must be an object."
+                )
+
+            x_value = _parse_float(
+                point.get("x"),
+                field_name=f"definition_json.edges[{index}].route_points[{point_index}].x",
+            )
+            y_value = _parse_float(
+                point.get("y"),
+                field_name=f"definition_json.edges[{index}].route_points[{point_index}].y",
+            )
+            normalized_route_points.append(
+                {
+                    "x": round(x_value, 2),
+                    "y": round(y_value, 2),
+                }
+            )
+
         edge_ids.add(edge_id)
         normalized_edges.append(
             {
@@ -636,6 +663,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 "source_anchor_id": source_anchor_id,
                 "target_node_id": target_node_id,
                 "target_anchor_id": target_anchor_id,
+                "route_points": normalized_route_points,
             }
         )
 

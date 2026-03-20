@@ -150,6 +150,7 @@
         pendingPlacement: null,
         dragMove: null,
         anchorMove: null,
+        edgePointMove: null,
         undoStack: [],
     };
 
@@ -179,6 +180,7 @@
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
         state.anchorMove = null;
+        state.edgePointMove = null;
         renderAll();
         setStatus("Undo ausgefuehrt.", "muted");
     }
@@ -322,6 +324,14 @@
             source_anchor_id: sourceAnchor ? sourceAnchor.id : null,
             target_node_id: asString(edge?.target_node_id, ""),
             target_anchor_id: targetAnchor ? targetAnchor.id : null,
+            route_points: Array.isArray(edge?.route_points)
+                ? edge.route_points
+                      .filter((point) => point && typeof point === "object")
+                      .map((point) => ({
+                          x: Math.round(asNumber(point.x, 0) * 100) / 100,
+                          y: Math.round(asNumber(point.y, 0) * 100) / 100,
+                      }))
+                : [],
         };
     }
 
@@ -334,6 +344,7 @@
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
         state.anchorMove = null;
+        state.edgePointMove = null;
     }
 
     function updateHistory(buildId) {
@@ -406,6 +417,7 @@
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
         state.anchorMove = null;
+        state.edgePointMove = null;
         state.undoStack = [];
         nameInput.value = "Untitled Reactor Build";
         if (!dateInput.value) {
@@ -434,6 +446,10 @@
 
     function roundRatio(value) {
         return Math.round(clamp(value, 0, 1) * 1000000) / 1000000;
+    }
+
+    function roundCanvasValue(value) {
+        return Math.round(value * 100) / 100;
     }
 
     function clampNode(node) {
@@ -509,7 +525,7 @@
         return compressed;
     }
 
-    function orthogonalEdgePath(sourcePoint, sourceSide, targetPoint, targetSide) {
+    function buildAutoEdgePoints(sourcePoint, sourceSide, targetPoint, targetSide) {
         const stubDistance = 28;
         const sourceStub = offsetPoint(sourcePoint, sourceSide, stubDistance);
         const targetStub = offsetPoint(targetPoint, targetSide, stubDistance);
@@ -534,8 +550,27 @@
         points.push(targetStub);
         points.push(targetPoint);
 
-        const cleanPoints = compressOrthogonalPoints(points);
-        return cleanPoints
+        return compressOrthogonalPoints(points);
+    }
+
+    function edgeRoutePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide) {
+        if (Array.isArray(edge.route_points) && edge.route_points.length > 0) {
+            return edge.route_points.map((point) => ({
+                x: roundCanvasValue(asNumber(point.x, 0)),
+                y: roundCanvasValue(asNumber(point.y, 0)),
+            }));
+        }
+
+        const autoPoints = buildAutoEdgePoints(sourcePoint, sourceSide, targetPoint, targetSide);
+        return autoPoints.slice(1, -1);
+    }
+
+    function edgePolylinePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide) {
+        return [sourcePoint, ...edgeRoutePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide), targetPoint];
+    }
+
+    function edgePathFromPoints(points) {
+        return points
             .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
             .join(" ");
     }
@@ -656,8 +691,9 @@
             const sourceSide = anchorSide(sourceNode, edge.source_anchor_id);
             const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
             const targetSide = anchorSide(targetNode, edge.target_anchor_id);
+            const polylinePoints = edgePolylinePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide);
             const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-            path.setAttribute("d", orthogonalEdgePath(sourcePoint, sourceSide, targetPoint, targetSide));
+            path.setAttribute("d", edgePathFromPoints(polylinePoints));
             path.setAttribute("class", `builder-edge${state.selectedEdgeId === edge.id ? " is-selected" : ""}`);
             path.dataset.edgeId = edge.id;
             path.addEventListener("click", (event) => {
@@ -667,6 +703,32 @@
                 renderAll();
             });
             edgeLayer.appendChild(path);
+
+            if (state.mode === "connect" && state.selectedEdgeId === edge.id) {
+                const routePoints = edgeRoutePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide);
+                routePoints.forEach((point, routePointIndex) => {
+                    const handle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                    handle.setAttribute("cx", String(point.x));
+                    handle.setAttribute("cy", String(point.y));
+                    handle.setAttribute("r", "7");
+                    handle.setAttribute(
+                        "class",
+                        `builder-edge-handle${state.edgePointMove?.edgeId === edge.id && state.edgePointMove?.routePointIndex === routePointIndex ? " is-active" : ""}`,
+                    );
+                    handle.dataset.edgeId = edge.id;
+                    handle.dataset.routePointIndex = String(routePointIndex);
+                    handle.addEventListener("pointerdown", (event) => {
+                        startEdgeRoutePointMove(edge.id, routePointIndex, event);
+                    });
+                    handle.addEventListener("click", (event) => {
+                        event.stopPropagation();
+                        state.selectedEdgeId = edge.id;
+                        state.selectedNodeId = null;
+                        renderAll();
+                    });
+                    edgeLayer.appendChild(handle);
+                });
+            }
         }
 
         if (state.pendingAnchor) {
@@ -783,6 +845,102 @@
             activeMove.button = liveButton;
         }
         renderEdges();
+    }
+
+    function ensureEdgeRoutePoints(edgeId) {
+        const edge = state.edges.find((item) => item.id === edgeId) || null;
+        if (!edge) {
+            return null;
+        }
+        if (Array.isArray(edge.route_points) && edge.route_points.length > 0) {
+            return edge;
+        }
+
+        const sourceNode = getNodeById(edge.source_node_id);
+        const targetNode = getNodeById(edge.target_node_id);
+        if (!sourceNode || !targetNode) {
+            return edge;
+        }
+
+        const sourcePoint = anchorPoint(sourceNode, edge.source_anchor_id);
+        const sourceSide = anchorSide(sourceNode, edge.source_anchor_id);
+        const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
+        const targetSide = anchorSide(targetNode, edge.target_anchor_id);
+        edge.route_points = edgeRoutePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide).map((point) => ({
+            x: roundCanvasValue(point.x),
+            y: roundCanvasValue(point.y),
+        }));
+        return edge;
+    }
+
+    function stopEdgeRoutePointMove() {
+        window.removeEventListener("pointermove", handleEdgeRoutePointMove);
+        window.removeEventListener("pointerup", stopEdgeRoutePointMove);
+        window.removeEventListener("pointercancel", stopEdgeRoutePointMove);
+
+        const activeMove = state.edgePointMove;
+        if (!activeMove) {
+            return;
+        }
+
+        const didMove = activeMove.moved;
+        state.edgePointMove = null;
+        renderAll();
+        if (didMove) {
+            setStatus("Leitungsverlauf aktualisiert. Build noch nicht gespeichert.", "success");
+        }
+    }
+
+    function handleEdgeRoutePointMove(event) {
+        const activeMove = state.edgePointMove;
+        if (!activeMove) {
+            return;
+        }
+
+        if (!activeMove.snapshotTaken) {
+            pushUndoSnapshot();
+            activeMove.snapshotTaken = true;
+        }
+
+        const edge = ensureEdgeRoutePoints(activeMove.edgeId);
+        if (!edge || !Array.isArray(edge.route_points) || !edge.route_points[activeMove.routePointIndex]) {
+            return;
+        }
+
+        const point = pointerToCanvas(event);
+        edge.route_points[activeMove.routePointIndex] = {
+            x: roundCanvasValue(point.x),
+            y: roundCanvasValue(point.y),
+        };
+        activeMove.moved = true;
+        renderEdges();
+    }
+
+    function startEdgeRoutePointMove(edgeId, routePointIndex, event) {
+        if (state.mode !== "connect" || event.button !== 0) {
+            return;
+        }
+
+        const edge = ensureEdgeRoutePoints(edgeId);
+        if (!edge || !Array.isArray(edge.route_points) || !edge.route_points[routePointIndex]) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        state.selectedEdgeId = edgeId;
+        state.selectedNodeId = null;
+        state.edgePointMove = {
+            edgeId,
+            routePointIndex,
+            moved: false,
+            snapshotTaken: false,
+        };
+        renderEdges();
+
+        window.addEventListener("pointermove", handleEdgeRoutePointMove);
+        window.addEventListener("pointerup", stopEdgeRoutePointMove);
+        window.addEventListener("pointercancel", stopEdgeRoutePointMove);
     }
 
     function startAnchorMove(nodeId, anchorId, event) {
@@ -1108,6 +1266,9 @@
         if (state.mode !== "anchor" && state.anchorMove) {
             stopAnchorPointerMove();
         }
+        if (state.mode !== "connect" && state.edgePointMove) {
+            stopEdgeRoutePointMove();
+        }
         selectToolButton.classList.toggle("is-active", state.mode === "select");
         anchorToolButton.classList.toggle("is-active", state.mode === "anchor");
         connectToolButton.classList.toggle("is-active", state.mode === "connect");
@@ -1118,7 +1279,7 @@
             return;
         }
         if (state.mode === "connect") {
-            setStatus("Connection Tool aktiv. Verbindungen starten und enden auf sichtbaren Anchorpunkten.", "muted");
+            setStatus("Connection Tool aktiv. Verbindungen an Anchors erstellen und vorhandene Leitungen ueber die Handles anpassen.", "muted");
             return;
         }
         setStatus(currentDraftMessage(), "muted");
@@ -1263,6 +1424,10 @@
                     source_anchor_id: edge.source_anchor_id,
                     target_node_id: edge.target_node_id,
                     target_anchor_id: edge.target_anchor_id,
+                    route_points: (edge.route_points || []).map((point) => ({
+                        x: roundCanvasValue(point.x),
+                        y: roundCanvasValue(point.y),
+                    })),
                 })),
             },
         };

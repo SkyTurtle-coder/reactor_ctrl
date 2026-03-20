@@ -824,6 +824,18 @@ h2 {
     stroke-dasharray: 8 6;
 }
 
+.builder-edge-handle {
+    fill: #fffdfa;
+    stroke: var(--accent);
+    stroke-width: 2;
+    cursor: move;
+    pointer-events: all;
+}
+
+.builder-edge-handle.is-active {
+    fill: var(--accent);
+}
+
 .tile-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
