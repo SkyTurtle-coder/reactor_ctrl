@@ -9,6 +9,7 @@ from flask import Blueprint, current_app, jsonify, render_template, request
 from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
+from .builder_auth import REACTOR_BUILDER_WRITE_SCOPE, create_scoped_token
 from .extensions import db
 from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild
 from .services.drivers import list_supported_protocols
@@ -335,13 +336,22 @@ def reactor_builder_view() -> str:
         if current_build is not None and current_build.build_date is not None
         else (request.args.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
     )
+    builder_write_token = None
+    if current_app.config.get("API_AUTH_REQUIRED", True):
+        secret_key = current_app.config.get("SECRET_KEY")
+        if secret_key:
+            builder_write_token = create_scoped_token(
+                secret_key,
+                scope=REACTOR_BUILDER_WRITE_SCOPE,
+                ttl_seconds=current_app.config.get("BUILDER_WRITE_TOKEN_TTL_SECONDS", 43200),
+            )
 
     return render_template(
         "reactor_builder.html",
         active_page="reactor_builder",
         current_build_id=None if current_build is None else current_build.reactor_build_id,
         current_build=_reactor_build_detail_to_dict(current_build),
-        builder_api_token=current_app.config.get("API_AUTH_TOKEN"),
+        builder_write_token=builder_write_token,
         builder_name=builder_name,
         builder_user=builder_user,
         builder_date=builder_date,

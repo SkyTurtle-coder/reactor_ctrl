@@ -1,6 +1,71 @@
 {
   "symbols": [
     {
+      "id": "reactor",
+      "label": "Reactor",
+      "category": "vessels",
+      "svg_file": "vessels/reactor.svg",
+      "default_width": 222,
+      "default_height": 343,
+      "ports": [
+        {
+          "id": "top_center",
+          "x": 81,
+          "y": 1,
+          "direction": "north"
+        },
+        {
+          "id": "jacket_left_upper",
+          "x": 11,
+          "y": 41,
+          "direction": "west"
+        },
+        {
+          "id": "jacket_left_lower",
+          "x": 11,
+          "y": 81,
+          "direction": "west"
+        },
+        {
+          "id": "jacket_right_upper",
+          "x": 151,
+          "y": 41,
+          "direction": "east"
+        },
+        {
+          "id": "jacket_right_lower",
+          "x": 151,
+          "y": 81,
+          "direction": "east"
+        },
+        {
+          "id": "process_right",
+          "x": 201,
+          "y": 141,
+          "direction": "east"
+        },
+        {
+          "id": "product_right",
+          "x": 201,
+          "y": 301,
+          "direction": "east"
+        },
+        {
+          "id": "drain_bottom",
+          "x": 81,
+          "y": 341,
+          "direction": "south"
+        }
+      ],
+      "anchors": [
+        {
+          "id": "center",
+          "x": 111,
+          "y": 171.5
+        }
+      ]
+    },
+    {
       "id": "pump",
       "label": "Pump",
       "category": "actuators",

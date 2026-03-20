@@ -7,6 +7,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
+from .builder_auth import REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
 from .extensions import db
 from .models import (
     ControlCommand,
@@ -61,6 +62,21 @@ def _extract_api_token() -> str | None:
     return token or None
 
 
+def _extract_builder_write_token() -> str | None:
+    token = request.headers.get("X-Reactor-Builder-Token")
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
+
+
+def _is_builder_write_request() -> bool:
+    if request.method not in {"POST", "PATCH"}:
+        return False
+    path = request.path.rstrip("/")
+    return path == "/api/reactor-builds" or path.startswith("/api/reactor-builds/")
+
+
 @api_bp.before_request
 def require_api_token_for_writes():
     if request.method in _SAFE_METHODS:
@@ -69,20 +85,39 @@ def require_api_token_for_writes():
     if not current_app.config.get("API_AUTH_REQUIRED", True):
         return None
 
+    builder_token = _extract_builder_write_token() if _is_builder_write_request() else None
+    secret_key = current_app.config.get("SECRET_KEY")
+    if builder_token and secret_key:
+        if verify_scoped_token(
+            builder_token,
+            secret_key=secret_key,
+            expected_scope=REACTOR_BUILDER_WRITE_SCOPE,
+        ):
+            return None
+
     expected_token = current_app.config.get("API_AUTH_TOKEN")
     if not expected_token:
+        if builder_token is not None:
+            return _json_auth_error(
+                "Invalid or expired Reactor Builder token. Reload the builder page and try again.",
+                401,
+            )
         return _json_auth_error(
             "API write authentication is enabled but no API_AUTH_TOKEN is configured on the server.",
             503,
         )
 
     provided_token = _extract_api_token()
+    if provided_token is not None and hmac.compare_digest(provided_token, expected_token):
+        return None
+
+    if builder_token is not None:
+        return _json_auth_error("Invalid or expired Reactor Builder token. Reload the builder page and try again.", 401)
+
     if provided_token is None:
         return _json_auth_error("Missing API authentication token.", 401)
 
-    if not hmac.compare_digest(provided_token, expected_token):
-        return _json_auth_error("Invalid API authentication token.", 401)
-    return None
+    return _json_auth_error("Invalid API authentication token.", 401)
 
 
 def _load_json_payload() -> dict[str, Any]:

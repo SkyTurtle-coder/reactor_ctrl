@@ -51,6 +51,8 @@ Alle schreibenden API-Endpunkte (`POST`, `PATCH`, `PUT`, `DELETE`) sind fuer den
 - Token ueber `API_AUTH_TOKEN=<dein-langer-zufallstoken>`
 - Header entweder `Authorization: Bearer <token>` oder `X-API-Token: <token>`
 
+Fuer den Reactor Builder wird kein globaler API-Token mehr in die HTML-Seite eingebettet. Die Builder-Seite erzeugt stattdessen serverseitig einen kurzlebigen, auf `POST|PATCH /api/reactor-builds` begrenzten Write-Token.
+
 Beispiel:
 
 ```powershell
@@ -280,4 +282,4 @@ Beim App-Start werden fehlende Tabellen standardmaessig automatisch angelegt (`A
 
 Beim Upgrade von der frueheren USB-/RS-485-Struktur werden veraltete Tabellen `device_binding_current` und `device_binding_history` automatisch als Backup unter Namen wie `device_binding_current_legacy_rs485` archiviert und danach im aktuellen NPort-Format neu erstellt. Die alten Binding-Daten bleiben damit erhalten, werden aber nicht mehr aktiv verwendet.
 
-Fuer produktive Deployments sollte `FLASK_DEBUG` auf `false` bleiben und `API_AUTH_TOKEN` gesetzt sein. Falls ein vorhandenes Datenbankschema noch aus der alten USB/RS-485-Struktur stammt, muessen die Legacy-Tabellen manuell auf das aktuelle NPort-Schema umgestellt werden.
+Fuer produktive Deployments sollte `FLASK_DEBUG` auf `false` bleiben, `SECRET_KEY` nicht auf dem Default stehen und `API_AUTH_TOKEN` gesetzt sein. Falls ein vorhandenes Datenbankschema noch aus der alten USB/RS-485-Struktur stammt, muessen die Legacy-Tabellen manuell auf das aktuelle NPort-Schema umgestellt werden.

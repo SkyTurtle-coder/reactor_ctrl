@@ -1142,7 +1142,7 @@
     }
 
     async function saveBuild(forceCreate) {
-        if (metaData.apiAuthRequired && !metaData.builderApiToken) {
+        if (metaData.apiAuthRequired && !metaData.builderWriteToken) {
             setStatus("Der Server liefert keinen Builder-Token. Speichern ist derzeit nicht verfuegbar.", "error");
             return;
         }
@@ -1162,8 +1162,8 @@
             "Content-Type": "application/json",
         };
 
-        if (metaData.builderApiToken) {
-            headers.Authorization = `Bearer ${metaData.builderApiToken}`;
+        if (metaData.builderWriteToken) {
+            headers["X-Reactor-Builder-Token"] = metaData.builderWriteToken;
         }
 
         setStatus("Build wird gespeichert ...", "muted");

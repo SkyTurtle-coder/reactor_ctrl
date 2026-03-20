@@ -18,6 +18,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv(
@@ -30,6 +40,7 @@ class Config:
     API_AUTH_REQUIRED = _env_bool("API_AUTH_REQUIRED", True)
     API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN")
     API_AUTH_REALM = os.getenv("API_AUTH_REALM", "reactor_ctrl")
+    BUILDER_WRITE_TOKEN_TTL_SECONDS = _env_int("BUILDER_WRITE_TOKEN_TTL_SECONDS", 43200)
 
     @staticmethod
     def generate_api_auth_token() -> str:
