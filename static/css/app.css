@@ -738,6 +738,16 @@ h2 {
     cursor: crosshair;
 }
 
+.builder-anchor.is-editable {
+    cursor: grab;
+}
+
+.builder-anchor.is-moving {
+    cursor: grabbing;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px rgba(24, 35, 33, 0.28), 0 0 0 7px rgba(15, 92, 82, 0.12);
+}
+
 .builder-anchor.is-pending {
     background: var(--accent);
 }

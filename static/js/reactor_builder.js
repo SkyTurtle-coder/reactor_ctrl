@@ -149,6 +149,7 @@
         pendingAnchor: null,
         pendingPlacement: null,
         dragMove: null,
+        anchorMove: null,
         undoStack: [],
     };
 
@@ -177,6 +178,7 @@
         state.selectedNodeId = null;
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
+        state.anchorMove = null;
         renderAll();
         setStatus("Undo ausgefuehrt.", "muted");
     }
@@ -331,6 +333,7 @@
         state.selectedNodeId = null;
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
+        state.anchorMove = null;
     }
 
     function updateHistory(buildId) {
@@ -402,6 +405,7 @@
         state.selectedNodeId = null;
         state.selectedEdgeId = null;
         state.pendingAnchor = null;
+        state.anchorMove = null;
         state.undoStack = [];
         nameInput.value = "Untitled Reactor Build";
         if (!dateInput.value) {
@@ -426,6 +430,10 @@
             x: event.clientX - rect.left,
             y: event.clientY - rect.top,
         };
+    }
+
+    function roundRatio(value) {
+        return Math.round(clamp(value, 0, 1) * 1000000) / 1000000;
     }
 
     function clampNode(node) {
@@ -697,6 +705,117 @@
         return distances[0];
     }
 
+    function updateAnchorButtonPosition(button, anchor) {
+        if (!button || !anchor) {
+            return;
+        }
+        button.style.left = `${anchor.x_ratio * 100}%`;
+        button.style.top = `${anchor.y_ratio * 100}%`;
+    }
+
+    function updateAnchorPosition(nodeId, anchorId, clientX, clientY) {
+        const node = getNodeById(nodeId);
+        const nodeElement =
+            nodeLayer.querySelector(`.builder-node[data-node-id="${nodeId}"]`);
+        if (!node || !nodeElement) {
+            return null;
+        }
+
+        const rect = nodeElement.getBoundingClientRect();
+        const snapped = snapAnchorToOuterSide(clientX - rect.left, clientY - rect.top, node.width, node.height);
+        const anchor = getAnchorById(node, anchorId);
+        if (!anchor) {
+            return null;
+        }
+
+        anchor.x_ratio = roundRatio(snapped.x_ratio);
+        anchor.y_ratio = roundRatio(snapped.y_ratio);
+        anchor.side = snapped.side;
+        return anchor;
+    }
+
+    function stopAnchorPointerMove() {
+        window.removeEventListener("pointermove", handleAnchorPointerMove);
+        window.removeEventListener("pointerup", stopAnchorPointerMove);
+        window.removeEventListener("pointercancel", stopAnchorPointerMove);
+
+        const activeMove = state.anchorMove;
+        if (!activeMove) {
+            return;
+        }
+
+        if (activeMove.button && activeMove.button.isConnected) {
+            activeMove.button.classList.remove("is-moving");
+        }
+
+        const didMove = activeMove.moved;
+        state.anchorMove = null;
+        renderAll();
+        if (didMove) {
+            setStatus("Anchor versetzt. Verbundene Leitungen wurden aktualisiert.", "success");
+        }
+    }
+
+    function handleAnchorPointerMove(event) {
+        const activeMove = state.anchorMove;
+        if (!activeMove) {
+            return;
+        }
+
+        if (!activeMove.snapshotTaken) {
+            pushUndoSnapshot();
+            activeMove.snapshotTaken = true;
+        }
+
+        const anchor = updateAnchorPosition(activeMove.nodeId, activeMove.anchorId, event.clientX, event.clientY);
+        if (!anchor) {
+            return;
+        }
+
+        activeMove.moved = true;
+        const liveButton =
+            nodeLayer.querySelector(
+                `.builder-node[data-node-id="${activeMove.nodeId}"] .builder-anchor[data-anchor-id="${activeMove.anchorId}"]`,
+            ) || activeMove.button;
+        if (liveButton) {
+            liveButton.classList.add("is-moving");
+            updateAnchorButtonPosition(liveButton, anchor);
+            activeMove.button = liveButton;
+        }
+        renderEdges();
+    }
+
+    function startAnchorMove(nodeId, anchorId, event) {
+        if (event.button !== 0) {
+            return;
+        }
+
+        const anchor = getAnchorById(getNodeById(nodeId), anchorId);
+        if (!anchor) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        state.selectedNodeId = nodeId;
+        state.selectedEdgeId = null;
+        state.pendingAnchor = null;
+
+        state.anchorMove = {
+            nodeId,
+            anchorId,
+            button: event.currentTarget,
+            moved: false,
+            snapshotTaken: false,
+        };
+        event.currentTarget.classList.add("is-moving");
+        renderEdges();
+
+        window.addEventListener("pointermove", handleAnchorPointerMove);
+        window.addEventListener("pointerup", stopAnchorPointerMove);
+        window.addEventListener("pointercancel", stopAnchorPointerMove);
+    }
+
     function selectNode(nodeId) {
         state.selectedNodeId = nodeId;
         state.selectedEdgeId = null;
@@ -730,8 +849,8 @@
         pushUndoSnapshot();
         node.anchors.push({
             id: generateId("anchor"),
-            x_ratio: snapped.x_ratio,
-            y_ratio: snapped.y_ratio,
+            x_ratio: roundRatio(snapped.x_ratio),
+            y_ratio: roundRatio(snapped.y_ratio),
             side: snapped.side,
         });
         state.selectedNodeId = nodeId;
@@ -811,6 +930,9 @@
                     const anchorButton = document.createElement("button");
                     anchorButton.type = "button";
                     anchorButton.className = "builder-anchor";
+                    if (state.mode === "anchor") {
+                        anchorButton.classList.add("is-editable");
+                    }
                     if (
                         state.pendingAnchor &&
                         state.pendingAnchor.nodeId === node.id &&
@@ -818,11 +940,22 @@
                     ) {
                         anchorButton.classList.add("is-pending");
                     }
+                    anchorButton.dataset.anchorId = anchor.id;
                     anchorButton.style.left = `${anchor.x_ratio * 100}%`;
                     anchorButton.style.top = `${anchor.y_ratio * 100}%`;
                     anchorButton.setAttribute("aria-label", `${node.label} ${anchor.id}`);
+                    anchorButton.addEventListener("pointerdown", (event) => {
+                        if (state.mode !== "anchor") {
+                            return;
+                        }
+                        startAnchorMove(node.id, anchor.id, event);
+                    });
                     anchorButton.addEventListener("click", (event) => {
                         event.stopPropagation();
+                        if (state.mode === "anchor") {
+                            selectNode(node.id);
+                            return;
+                        }
                         if (state.mode !== "connect") {
                             selectNode(node.id);
                             return;
@@ -972,13 +1105,16 @@
         if (state.mode !== "connect") {
             state.pendingAnchor = null;
         }
+        if (state.mode !== "anchor" && state.anchorMove) {
+            stopAnchorPointerMove();
+        }
         selectToolButton.classList.toggle("is-active", state.mode === "select");
         anchorToolButton.classList.toggle("is-active", state.mode === "anchor");
         connectToolButton.classList.toggle("is-active", state.mode === "connect");
         renderAll();
 
         if (state.mode === "anchor") {
-            setStatus("Anchor Tool aktiv. Klicke auf ein Element, um einen Anchor am naechsten Rand anzulegen.", "muted");
+            setStatus("Anchor Tool aktiv. Klicke fuer neue Anchors oder ziehe bestehende Anchors am Rand entlang.", "muted");
             return;
         }
         if (state.mode === "connect") {
