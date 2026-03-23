@@ -104,14 +104,14 @@
       "ports": [
         {
           "id": "right_center",
-          "x": 103,
-          "y": 21,
+          "x": 101,
+          "y": 20.83,
           "direction": "east"
         },
         {
           "id": "left_center",
-          "x": 0,
-          "y": 21,
+          "x": 1,
+          "y": 20.83,
           "direction": "west"
         }
       ]
@@ -126,14 +126,14 @@
       "ports": [
         {
           "id": "right_center",
-          "x": 103,
-          "y": 21,
+          "x": 101,
+          "y": 20.83,
           "direction": "east"
         },
         {
           "id": "left_center",
-          "x": 0,
-          "y": 21,
+          "x": 1,
+          "y": 20.83,
           "direction": "west"
         }
       ]
@@ -148,14 +148,14 @@
       "ports": [
         {
           "id": "right_center",
-          "x": 103,
-          "y": 21,
+          "x": 101,
+          "y": 20.83,
           "direction": "east"
         },
         {
           "id": "left_center",
-          "x": 0,
-          "y": 21,
+          "x": 1,
+          "y": 20.83,
           "direction": "west"
         }
       ]
@@ -170,14 +170,14 @@
       "ports": [
         {
           "id": "right_center",
-          "x": 103,
-          "y": 21,
+          "x": 101,
+          "y": 20.83,
           "direction": "east"
         },
         {
           "id": "left_center",
-          "x": 0,
-          "y": 21,
+          "x": 1,
+          "y": 20.83,
           "direction": "west"
         }
       ]

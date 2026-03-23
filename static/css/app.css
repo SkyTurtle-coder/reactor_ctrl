@@ -793,6 +793,7 @@ h2 {
     cursor: grab;
     user-select: none;
     pointer-events: auto;
+    overflow: visible;
 }
 
 .builder-node.is-selected {
@@ -808,9 +809,7 @@ h2 {
 }
 
 .builder-node-body {
-    display: grid;
-    grid-template-rows: minmax(0, 1fr) auto;
-    gap: 0.2rem;
+    position: relative;
     height: 100%;
 }
 
@@ -818,7 +817,8 @@ h2 {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 0;
+    width: 100%;
+    height: 100%;
     padding: 0.2rem;
 }
 
@@ -865,6 +865,12 @@ h2 {
 }
 
 .builder-node-label {
+    position: absolute;
+    top: calc(100% + 0.2rem);
+    left: 50%;
+    transform: translateX(-50%);
+    width: max-content;
+    min-width: 100%;
     text-align: center;
     color: var(--text);
     pointer-events: none;

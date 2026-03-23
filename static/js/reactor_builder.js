@@ -981,18 +981,30 @@
         );
     }
 
-    function snapAnchorToOuterSide(localX, localY, width, height) {
+    function nearestAnchorSide(localX, localY, width, height) {
         const x = clamp(localX, 0, width);
         const y = clamp(localY, 0, height);
         const distances = [
-            { side: "west", distance: Math.abs(x), x_ratio: 0, y_ratio: clamp(y / height, 0, 1) },
-            { side: "east", distance: Math.abs(width - x), x_ratio: 1, y_ratio: clamp(y / height, 0, 1) },
-            { side: "north", distance: Math.abs(y), x_ratio: clamp(x / width, 0, 1), y_ratio: 0 },
-            { side: "south", distance: Math.abs(height - y), x_ratio: clamp(x / width, 0, 1), y_ratio: 1 },
+            { side: "west", distance: Math.abs(x) },
+            { side: "east", distance: Math.abs(width - x) },
+            { side: "north", distance: Math.abs(y) },
+            { side: "south", distance: Math.abs(height - y) },
         ];
 
         distances.sort((left, right) => left.distance - right.distance);
-        return distances[0];
+        return distances[0].side;
+    }
+
+    function freeAnchorPosition(localX, localY, width, height) {
+        const safeWidth = Math.max(asNumber(width, 0), 1);
+        const safeHeight = Math.max(asNumber(height, 0), 1);
+        const x = clamp(localX, 0, safeWidth);
+        const y = clamp(localY, 0, safeHeight);
+        return {
+            x_ratio: roundRatio(x / safeWidth),
+            y_ratio: roundRatio(y / safeHeight),
+            side: nearestAnchorSide(x, y, safeWidth, safeHeight),
+        };
     }
 
     function updateAnchorButtonPosition(button, anchor) {
@@ -1012,15 +1024,15 @@
         }
 
         const rect = nodeElement.getBoundingClientRect();
-        const snapped = snapAnchorToOuterSide(clientX - rect.left, clientY - rect.top, node.width, node.height);
+        const positioned = freeAnchorPosition(clientX - rect.left, clientY - rect.top, node.width, node.height);
         const anchor = getAnchorById(node, anchorId);
         if (!anchor) {
             return null;
         }
 
-        anchor.x_ratio = roundRatio(snapped.x_ratio);
-        anchor.y_ratio = roundRatio(snapped.y_ratio);
-        anchor.side = snapped.side;
+        anchor.x_ratio = positioned.x_ratio;
+        anchor.y_ratio = positioned.y_ratio;
+        anchor.side = positioned.side;
         return anchor;
     }
 
@@ -1255,11 +1267,11 @@
         const rect = body.getBoundingClientRect();
         const localX = event.clientX - rect.left;
         const localY = event.clientY - rect.top;
-        const snapped = snapAnchorToOuterSide(localX, localY, node.width, node.height);
+        const positioned = freeAnchorPosition(localX, localY, node.width, node.height);
         const duplicate = node.anchors.find(
             (anchor) =>
-                Math.abs(anchor.x_ratio - snapped.x_ratio) < 0.015 &&
-                Math.abs(anchor.y_ratio - snapped.y_ratio) < 0.015,
+                Math.abs(anchor.x_ratio - positioned.x_ratio) < 0.015 &&
+                Math.abs(anchor.y_ratio - positioned.y_ratio) < 0.015,
         );
         if (duplicate) {
             state.selectedNodeId = nodeId;
@@ -1272,9 +1284,9 @@
         pushUndoSnapshot();
         node.anchors.push({
             id: generateId("anchor"),
-            x_ratio: roundRatio(snapped.x_ratio),
-            y_ratio: roundRatio(snapped.y_ratio),
-            side: snapped.side,
+            x_ratio: positioned.x_ratio,
+            y_ratio: positioned.y_ratio,
+            side: positioned.side,
         });
         state.selectedNodeId = nodeId;
         state.selectedEdgeId = null;
@@ -1551,7 +1563,7 @@
         renderAll();
 
         if (state.mode === "anchor") {
-            setStatus("Anchor Tool aktiv. Klicke fuer neue Anchors oder ziehe bestehende Anchors am Rand entlang.", "muted");
+            setStatus("Anchor Tool aktiv. Klicke fuer neue Anchors oder bewege bestehende Anchors frei innerhalb der Figur.", "muted");
             return;
         }
         if (state.mode === "connect") {
