@@ -162,6 +162,7 @@ def _register_error_handlers(app: Flask) -> None:
 
     app.register_error_handler(ProgrammingError, handle_database_error)
     app.register_error_handler(OperationalError, handle_database_error)
+    app.register_error_handler(SQLAlchemyError, handle_database_error)
     app.register_error_handler(Exception, handle_unexpected_error)
 
 

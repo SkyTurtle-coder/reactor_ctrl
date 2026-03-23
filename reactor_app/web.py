@@ -296,6 +296,15 @@ def _control_summary() -> dict[str, int]:
         }
 
 
+def _run_web_query(loader, *, fallback, log_label: str, notice: str):
+    try:
+        return loader(), None
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("%s fallback activated: %s", log_label, exc)
+        return fallback, notice
+
+
 @web_bp.get("/")
 def index() -> str:
     summary = _control_summary()
@@ -444,28 +453,47 @@ def recipes_view() -> str:
 
 @web_bp.get("/alerts")
 def alerts_view() -> str:
-    command_alerts = (
-        ControlCommand.query.options(joinedload(ControlCommand.device))
-        .filter(ControlCommand.status.in_(("failed", "timeout")))
-        .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
-        .limit(20)
-        .all()
+    page_notice = None
+    command_alerts, notice = _run_web_query(
+        lambda: (
+            ControlCommand.query.options(joinedload(ControlCommand.device))
+            .filter(ControlCommand.status.in_(("failed", "timeout")))
+            .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
+            .limit(20)
+            .all()
+        ),
+        fallback=[],
+        log_label="Alerts command query",
+        notice="Alerts konnten nicht vollstaendig geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Live-Daten.",
     )
-    connection_alerts = (
-        DeviceConnection.query.options(
-            joinedload(DeviceConnection.device_server),
-            joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
-        )
-        .filter(DeviceConnection.last_error.is_not(None))
-        .order_by(DeviceConnection.updated_at.desc(), DeviceConnection.connection_id.desc())
-        .limit(20)
-        .all()
+    if notice:
+        page_notice = notice
+
+    connection_alerts, notice = _run_web_query(
+        lambda: (
+            DeviceConnection.query.options(
+                joinedload(DeviceConnection.device_server),
+                joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
+            )
+            .filter(DeviceConnection.last_error.is_not(None))
+            .order_by(DeviceConnection.updated_at.desc(), DeviceConnection.connection_id.desc())
+            .limit(20)
+            .all()
+        ),
+        fallback=[],
+        log_label="Alerts connection query",
+        notice="Alerts konnten nicht vollstaendig geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Live-Daten.",
     )
+    if notice:
+        page_notice = page_notice or notice
+
     return render_template(
         "alerts.html",
         active_page="alerts",
         command_alerts=command_alerts,
         connection_alerts=connection_alerts,
+        page_notice=page_notice,
+        page_notice_tone="error" if page_notice else None,
         summary=_control_summary(),
         **_base_context(),
     )
@@ -543,14 +571,19 @@ def reactor_builder_view() -> str:
 
 @web_bp.get("/devices")
 def devices_overview() -> str:
-    devices = (
-        Device.query.options(
-            joinedload(Device.current_binding)
-            .joinedload(DeviceBindingCurrent.connection)
-            .joinedload(DeviceConnection.device_server)
-        )
-        .order_by(Device.display_name.asc(), Device.device_id.asc())
-        .all()
+    devices, page_notice = _run_web_query(
+        lambda: (
+            Device.query.options(
+                joinedload(Device.current_binding)
+                .joinedload(DeviceBindingCurrent.connection)
+                .joinedload(DeviceConnection.device_server)
+            )
+            .order_by(Device.display_name.asc(), Device.device_id.asc())
+            .all()
+        ),
+        fallback=[],
+        log_label="Devices overview query",
+        notice="Geraete konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Inventardaten.",
     )
     summary = {
         "total": len(devices),
@@ -562,6 +595,8 @@ def devices_overview() -> str:
         "devices.html",
         active_page="devices",
         devices=devices,
+        page_notice=page_notice,
+        page_notice_tone="error" if page_notice else None,
         summary=summary,
         **_base_context(),
     )
@@ -569,10 +604,15 @@ def devices_overview() -> str:
 
 @web_bp.get("/device-servers")
 def device_servers_overview() -> str:
-    servers = (
-        DeviceServer.query.options(selectinload(DeviceServer.connections))
-        .order_by(DeviceServer.display_name.asc(), DeviceServer.device_server_id.asc())
-        .all()
+    servers, page_notice = _run_web_query(
+        lambda: (
+            DeviceServer.query.options(selectinload(DeviceServer.connections))
+            .order_by(DeviceServer.display_name.asc(), DeviceServer.device_server_id.asc())
+            .all()
+        ),
+        fallback=[],
+        log_label="Device servers overview query",
+        notice="Device-Server konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Infrastrukturdaten.",
     )
     summary = {
         "total": len(servers),
@@ -584,6 +624,8 @@ def device_servers_overview() -> str:
         "device_servers.html",
         active_page="device_servers",
         servers=servers,
+        page_notice=page_notice,
+        page_notice_tone="error" if page_notice else None,
         summary=summary,
         **_base_context(),
     )
@@ -591,13 +633,18 @@ def device_servers_overview() -> str:
 
 @web_bp.get("/device-connections")
 def device_connections_overview() -> str:
-    connections = (
-        DeviceConnection.query.options(
-            joinedload(DeviceConnection.device_server),
-            joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
-        )
-        .order_by(DeviceConnection.connection_id.asc())
-        .all()
+    connections, page_notice = _run_web_query(
+        lambda: (
+            DeviceConnection.query.options(
+                joinedload(DeviceConnection.device_server),
+                joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
+            )
+            .order_by(DeviceConnection.connection_id.asc())
+            .all()
+        ),
+        fallback=[],
+        log_label="Device connections overview query",
+        notice="Device-Verbindungen konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Transportdaten.",
     )
     summary = {
         "total": len(connections),
@@ -609,6 +656,8 @@ def device_connections_overview() -> str:
         "device_connections.html",
         active_page="device_connections",
         connections=connections,
+        page_notice=page_notice,
+        page_notice_tone="error" if page_notice else None,
         summary=summary,
         **_base_context(),
     )
@@ -616,11 +665,16 @@ def device_connections_overview() -> str:
 
 @web_bp.get("/commands")
 def commands_overview() -> str:
-    commands = (
-        ControlCommand.query.options(joinedload(ControlCommand.device))
-        .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
-        .limit(50)
-        .all()
+    commands, page_notice = _run_web_query(
+        lambda: (
+            ControlCommand.query.options(joinedload(ControlCommand.device))
+            .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
+            .limit(50)
+            .all()
+        ),
+        fallback=[],
+        log_label="Commands overview query",
+        notice="Steuerbefehle konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch kein Command-Log.",
     )
     summary = {
         "total": len(commands),
@@ -632,6 +686,8 @@ def commands_overview() -> str:
         "commands.html",
         active_page="commands",
         commands=commands,
+        page_notice=page_notice,
+        page_notice_tone="error" if page_notice else None,
         summary=summary,
         **_base_context(),
     )

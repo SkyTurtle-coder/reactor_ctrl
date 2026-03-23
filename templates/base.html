@@ -29,6 +29,13 @@
 
         <main class="container page-shell">
             {% block page_header %}{% endblock %}
+            {% if page_notice %}
+            <section class="card">
+                <div class="card-body">
+                    <p class="{% if page_notice_tone == 'error' %}error-text{% else %}muted{% endif %}">{{ page_notice }}</p>
+                </div>
+            </section>
+            {% endif %}
             {% block content %}{% endblock %}
         </main>
 
