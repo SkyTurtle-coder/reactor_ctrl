@@ -96,29 +96,17 @@
     },
     {
       "id": "temp_indicator",
-      "label": "Temp Indicator",
+      "label": "TI",
       "category": "sensors",
-      "svg_file": "sensors/Temp_indicate.svg",
-      "default_width": 82,
+      "svg_file": "sensors/TI.svg",
+      "default_width": 103,
       "default_height": 42,
       "ports": [
         {
-          "id": "top_center",
-          "x": 41,
-          "y": 0,
-          "direction": "north"
-        },
-        {
           "id": "right_center",
-          "x": 82,
+          "x": 103,
           "y": 21,
           "direction": "east"
-        },
-        {
-          "id": "bottom_center",
-          "x": 41,
-          "y": 42,
-          "direction": "south"
         },
         {
           "id": "left_center",
@@ -130,29 +118,39 @@
     },
     {
       "id": "temp_indicator_control",
-      "label": "Temp Indicator Control",
+      "label": "TIC",
       "category": "sensors",
-      "svg_file": "sensors/Temp_indicate_control.svg",
-      "default_width": 82,
+      "svg_file": "sensors/TIC.svg",
+      "default_width": 103,
       "default_height": 42,
       "ports": [
         {
-          "id": "top_center",
-          "x": 41,
-          "y": 0,
-          "direction": "north"
-        },
-        {
           "id": "right_center",
-          "x": 82,
+          "x": 103,
           "y": 21,
           "direction": "east"
         },
         {
-          "id": "bottom_center",
-          "x": 41,
-          "y": 42,
-          "direction": "south"
+          "id": "left_center",
+          "x": 0,
+          "y": 21,
+          "direction": "west"
+        }
+      ]
+    },
+    {
+      "id": "pressure_indicator",
+      "label": "PI",
+      "category": "sensors",
+      "svg_file": "sensors/PI.svg",
+      "default_width": 103,
+      "default_height": 42,
+      "ports": [
+        {
+          "id": "right_center",
+          "x": 103,
+          "y": 21,
+          "direction": "east"
         },
         {
           "id": "left_center",
@@ -164,29 +162,17 @@
     },
     {
       "id": "pressure_indicator_control",
-      "label": "Pressure Indicator Control",
+      "label": "PIC",
       "category": "sensors",
-      "svg_file": "sensors/presure_indicate_control.svg",
-      "default_width": 82,
+      "svg_file": "sensors/PIC.svg",
+      "default_width": 103,
       "default_height": 42,
       "ports": [
         {
-          "id": "top_center",
-          "x": 41,
-          "y": 0,
-          "direction": "north"
-        },
-        {
           "id": "right_center",
-          "x": 82,
+          "x": 103,
           "y": 21,
           "direction": "east"
-        },
-        {
-          "id": "bottom_center",
-          "x": 41,
-          "y": 42,
-          "direction": "south"
         },
         {
           "id": "left_center",
