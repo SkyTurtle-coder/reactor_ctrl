@@ -98,6 +98,7 @@
     }
 
     const actuatorProfileData = parseJsonScript("process-actuator-profiles", []);
+    const supportedProtocolData = parseJsonScript("process-supported-protocols", []);
     const actuatorProfiles = Array.isArray(actuatorProfileData)
         ? actuatorProfileData
               .filter((profile) => profile && typeof profile === "object")
@@ -137,6 +138,18 @@
               }))
               .filter((profile) => profile.id)
         : [];
+    const protocolLabelMap = new Map(
+        (Array.isArray(supportedProtocolData) ? supportedProtocolData : [])
+            .map((item) => {
+                if (item && typeof item === "object") {
+                    const id = asString(item.id, "");
+                    return id ? [id, asString(item.label, id)] : null;
+                }
+                const id = asString(item, "");
+                return id ? [id, id] : null;
+            })
+            .filter(Boolean),
+    );
     const actuatorProfileById = new Map(actuatorProfiles.map((profile) => [profile.id, profile]));
 
     function profileForSymbol(symbolId) {
@@ -794,6 +807,11 @@
         return asString(value, "").trim().toLowerCase();
     }
 
+    function protocolLabel(value) {
+        const id = asString(value, "");
+        return protocolLabelMap.get(id) || id || "n/a";
+    }
+
     function buildProtocolAwareCommandSequence(node, target, profile, values) {
         const protocol = normalizedProtocolName(target?.protocol);
         const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
@@ -870,7 +888,7 @@
         manualTargetSubtitle.textContent = `${node.symbol_id} | ${profile.label}`;
         manualDevice.textContent = `${target.device_display_name} (${target.asset_serial})`;
         manualConnection.textContent = `${target.server_code} | ${target.connection_label}`;
-        manualProtocol.textContent = target.protocol || "n/a";
+        manualProtocol.textContent = protocolLabel(target.protocol);
         manualDeviceStatus.textContent = formatDeviceStatus(target);
         renderManualProfile(node, profile);
         syncManualControlsEnabled(Boolean(target.device_id));

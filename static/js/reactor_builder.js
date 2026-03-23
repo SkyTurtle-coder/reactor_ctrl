@@ -125,7 +125,21 @@
     const supportedProtocolData = parseJsonScript("builder-supported-protocols", []);
     const metaData = parseJsonScript("builder-meta-data", {});
     const supportedProtocols = Array.isArray(supportedProtocolData)
-        ? supportedProtocolData.map((item) => asString(item, "")).filter(Boolean)
+        ? supportedProtocolData
+              .map((item) => {
+                  if (item && typeof item === "object") {
+                      const id = asString(item.id, "");
+                      return id
+                          ? {
+                                id,
+                                label: asString(item.label, id),
+                            }
+                          : null;
+                  }
+                  const id = asString(item, "");
+                  return id ? { id, label: id } : null;
+              })
+              .filter(Boolean)
         : [];
 
     const libraryById = new Map();
@@ -1052,15 +1066,15 @@
             emptyOption.selected = !currentProtocol;
             protocolSelect.appendChild(emptyOption);
 
-            for (const protocolName of supportedProtocols) {
+            for (const protocolOption of supportedProtocols) {
                 const option = document.createElement("option");
-                option.value = protocolName;
-                option.textContent = protocolName;
-                option.selected = protocolName === currentProtocol;
+                option.value = protocolOption.id;
+                option.textContent = protocolOption.label;
+                option.selected = protocolOption.id === currentProtocol;
                 protocolSelect.appendChild(option);
             }
 
-            if (currentProtocol && !supportedProtocols.includes(currentProtocol)) {
+            if (currentProtocol && !supportedProtocols.some((item) => item.id === currentProtocol)) {
                 const customOption = document.createElement("option");
                 customOption.value = currentProtocol;
                 customOption.textContent = `${currentProtocol} (bestehend)`;

@@ -49,7 +49,7 @@
                             {% endif %}
                         </td>
                         <td>{{ device.device_type }}</td>
-                        <td><span class="badge badge-info">{{ device.protocol }}</span></td>
+                        <td><span class="badge badge-info" title="{{ device.protocol }}">{{ format_protocol_label(device.protocol) }}</span></td>
                         <td>
                             {% if device.current_binding %}
                             <strong>{{ device.current_binding.connection.device_server.server_code }}</strong>

@@ -23,7 +23,14 @@ from .models import (
     Measurement,
     ReactorBuild,
 )
-from .services import DeviceCommandError, TcpSocketConfig, execute_device_command, list_supported_protocols, probe_tcp_socket
+from .services import (
+    DeviceCommandError,
+    TcpSocketConfig,
+    execute_device_command,
+    list_supported_protocol_options,
+    list_supported_protocols,
+    probe_tcp_socket,
+)
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -1052,7 +1059,7 @@ def api_index():
 
 @api_bp.get("/device-protocols")
 def list_device_protocol_options():
-    return jsonify({"items": list_supported_protocols()})
+    return jsonify({"items": list_supported_protocols(), "options": list_supported_protocol_options()})
 
 
 @api_bp.get("/reactor-builds")

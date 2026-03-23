@@ -194,6 +194,7 @@
 <script id="process-build-data" type="application/json">{{ selected_build | tojson }}</script>
 <script id="process-manual-targets" type="application/json">{{ manual_targets | tojson }}</script>
 <script id="process-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>
+<script id="process-supported-protocols" type="application/json">{{ supported_protocol_options | tojson }}</script>
 <script id="process-meta-data" type="application/json">{{ {"apiAuthRequired": api_auth_required, "manualWriteToken": manual_write_token} | tojson }}</script>
 <script src="{{ url_for('static', filename='js/process_view.js') }}"></script>
 {% endblock %}

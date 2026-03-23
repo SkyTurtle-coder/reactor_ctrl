@@ -12,7 +12,7 @@ from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOP
 from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
 from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild
-from .services.drivers import list_supported_protocols
+from .services.drivers import list_supported_protocol_options, list_supported_protocols, protocol_label
 
 
 web_bp = Blueprint("web", __name__)
@@ -64,6 +64,7 @@ def inject_layout_helpers() -> dict[str, Any]:
         "format_datetime": _format_datetime,
         "status_badge_class": _status_badge_class,
         "bool_badge_class": _bool_badge_class,
+        "format_protocol_label": protocol_label,
     }
 
 
@@ -73,6 +74,7 @@ def _base_context() -> dict[str, Any]:
         "database_url": _mask_database_url(database_url),
         "api_auth_required": current_app.config.get("API_AUTH_REQUIRED", True),
         "supported_protocols": list_supported_protocols(),
+        "supported_protocol_options": list_supported_protocol_options(),
     }
 
 
