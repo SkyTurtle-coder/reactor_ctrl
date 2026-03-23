@@ -127,6 +127,74 @@
           "direction": "west"
         }
       ]
+    },
+    {
+      "id": "temp_indicator_control",
+      "label": "Temp Indicator Control",
+      "category": "sensors",
+      "svg_file": "sensors/Temp_indicate_control.svg",
+      "default_width": 82,
+      "default_height": 42,
+      "ports": [
+        {
+          "id": "top_center",
+          "x": 41,
+          "y": 0,
+          "direction": "north"
+        },
+        {
+          "id": "right_center",
+          "x": 82,
+          "y": 21,
+          "direction": "east"
+        },
+        {
+          "id": "bottom_center",
+          "x": 41,
+          "y": 42,
+          "direction": "south"
+        },
+        {
+          "id": "left_center",
+          "x": 0,
+          "y": 21,
+          "direction": "west"
+        }
+      ]
+    },
+    {
+      "id": "pressure_indicator_control",
+      "label": "Pressure Indicator Control",
+      "category": "sensors",
+      "svg_file": "sensors/presure_indicate_control.svg",
+      "default_width": 82,
+      "default_height": 42,
+      "ports": [
+        {
+          "id": "top_center",
+          "x": 41,
+          "y": 0,
+          "direction": "north"
+        },
+        {
+          "id": "right_center",
+          "x": 82,
+          "y": 21,
+          "direction": "east"
+        },
+        {
+          "id": "bottom_center",
+          "x": 41,
+          "y": 42,
+          "direction": "south"
+        },
+        {
+          "id": "left_center",
+          "x": 0,
+          "y": 21,
+          "direction": "west"
+        }
+      ]
     }
   ]
 }
