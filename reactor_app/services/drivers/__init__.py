@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverNotFoundError, DriverValidationError
 from .generic_text import GenericTextDriver
+from .ika_eurostar import IkaEurostarDriver
 
 
-_DRIVER_TYPES = (GenericTextDriver,)
+_DRIVER_TYPES = (GenericTextDriver, IkaEurostarDriver)
 
 
 def get_driver(protocol_name: str) -> DeviceDriver:
@@ -31,6 +32,7 @@ __all__ = [
     "DriverNotFoundError",
     "DriverValidationError",
     "GenericTextDriver",
+    "IkaEurostarDriver",
     "get_driver",
     "list_supported_protocols",
 ]

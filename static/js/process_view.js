@@ -690,6 +690,46 @@
         return commands.map((item) => String(item || "").trim()).filter(Boolean);
     }
 
+    function normalizedProtocolName(value) {
+        return asString(value, "").trim().toLowerCase();
+    }
+
+    function buildProtocolAwareCommandSequence(node, target, profile, values) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
+        if (protocol === "ika_eurostar_60" && symbolId === "motor") {
+            return [
+                values.is_on ? "START_4" : "STOP_4",
+                `OUT_SP_4 ${Math.round(asNumber(values.speed, 0))}`,
+            ];
+        }
+        return buildManualCommandSequence(profile, values);
+    }
+
+    function buildManualCommandPayload(target, commandText) {
+        const text = asString(commandText, "").trim();
+        const protocol = normalizedProtocolName(target?.protocol);
+        if (protocol === "ika_eurostar_60") {
+            const normalizedText = text.toUpperCase();
+            const expectResponse = normalizedText.startsWith("IN_");
+            return {
+                text: normalizedText,
+                encoding: "ascii",
+                line_ending: "space_crlf",
+                response_terminator: "space_crlf",
+                expect_response: expectResponse,
+                strip_response: true,
+            };
+        }
+
+        return {
+            text,
+            line_ending: "crlf",
+            expect_response: true,
+            strip_response: true,
+        };
+    }
+
     function updateManualPanel() {
         if (state.nodes.length === 0) {
             syncManualControlsEnabled(false);
@@ -789,6 +829,8 @@
             headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
         }
 
+        const manualPayload = buildManualCommandPayload(target, text);
+
         try {
             const response = await fetch(`/api/devices/${target.device_id}/commands`, {
                 method: "POST",
@@ -796,12 +838,7 @@
                 body: JSON.stringify({
                     command_name: "manual_text",
                     requested_by: "process_manual",
-                    payload: {
-                        text,
-                        line_ending: "crlf",
-                        expect_response: true,
-                        strip_response: true,
-                    },
+                    payload: manualPayload,
                 }),
             });
             const payload = await response.json().catch(() => ({}));
@@ -816,7 +853,7 @@
 
             const responseText = asString(payload?.result?.response_text, "");
             const metadata = payload?.result?.metadata || {};
-            const output = responseText || JSON.stringify(metadata, null, 2);
+            const output = responseText || (manualPayload.expect_response ? JSON.stringify(metadata, null, 2) : "OK");
             return {
                 commandText: text,
                 output,
@@ -840,7 +877,7 @@
         }
 
         const values = collectManualProfileValues(node, profile);
-        const commands = buildManualCommandSequence(profile, values);
+        const commands = buildProtocolAwareCommandSequence(node, target, profile, values);
         if (commands.length === 0) {
             setManualStatus("Fuer dieses Profil sind keine ausfuehrbaren Befehle hinterlegt.", "error");
             return;
