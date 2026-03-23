@@ -5,54 +5,54 @@
       "label": "Reactor",
       "category": "vessels",
       "svg_file": "vessels/reactor.svg",
-      "default_width": 222,
-      "default_height": 343,
+      "default_width": 223,
+      "default_height": 344,
       "ports": [
         {
           "id": "top_center",
-          "x": 81,
+          "x": 80,
           "y": 1,
           "direction": "north"
         },
         {
           "id": "jacket_left_upper",
-          "x": 11,
+          "x": 10,
           "y": 41,
           "direction": "west"
         },
         {
           "id": "jacket_left_lower",
-          "x": 11,
+          "x": 10,
           "y": 81,
           "direction": "west"
         },
         {
           "id": "jacket_right_upper",
-          "x": 151,
+          "x": 150,
           "y": 41,
           "direction": "east"
         },
         {
           "id": "jacket_right_lower",
-          "x": 151,
+          "x": 150,
           "y": 81,
           "direction": "east"
         },
         {
           "id": "process_right",
-          "x": 201,
+          "x": 220,
           "y": 141,
           "direction": "east"
         },
         {
           "id": "product_right",
-          "x": 201,
+          "x": 220,
           "y": 301,
           "direction": "east"
         },
         {
           "id": "drain_bottom",
-          "x": 81,
+          "x": 80,
           "y": 341,
           "direction": "south"
         }
@@ -60,8 +60,8 @@
       "anchors": [
         {
           "id": "center",
-          "x": 111,
-          "y": 171.5
+          "x": 80,
+          "y": 171
         }
       ]
     },
@@ -70,12 +70,12 @@
       "label": "Pump",
       "category": "actuators",
       "svg_file": "actuators/pump.svg",
-      "default_width": 163,
+      "default_width": 164,
       "default_height": 83,
       "ports": [
         {
           "id": "inlet_left",
-          "x": 0,
+          "x": 1,
           "y": 41,
           "direction": "west"
         },
@@ -89,8 +89,8 @@
       "anchors": [
         {
           "id": "center",
-          "x": 81.5,
-          "y": 41.5
+          "x": 82,
+          "y": 41
         }
       ]
     },
@@ -129,18 +129,18 @@
       "category": "actuators",
       "svg_file": "actuators/HC_system.svg",
       "default_width": 125,
-      "default_height": 136,
+      "default_height": 107,
       "ports": [
         {
           "id": "upper_left",
           "x": 1,
-          "y": 62,
+          "y": 33,
           "direction": "west"
         },
         {
           "id": "lower_left",
           "x": 1,
-          "y": 102,
+          "y": 73,
           "direction": "west"
         }
       ],
@@ -148,7 +148,7 @@
         {
           "id": "center",
           "x": 71,
-          "y": 82
+          "y": 53
         }
       ]
     },
