@@ -83,6 +83,9 @@
             <header class="builder-board-header">
                 <div class="builder-board-title">
                     <span class="eyebrow">Build</span>
+                    {% if builder_notice %}
+                    <p class="error-text">{{ builder_notice }}</p>
+                    {% endif %}
                     <div class="builder-field builder-field-title">
                         <label for="builder-name-input">Build Name</label>
                         <input id="builder-name-input" type="text" value="{{ builder_name }}" maxlength="120">
@@ -90,7 +93,7 @@
                     <div class="builder-title-row">
                         <label class="builder-field builder-build-picker">
                             <span>Gespeicherte Builds</span>
-                            <select id="builder-build-select">
+                            <select id="builder-build-select" {% if not builder_storage_available %}disabled{% endif %}>
                                 <option value="">Aktueller Draft</option>
                                 {% for build in saved_builds %}
                                 <option value="{{ build.reactor_build_id }}"{% if current_build_id == build.reactor_build_id %} selected{% endif %}>

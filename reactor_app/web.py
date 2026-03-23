@@ -247,26 +247,37 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
 
 
 def _control_summary() -> dict[str, int]:
-    reactors_total = db.session.query(func.count(Device.device_id)).scalar() or 0
-    configured_bindings_total = db.session.query(func.count(DeviceBindingCurrent.device_id)).scalar() or 0
-    online_devices_total = (
-        db.session.query(func.count(DeviceBindingCurrent.device_id))
-        .filter(DeviceBindingCurrent.is_online.is_(True))
-        .scalar()
-        or 0
-    )
-    measurements_total = db.session.query(func.count(Measurement.measurement_id)).scalar() or 0
-    alerts_total = (
-        (db.session.query(func.count(ControlCommand.command_id)).filter(ControlCommand.status.in_(("failed", "timeout"))).scalar() or 0)
-        + (db.session.query(func.count(DeviceConnection.connection_id)).filter(DeviceConnection.last_error.is_not(None)).scalar() or 0)
-    )
-    return {
-        "reactors_total": reactors_total,
-        "configured_bindings_total": configured_bindings_total,
-        "online_devices_total": online_devices_total,
-        "measurements_total": measurements_total,
-        "alerts_total": alerts_total,
-    }
+    try:
+        reactors_total = db.session.query(func.count(Device.device_id)).scalar() or 0
+        configured_bindings_total = db.session.query(func.count(DeviceBindingCurrent.device_id)).scalar() or 0
+        online_devices_total = (
+            db.session.query(func.count(DeviceBindingCurrent.device_id))
+            .filter(DeviceBindingCurrent.is_online.is_(True))
+            .scalar()
+            or 0
+        )
+        measurements_total = db.session.query(func.count(Measurement.measurement_id)).scalar() or 0
+        alerts_total = (
+            (db.session.query(func.count(ControlCommand.command_id)).filter(ControlCommand.status.in_(("failed", "timeout"))).scalar() or 0)
+            + (db.session.query(func.count(DeviceConnection.connection_id)).filter(DeviceConnection.last_error.is_not(None)).scalar() or 0)
+        )
+        return {
+            "reactors_total": reactors_total,
+            "configured_bindings_total": configured_bindings_total,
+            "online_devices_total": online_devices_total,
+            "measurements_total": measurements_total,
+            "alerts_total": alerts_total,
+        }
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("Control summary fallback activated because database access failed: %s", exc)
+        return {
+            "reactors_total": 0,
+            "configured_bindings_total": 0,
+            "online_devices_total": 0,
+            "measurements_total": 0,
+            "alerts_total": 0,
+        }
 
 
 @web_bp.get("/")
@@ -416,11 +427,24 @@ def reactor_builder_view() -> str:
         static_folder=current_app.static_folder,
         static_url_path=current_app.static_url_path,
     )
-    saved_builds = (
-        ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
-    )
     build_id = request.args.get("build_id", type=int)
-    current_build = db.session.get(ReactorBuild, build_id) if build_id else None
+    saved_builds: list[ReactorBuild] = []
+    current_build = None
+    builder_notice = None
+    builder_storage_available = True
+    try:
+        saved_builds = (
+            ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
+        )
+        current_build = db.session.get(ReactorBuild, build_id) if build_id else None
+    except Exception as exc:
+        db.session.rollback()
+        builder_storage_available = False
+        builder_notice = (
+            "Gespeicherte Builds konnten nicht geladen werden. Die Library bleibt verfuegbar, "
+            "Speichern und Laden sind derzeit jedoch eingeschraenkt."
+        )
+        current_app.logger.exception("Reactor Builder database fallback activated: %s", exc)
 
     builder_name = (
         current_build.build_name
@@ -438,7 +462,7 @@ def reactor_builder_view() -> str:
         else (request.args.get("date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
     )
     builder_write_token = None
-    if current_app.config.get("API_AUTH_REQUIRED", True):
+    if builder_storage_available and current_app.config.get("API_AUTH_REQUIRED", True):
         secret_key = current_app.config.get("SECRET_KEY")
         if secret_key:
             builder_write_token = create_scoped_token(
@@ -452,6 +476,8 @@ def reactor_builder_view() -> str:
         active_page="reactor_builder",
         current_build_id=None if current_build is None else current_build.reactor_build_id,
         current_build=_reactor_build_detail_to_dict(current_build),
+        builder_notice=builder_notice,
+        builder_storage_available=builder_storage_available,
         builder_write_token=builder_write_token,
         builder_name=builder_name,
         builder_user=builder_user,

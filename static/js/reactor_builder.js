@@ -1066,12 +1066,21 @@
             emptyOption.selected = !currentProtocol;
             protocolSelect.appendChild(emptyOption);
 
-            for (const protocolOption of supportedProtocols) {
-                const option = document.createElement("option");
-                option.value = protocolOption.id;
-                option.textContent = protocolOption.label;
-                option.selected = protocolOption.id === currentProtocol;
-                protocolSelect.appendChild(option);
+            if (supportedProtocols.length === 0) {
+                const unavailableOption = document.createElement("option");
+                unavailableOption.value = "";
+                unavailableOption.textContent = "Keine Protokolle geladen";
+                unavailableOption.disabled = true;
+                unavailableOption.selected = !currentProtocol;
+                protocolSelect.appendChild(unavailableOption);
+            } else {
+                for (const protocolOption of supportedProtocols) {
+                    const option = document.createElement("option");
+                    option.value = protocolOption.id;
+                    option.textContent = protocolOption.label;
+                    option.selected = protocolOption.id === currentProtocol;
+                    protocolSelect.appendChild(option);
+                }
             }
 
             if (currentProtocol && !supportedProtocols.some((item) => item.id === currentProtocol)) {
