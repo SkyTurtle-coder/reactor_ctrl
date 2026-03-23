@@ -95,6 +95,35 @@
       ]
     },
     {
+      "id": "motor",
+      "label": "Motor",
+      "category": "actuators",
+      "svg_file": "actuators/motor.svg",
+      "default_width": 82,
+      "default_height": 82,
+      "ports": [
+        {
+          "id": "inlet_left",
+          "x": 1,
+          "y": 41,
+          "direction": "west"
+        },
+        {
+          "id": "outlet_right",
+          "x": 81,
+          "y": 41,
+          "direction": "east"
+        }
+      ],
+      "anchors": [
+        {
+          "id": "center",
+          "x": 41,
+          "y": 41
+        }
+      ]
+    },
+    {
       "id": "temp_indicator",
       "label": "TI",
       "category": "sensors",
