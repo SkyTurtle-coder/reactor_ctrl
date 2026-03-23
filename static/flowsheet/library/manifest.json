@@ -124,6 +124,35 @@
       ]
     },
     {
+      "id": "hc_system",
+      "label": "H/C System",
+      "category": "actuators",
+      "svg_file": "actuators/HC_system.svg",
+      "default_width": 125,
+      "default_height": 136,
+      "ports": [
+        {
+          "id": "upper_left",
+          "x": 1,
+          "y": 62,
+          "direction": "west"
+        },
+        {
+          "id": "lower_left",
+          "x": 1,
+          "y": 102,
+          "direction": "west"
+        }
+      ],
+      "anchors": [
+        {
+          "id": "center",
+          "x": 71,
+          "y": 82
+        }
+      ]
+    },
+    {
       "id": "temp_indicator",
       "label": "TI",
       "category": "sensors",
