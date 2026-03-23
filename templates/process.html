@@ -164,14 +164,14 @@
                     </div>
                 </dl>
 
-                <div class="process-manual-quick-actions">
-                    <button class="btn" type="button" data-manual-command="START">START</button>
-                    <button class="btn" type="button" data-manual-command="STOP">STOP</button>
-                </div>
+                <form class="process-manual-profile-form" id="process-manual-profile-form">
+                    <div class="process-manual-profile-grid" id="process-manual-profile-grid"></div>
+                    <button class="btn btn-primary" id="process-manual-apply-button" type="submit">Aktor anwenden</button>
+                </form>
 
                 <form class="process-manual-command-form" id="process-manual-command-form">
                     <label class="process-select-field">
-                        <span>Freitext-Befehl</span>
+                        <span>Direktbefehl</span>
                         <input
                             id="process-manual-command-input"
                             type="text"
@@ -193,6 +193,7 @@
 {% block scripts %}
 <script id="process-build-data" type="application/json">{{ selected_build | tojson }}</script>
 <script id="process-manual-targets" type="application/json">{{ manual_targets | tojson }}</script>
+<script id="process-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>
 <script id="process-meta-data" type="application/json">{{ {"apiAuthRequired": api_auth_required, "manualWriteToken": manual_write_token} | tojson }}</script>
 <script src="{{ url_for('static', filename='js/process_view.js') }}"></script>
 {% endblock %}

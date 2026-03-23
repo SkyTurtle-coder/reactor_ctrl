@@ -17,6 +17,9 @@
     const manualConnection = document.getElementById("process-manual-connection");
     const manualProtocol = document.getElementById("process-manual-protocol");
     const manualDeviceStatus = document.getElementById("process-manual-device-status");
+    const manualProfileForm = document.getElementById("process-manual-profile-form");
+    const manualProfileGrid = document.getElementById("process-manual-profile-grid");
+    const manualApplyButton = document.getElementById("process-manual-apply-button");
     const manualCommandInput = document.getElementById("process-manual-command-input");
     const manualCommandForm = document.getElementById("process-manual-command-form");
     const manualSendButton = document.getElementById("process-manual-send-button");
@@ -75,6 +78,140 @@
         return Math.round(asNumber(value, 0) * 100) / 100;
     }
 
+    function coerceBoolean(value, fallback) {
+        if (typeof value === "boolean") {
+            return value;
+        }
+        if (typeof value === "number" && (value === 0 || value === 1)) {
+            return Boolean(value);
+        }
+        if (typeof value === "string") {
+            const normalized = value.trim().toLowerCase();
+            if (["true", "1", "yes", "y", "on", "ein"].includes(normalized)) {
+                return true;
+            }
+            if (["false", "0", "no", "n", "off", "aus"].includes(normalized)) {
+                return false;
+            }
+        }
+        return fallback;
+    }
+
+    const actuatorProfileData = parseJsonScript("process-actuator-profiles", []);
+    const actuatorProfiles = Array.isArray(actuatorProfileData)
+        ? actuatorProfileData
+              .filter((profile) => profile && typeof profile === "object")
+              .map((profile) => ({
+                  id: asString(profile.id, ""),
+                  label: asString(profile.label, profile.id || "Profil"),
+                  allowed_symbols: Array.isArray(profile.allowed_symbols)
+                      ? profile.allowed_symbols.map((item) => asString(item, "")).filter(Boolean)
+                      : [],
+                  fields: Array.isArray(profile.fields)
+                      ? profile.fields
+                            .filter((field) => field && typeof field === "object")
+                            .map((field) => ({
+                                key: asString(field.key, ""),
+                                label: asString(field.label, field.key || "Feld"),
+                                type: asString(field.type, "text"),
+                                mode: asString(field.mode, ""),
+                                unit: asString(field.unit, ""),
+                                min: field.min == null ? null : asNumber(field.min, null),
+                                max: field.max == null ? null : asNumber(field.max, null),
+                                step: field.step == null ? null : asNumber(field.step, null),
+                                default: field.default,
+                            }))
+                            .filter((field) => field.key)
+                      : [],
+                  command_sequence: Array.isArray(profile.command_sequence)
+                      ? profile.command_sequence
+                            .filter((item) => item && typeof item === "object")
+                            .map((item) => ({
+                                kind: asString(item.kind, ""),
+                                field: asString(item.field, ""),
+                                true: asString(item.true, ""),
+                                false: asString(item.false, ""),
+                                template: asString(item.template, ""),
+                            }))
+                      : [],
+              }))
+              .filter((profile) => profile.id)
+        : [];
+    const actuatorProfileById = new Map(actuatorProfiles.map((profile) => [profile.id, profile]));
+
+    function profileForSymbol(symbolId) {
+        return actuatorProfiles.find((profile) => profile.allowed_symbols.includes(String(symbolId || ""))) || null;
+    }
+
+    function normalizeProfileConfig(profile, config) {
+        if (!profile) {
+            return null;
+        }
+        const payload = config && typeof config === "object" ? config : {};
+        const normalized = {};
+        for (const field of profile.fields) {
+            if (field.type === "boolean") {
+                normalized[field.key] = coerceBoolean(payload[field.key], Boolean(field.default));
+                continue;
+            }
+
+            const fallback = field.default == null ? 0 : field.default;
+            let nextValue = asNumber(payload[field.key], asNumber(fallback, 0));
+            if (field.min != null) {
+                nextValue = Math.max(nextValue, field.min);
+            }
+            if (field.max != null) {
+                nextValue = Math.min(nextValue, field.max);
+            }
+            if (field.mode === "int") {
+                nextValue = Math.round(nextValue);
+            } else {
+                nextValue = Math.round(nextValue * 1000) / 1000;
+            }
+            normalized[field.key] = nextValue;
+        }
+        return normalized;
+    }
+
+    function defaultControlForSymbol(symbolId) {
+        const profile = profileForSymbol(symbolId);
+        if (!profile) {
+            return null;
+        }
+        return {
+            profile_id: profile.id,
+            config: normalizeProfileConfig(profile, {}),
+        };
+    }
+
+    function normalizeControl(control, symbolId) {
+        const fallback = defaultControlForSymbol(symbolId);
+        if (!fallback) {
+            return null;
+        }
+        const payload = control && typeof control === "object" ? control : {};
+        const profileId = asString(payload.profile_id, fallback.profile_id);
+        const profile = actuatorProfileById.get(profileId) || actuatorProfileById.get(fallback.profile_id);
+        if (!profile || !profile.allowed_symbols.includes(String(symbolId || ""))) {
+            return fallback;
+        }
+        return {
+            profile_id: profile.id,
+            config: normalizeProfileConfig(profile, payload.config),
+        };
+    }
+
+    function profileForNode(node) {
+        if (!node) {
+            return null;
+        }
+        const explicit = actuatorProfileById.get(asString(node.control?.profile_id, ""));
+        if (explicit && explicit.allowed_symbols.includes(String(node.symbol_id || ""))) {
+            return explicit;
+        }
+        return profileForSymbol(node.symbol_id);
+    }
+
     function normalizeAnchor(anchor, index) {
         return {
             id: asString(anchor?.id, `anchor-${index + 1}`),
@@ -108,6 +245,7 @@
             y: roundCanvasValue(node?.y),
             width,
             height,
+            control: normalizeControl(node?.control, node?.symbol_id),
             anchors,
         };
     }
@@ -440,11 +578,116 @@
 
     function syncManualControlsEnabled(enabled) {
         const allow = enabled && !state.isSending;
+        if (manualProfileForm) {
+            for (const element of manualProfileForm.elements) {
+                element.disabled = !allow;
+            }
+        }
         manualCommandInput.disabled = !allow;
         manualSendButton.disabled = !allow;
+        if (manualApplyButton) {
+            manualApplyButton.disabled = !allow;
+        }
         for (const button of manualCommandButtons) {
             button.disabled = !allow;
         }
+    }
+
+    function renderManualProfile(node, profile) {
+        if (!manualProfileGrid) {
+            return;
+        }
+
+        manualProfileGrid.innerHTML = "";
+        if (!node || !profile) {
+            return;
+        }
+
+        const config = node.control?.config || {};
+        for (const field of profile.fields) {
+            if (field.type === "boolean") {
+                const toggle = document.createElement("label");
+                toggle.className = "process-manual-profile-toggle";
+                const checkbox = document.createElement("input");
+                checkbox.type = "checkbox";
+                checkbox.name = `manual-${field.key}`;
+                checkbox.checked = Boolean(config[field.key]);
+                const copy = document.createElement("span");
+                copy.textContent = field.label;
+                toggle.appendChild(checkbox);
+                toggle.appendChild(copy);
+                manualProfileGrid.appendChild(toggle);
+                continue;
+            }
+
+            const fieldLabel = document.createElement("label");
+            fieldLabel.className = "process-select-field process-manual-profile-field";
+            const fieldText = document.createElement("span");
+            fieldText.textContent = field.unit ? `${field.label} (${field.unit})` : field.label;
+            const input = document.createElement("input");
+            input.type = "number";
+            input.name = `manual-${field.key}`;
+            input.value = String(config[field.key] ?? field.default ?? "");
+            if (field.min != null) {
+                input.min = String(field.min);
+            }
+            if (field.max != null) {
+                input.max = String(field.max);
+            }
+            if (field.step != null) {
+                input.step = String(field.step);
+            }
+            fieldLabel.appendChild(fieldText);
+            fieldLabel.appendChild(input);
+            manualProfileGrid.appendChild(fieldLabel);
+        }
+    }
+
+    function collectManualProfileValues(node, profile) {
+        const current = node.control?.config || {};
+        const nextValues = {};
+        for (const field of profile.fields) {
+            const input = manualProfileGrid?.querySelector(`[name="manual-${field.key}"]`);
+            if (!input) {
+                nextValues[field.key] = current[field.key] ?? field.default;
+                continue;
+            }
+            if (field.type === "boolean") {
+                nextValues[field.key] = Boolean(input.checked);
+                continue;
+            }
+            let nextValue = asNumber(input.value, current[field.key] ?? field.default ?? 0);
+            if (field.min != null) {
+                nextValue = Math.max(nextValue, field.min);
+            }
+            if (field.max != null) {
+                nextValue = Math.min(nextValue, field.max);
+            }
+            if (field.mode === "int") {
+                nextValue = Math.round(nextValue);
+            } else {
+                nextValue = Math.round(nextValue * 1000) / 1000;
+            }
+            input.value = String(nextValue);
+            nextValues[field.key] = nextValue;
+        }
+        return nextValues;
+    }
+
+    function buildManualCommandSequence(profile, values) {
+        const commands = [];
+        for (const item of profile.command_sequence || []) {
+            if (item.kind === "choice") {
+                commands.push(values[item.field] ? item.true : item.false);
+                continue;
+            }
+            if (item.kind === "template") {
+                commands.push(
+                    item.template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key) => String(values[key] ?? "")),
+                );
+            }
+        }
+        return commands.map((item) => String(item || "").trim()).filter(Boolean);
     }
 
     function updateManualPanel() {
@@ -475,13 +718,21 @@
             return;
         }
 
+        const profile = profileForNode(node);
+        if (!profile) {
+            syncManualControlsEnabled(false);
+            showManualState("Fuer diesen Aktor ist kein Bedienprofil hinterlegt.");
+            return;
+        }
+
         showManualPanel();
         manualTargetTitle.textContent = node.instance_id || node.label;
-        manualTargetSubtitle.textContent = `${node.symbol_id} | ${target.device_type || "device"}`;
+        manualTargetSubtitle.textContent = `${node.symbol_id} | ${profile.label}`;
         manualDevice.textContent = `${target.device_display_name} (${target.asset_serial})`;
         manualConnection.textContent = `${target.server_code} | ${target.connection_label}`;
         manualProtocol.textContent = target.protocol || "n/a";
         manualDeviceStatus.textContent = formatDeviceStatus(target);
+        renderManualProfile(node, profile);
         syncManualControlsEnabled(Boolean(target.device_id));
     }
 
@@ -566,13 +817,50 @@
             const responseText = asString(payload?.result?.response_text, "");
             const metadata = payload?.result?.metadata || {};
             const output = responseText || JSON.stringify(metadata, null, 2);
-            setManualResponse(output);
-            setManualStatus(`Befehl ${text} erfolgreich gesendet.`, "success");
+            return {
+                commandText: text,
+                output,
+            };
         } catch (error) {
-            setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
+            throw new Error(error?.message || "Befehl konnte nicht gesendet werden.");
         } finally {
             state.isSending = false;
             syncManualControlsEnabled(true);
+        }
+    }
+
+    async function applyManualProfile(event) {
+        event.preventDefault();
+        const node = getNodeById(state.selectedNodeId);
+        const target = selectedTarget();
+        const profile = profileForNode(node);
+        if (!node || !target || !profile) {
+            setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
+            return;
+        }
+
+        const values = collectManualProfileValues(node, profile);
+        const commands = buildManualCommandSequence(profile, values);
+        if (commands.length === 0) {
+            setManualStatus("Fuer dieses Profil sind keine ausfuehrbaren Befehle hinterlegt.", "error");
+            return;
+        }
+
+        try {
+            const outputs = [];
+            for (const command of commands) {
+                const result = await sendManualCommand(command);
+                outputs.push(`> ${result.commandText}\n${result.output || "OK"}`);
+            }
+            node.control = {
+                profile_id: profile.id,
+                config: values,
+            };
+            renderManualProfile(node, profile);
+            setManualResponse(outputs.join("\n\n"));
+            setManualStatus(`Aktorwerte fuer ${node.instance_id || node.label} angewendet.`, "success");
+        } catch (error) {
+            setManualStatus(error?.message || "Aktorwerte konnten nicht angewendet werden.", "error");
         }
     }
 
@@ -596,16 +884,34 @@
         setManualMode(!state.manualMode);
     });
 
+    manualProfileForm?.addEventListener("submit", (event) => {
+        void applyManualProfile(event);
+    });
+
     manualCommandForm?.addEventListener("submit", (event) => {
         event.preventDefault();
-        sendManualCommand(manualCommandInput.value);
+        void sendManualCommand(manualCommandInput.value)
+            .then((result) => {
+                setManualResponse(`> ${result.commandText}\n${result.output || "OK"}`);
+                setManualStatus(`Befehl ${result.commandText} erfolgreich gesendet.`, "success");
+            })
+            .catch((error) => {
+                setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
+            });
     });
 
     for (const button of manualCommandButtons) {
         const command = String(button.dataset.manualCommand || "").trim();
         button.addEventListener("click", () => {
             manualCommandInput.value = command;
-            sendManualCommand(command);
+            void sendManualCommand(command)
+                .then((result) => {
+                    setManualResponse(`> ${result.commandText}\n${result.output || "OK"}`);
+                    setManualStatus(`Befehl ${result.commandText} erfolgreich gesendet.`, "success");
+                })
+                .catch((error) => {
+                    setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
+                });
         });
     }
 

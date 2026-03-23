@@ -163,6 +163,7 @@
             <div class="builder-view-tabs">
                 <button id="builder-layout-view-tab" class="btn btn-primary" type="button">Fliessbild</button>
                 <button id="builder-communication-view-tab" class="btn" type="button">Kommunikation</button>
+                <button id="builder-control-view-tab" class="btn" type="button">Aktorik</button>
             </div>
 
             <section class="builder-view" id="builder-layout-view">
@@ -209,6 +210,18 @@
                     </div>
                 </div>
             </section>
+
+            <section class="builder-view is-hidden" id="builder-control-view">
+                <div class="card-body builder-control-panel">
+                    <div class="builder-panel-header">
+                        <h2>Aktor-Einstellungen</h2>
+                        <p>Aktoren erhalten profilabhaengige Sollwerte und Betriebsparameter passend zum jeweiligen Symbol.</p>
+                    </div>
+                    <div id="builder-control-body" class="builder-control-body">
+                        <p class="empty-state">Noch keine Aktoren im aktuellen Build.</p>
+                    </div>
+                </div>
+            </section>
         </article>
     </section>
 </section>
@@ -240,6 +253,7 @@
 
 <script id="builder-library-data" type="application/json">{{ symbol_categories | tojson }}</script>
 <script id="builder-build-data" type="application/json">{{ current_build | tojson }}</script>
+<script id="builder-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>
 <script id="builder-meta-data" type="application/json">{{ {"currentBuildId": current_build_id, "apiAuthRequired": api_auth_required, "builderWriteToken": builder_write_token} | tojson }}</script>
 {% endblock %}
 

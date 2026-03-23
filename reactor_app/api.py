@@ -9,6 +9,7 @@ from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
+from .actuator_profiles import normalize_control_definition
 from .extensions import db
 from .flowsheet_library import build_symbol_index, load_flowsheet_library
 from .models import (
@@ -614,6 +615,11 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             ),
         }
 
+        try:
+            control_payload = normalize_control_definition(symbol_id, node.get("control"))
+        except ValueError as exc:
+            raise ValueError(f"Node {index} control is invalid: {exc}") from exc
+
         raw_anchors = node.get("anchors", [])
         if raw_anchors in (None, ""):
             raw_anchors = []
@@ -695,6 +701,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 "width": round(width_value, 2),
                 "height": round(height_value, 2),
                 "communication": communication_payload,
+                "control": control_payload,
                 "anchors": normalized_anchors,
             }
         )

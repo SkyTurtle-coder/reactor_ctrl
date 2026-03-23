@@ -7,6 +7,7 @@ from flask import Blueprint, current_app, jsonify, render_template, request
 from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
+from .actuator_profiles import list_actuator_profiles
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, create_scoped_token
 from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
@@ -349,6 +350,7 @@ def process_view() -> str:
         selected_build_missing=selected_build_missing,
         manual_targets=_resolve_process_manual_targets(current_build),
         manual_write_token=manual_write_token,
+        actuator_profiles=list_actuator_profiles(),
         **_base_context(),
     )
 
@@ -454,6 +456,7 @@ def reactor_builder_view() -> str:
         builder_date=builder_date,
         library_symbol_total=len(symbol_library),
         symbol_categories=group_flowsheet_library(symbol_library),
+        actuator_profiles=list_actuator_profiles(),
         saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
         summary=_control_summary(),
         **_base_context(),

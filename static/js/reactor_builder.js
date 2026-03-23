@@ -20,9 +20,12 @@
     const connectToolButton = document.getElementById("builder-connect-tool");
     const layoutViewTabButton = document.getElementById("builder-layout-view-tab");
     const communicationViewTabButton = document.getElementById("builder-communication-view-tab");
+    const controlViewTabButton = document.getElementById("builder-control-view-tab");
     const layoutView = document.getElementById("builder-layout-view");
     const communicationView = document.getElementById("builder-communication-view");
+    const controlView = document.getElementById("builder-control-view");
     const communicationBody = document.getElementById("builder-communication-body");
+    const controlBody = document.getElementById("builder-control-body");
     const instanceModal = document.getElementById("builder-instance-modal");
     const instanceModalCopy = document.getElementById("builder-instance-modal-copy");
     const instanceIdInput = document.getElementById("builder-instance-id-input");
@@ -118,6 +121,7 @@
 
     const libraryCategoryData = parseJsonScript("builder-library-data", []);
     const buildData = parseJsonScript("builder-build-data", null);
+    const actuatorProfileData = parseJsonScript("builder-actuator-profiles", []);
     const metaData = parseJsonScript("builder-meta-data", {});
 
     const libraryById = new Map();
@@ -151,6 +155,137 @@
                 ports,
             });
         }
+    }
+
+    const actuatorProfiles = Array.isArray(actuatorProfileData)
+        ? actuatorProfileData
+              .filter((profile) => profile && typeof profile === "object")
+              .map((profile) => ({
+                  id: asString(profile.id, ""),
+                  label: asString(profile.label, profile.id || "Profil"),
+                  allowed_symbols: Array.isArray(profile.allowed_symbols)
+                      ? profile.allowed_symbols.map((item) => asString(item, "")).filter(Boolean)
+                      : [],
+                  fields: Array.isArray(profile.fields)
+                      ? profile.fields
+                            .filter((field) => field && typeof field === "object")
+                            .map((field) => ({
+                                key: asString(field.key, ""),
+                                label: asString(field.label, field.key || "Feld"),
+                                type: asString(field.type, "text"),
+                                mode: asString(field.mode, ""),
+                                unit: asString(field.unit, ""),
+                                min: field.min == null ? null : asNumber(field.min, null),
+                                max: field.max == null ? null : asNumber(field.max, null),
+                                step: field.step == null ? null : asNumber(field.step, null),
+                                default: field.default,
+                            }))
+                            .filter((field) => field.key)
+                      : [],
+              }))
+              .filter((profile) => profile.id)
+        : [];
+    const actuatorProfileById = new Map(actuatorProfiles.map((profile) => [profile.id, profile]));
+
+    function profileForSymbol(symbolId) {
+        return actuatorProfiles.find((profile) => profile.allowed_symbols.includes(String(symbolId || ""))) || null;
+    }
+
+    function profilesForSymbol(symbolId) {
+        return actuatorProfiles.filter((profile) => profile.allowed_symbols.includes(String(symbolId || "")));
+    }
+
+    function coerceBoolean(value, fallback) {
+        if (typeof value === "boolean") {
+            return value;
+        }
+        if (typeof value === "number" && (value === 0 || value === 1)) {
+            return Boolean(value);
+        }
+        if (typeof value === "string") {
+            const normalized = value.trim().toLowerCase();
+            if (["true", "1", "yes", "y", "on", "ein"].includes(normalized)) {
+                return true;
+            }
+            if (["false", "0", "no", "n", "off", "aus"].includes(normalized)) {
+                return false;
+            }
+        }
+        return fallback;
+    }
+
+    function normalizeProfileConfig(profile, config) {
+        if (!profile) {
+            return null;
+        }
+        const payload = config && typeof config === "object" ? config : {};
+        const normalized = {};
+        for (const field of profile.fields) {
+            if (field.type === "boolean") {
+                normalized[field.key] = coerceBoolean(payload[field.key], Boolean(field.default));
+                continue;
+            }
+
+            const fallback = field.default == null ? 0 : field.default;
+            let nextValue = asNumber(payload[field.key], asNumber(fallback, 0));
+            if (field.min != null) {
+                nextValue = Math.max(nextValue, field.min);
+            }
+            if (field.max != null) {
+                nextValue = Math.min(nextValue, field.max);
+            }
+            if (field.mode === "int") {
+                nextValue = Math.round(nextValue);
+            } else {
+                nextValue = Math.round(nextValue * 1000) / 1000;
+            }
+            normalized[field.key] = nextValue;
+        }
+        return normalized;
+    }
+
+    function defaultControlForSymbol(symbolId) {
+        const profile = profileForSymbol(symbolId);
+        if (!profile) {
+            return null;
+        }
+        return {
+            profile_id: profile.id,
+            config: normalizeProfileConfig(profile, {}),
+        };
+    }
+
+    function normalizeControl(control, symbolId) {
+        const fallback = defaultControlForSymbol(symbolId);
+        if (!fallback) {
+            return null;
+        }
+        const payload = control && typeof control === "object" ? control : {};
+        const profileId = asString(payload.profile_id, fallback.profile_id);
+        const profile = actuatorProfileById.get(profileId) || actuatorProfileById.get(fallback.profile_id);
+        if (!profile || !profile.allowed_symbols.includes(String(symbolId || ""))) {
+            return fallback;
+        }
+        return {
+            profile_id: profile.id,
+            config: normalizeProfileConfig(profile, payload.config),
+        };
+    }
+
+    function isActuatorNode(node) {
+        return Boolean(node && (String(node.category || "").trim().toLowerCase() === "actuators" || profileForSymbol(node.symbol_id)));
+    }
+
+    function profileForNode(node) {
+        if (!node) {
+            return null;
+        }
+        const profileId = node.control?.profile_id;
+        const explicit = actuatorProfileById.get(String(profileId || ""));
+        if (explicit && explicit.allowed_symbols.includes(String(node.symbol_id || ""))) {
+            return explicit;
+        }
+        return profileForSymbol(node.symbol_id);
     }
 
     for (const item of libraryItems) {
@@ -217,6 +352,12 @@
                     protocol: node.communication.protocol || null,
                     notes: node.communication.notes || null,
                 },
+                control: node.control
+                    ? {
+                          profile_id: node.control.profile_id,
+                          config: { ...(node.control.config || {}) },
+                      }
+                    : null,
                 anchors: node.anchors.map((anchor) => ({
                     id: anchor.id,
                     x_ratio: anchor.x_ratio,
@@ -499,6 +640,7 @@
             width,
             height,
             communication: normalizeCommunication(node?.communication),
+            control: normalizeControl(node?.control, node?.symbol_id || symbol?.id || ""),
             anchors,
         };
     }
@@ -899,6 +1041,149 @@
             }
 
             communicationBody.appendChild(row);
+        }
+    }
+
+    function renderActuatorControls() {
+        if (!controlBody) {
+            return;
+        }
+
+        controlBody.innerHTML = "";
+        const actuatorNodes = [...state.nodes]
+            .filter((node) => isActuatorNode(node))
+            .sort((left, right) => String(left.instance_id || "").localeCompare(String(right.instance_id || "")));
+
+        if (actuatorNodes.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "empty-state";
+            empty.textContent = "Noch keine Aktoren im aktuellen Build.";
+            controlBody.appendChild(empty);
+            return;
+        }
+
+        for (const node of actuatorNodes) {
+            const profile = profileForNode(node);
+            if (!profile) {
+                continue;
+            }
+
+            const card = document.createElement("article");
+            card.className = `builder-control-card${state.selectedNodeId === node.id ? " is-selected" : ""}`;
+
+            const header = document.createElement("div");
+            header.className = "builder-control-card-header";
+            const title = document.createElement("div");
+            const heading = document.createElement("h3");
+            heading.textContent = node.instance_id || node.label;
+            const subtitle = document.createElement("p");
+            subtitle.className = "muted";
+            subtitle.textContent = `${node.symbol_id} | ${node.communication.device_server_code || "ohne Moxa-Zuordnung"}`;
+            title.appendChild(heading);
+            title.appendChild(subtitle);
+
+            const profileLabel = document.createElement("label");
+            profileLabel.className = "builder-field builder-control-profile";
+            const profileText = document.createElement("span");
+            profileText.textContent = "Profil";
+            const profileSelect = document.createElement("select");
+            for (const optionProfile of profilesForSymbol(node.symbol_id)) {
+                const option = document.createElement("option");
+                option.value = optionProfile.id;
+                option.textContent = optionProfile.label;
+                option.selected = optionProfile.id === profile.id;
+                profileSelect.appendChild(option);
+            }
+            profileSelect.addEventListener("change", () => {
+                const nextProfile = actuatorProfileById.get(profileSelect.value);
+                if (!nextProfile) {
+                    return;
+                }
+                pushUndoSnapshot();
+                node.control = {
+                    profile_id: nextProfile.id,
+                    config: normalizeProfileConfig(nextProfile, {}),
+                };
+                renderAll();
+                setStatus(`Aktorprofil fuer ${node.instance_id} aktualisiert. Build noch nicht gespeichert.`, "muted");
+            });
+            profileLabel.appendChild(profileText);
+            profileLabel.appendChild(profileSelect);
+
+            header.appendChild(title);
+            header.appendChild(profileLabel);
+            card.appendChild(header);
+
+            const grid = document.createElement("div");
+            grid.className = "builder-control-grid";
+
+            for (const field of profile.fields) {
+                if (field.type === "boolean") {
+                    const toggle = document.createElement("label");
+                    toggle.className = "builder-control-toggle";
+                    const checkbox = document.createElement("input");
+                    checkbox.type = "checkbox";
+                    checkbox.checked = Boolean(node.control?.config?.[field.key]);
+                    const copy = document.createElement("span");
+                    copy.textContent = field.label;
+                    checkbox.addEventListener("change", () => {
+                        pushUndoSnapshot();
+                        node.control = node.control || { profile_id: profile.id, config: {} };
+                        node.control.profile_id = profile.id;
+                        node.control.config[field.key] = checkbox.checked;
+                        syncDirtyState();
+                        setStatus(`Aktorwert ${field.label} fuer ${node.instance_id} aktualisiert.`, "muted");
+                    });
+                    toggle.appendChild(checkbox);
+                    toggle.appendChild(copy);
+                    grid.appendChild(toggle);
+                    continue;
+                }
+
+                const fieldLabel = document.createElement("label");
+                fieldLabel.className = "builder-field builder-control-field";
+                const fieldText = document.createElement("span");
+                fieldText.textContent = field.unit ? `${field.label} (${field.unit})` : field.label;
+                const input = document.createElement("input");
+                input.type = "number";
+                input.value = String(node.control?.config?.[field.key] ?? field.default ?? "");
+                if (field.min != null) {
+                    input.min = String(field.min);
+                }
+                if (field.max != null) {
+                    input.max = String(field.max);
+                }
+                if (field.step != null) {
+                    input.step = String(field.step);
+                }
+                input.addEventListener("change", () => {
+                    let nextValue = asNumber(input.value, field.default ?? 0);
+                    if (field.min != null) {
+                        nextValue = Math.max(nextValue, field.min);
+                    }
+                    if (field.max != null) {
+                        nextValue = Math.min(nextValue, field.max);
+                    }
+                    if (field.mode === "int") {
+                        nextValue = Math.round(nextValue);
+                    } else {
+                        nextValue = Math.round(nextValue * 1000) / 1000;
+                    }
+                    pushUndoSnapshot();
+                    node.control = node.control || { profile_id: profile.id, config: {} };
+                    node.control.profile_id = profile.id;
+                    node.control.config[field.key] = nextValue;
+                    input.value = String(nextValue);
+                    syncDirtyState();
+                    setStatus(`Aktorwert ${field.label} fuer ${node.instance_id} aktualisiert.`, "muted");
+                });
+                fieldLabel.appendChild(fieldText);
+                fieldLabel.appendChild(input);
+                grid.appendChild(fieldLabel);
+            }
+
+            card.appendChild(grid);
+            controlBody.appendChild(card);
         }
     }
 
@@ -1483,6 +1768,7 @@
         renderNodes();
         updateEmptyState();
         renderCommunicationTable();
+        renderActuatorControls();
         syncDirtyState();
     }
 
@@ -1574,11 +1860,13 @@
     }
 
     function setView(viewName) {
-        state.currentView = viewName === "communication" ? "communication" : "layout";
+        state.currentView = viewName === "communication" || viewName === "control" ? viewName : "layout";
         layoutView.classList.toggle("is-hidden", state.currentView !== "layout");
         communicationView.classList.toggle("is-hidden", state.currentView !== "communication");
+        controlView.classList.toggle("is-hidden", state.currentView !== "control");
         layoutViewTabButton.classList.toggle("btn-primary", state.currentView === "layout");
         communicationViewTabButton.classList.toggle("btn-primary", state.currentView === "communication");
+        controlViewTabButton.classList.toggle("btn-primary", state.currentView === "control");
     }
 
     function closeInstanceModal() {
@@ -1923,6 +2211,10 @@
 
     communicationViewTabButton.addEventListener("click", () => {
         setView("communication");
+    });
+
+    controlViewTabButton.addEventListener("click", () => {
+        setView("control");
     });
 
     instanceCancelButton.addEventListener("click", () => {
