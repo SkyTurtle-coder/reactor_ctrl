@@ -5,6 +5,7 @@ from pathlib import Path
 from flask import Flask
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
+from werkzeug.exceptions import HTTPException
 
 from .api import api_bp
 from .extensions import db
@@ -108,18 +109,28 @@ def _initialize_database_schema(app: Flask) -> None:
         db.create_all()
         db.session.execute(text(_LATEST_MEASUREMENT_VIEW_SQL))
         db.session.commit()
-    except SQLAlchemyError:
-        db.session.rollback()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            app.logger.exception("Database session rollback after schema initialization failure also failed.")
         app.logger.exception("Automatic database schema initialization failed.")
 
 
 def _register_error_handlers(app: Flask) -> None:
+    def rollback_session() -> None:
+        try:
+            db.session.rollback()
+        except Exception:
+            app.logger.exception("Database session rollback failed while handling an application error.")
+
     def handle_database_error(exc: SQLAlchemyError):
         if app.debug:
             raise exc
 
         from flask import jsonify, request
 
+        rollback_session()
         if _is_schema_mismatch_error(exc):
             message = (
                 "Database schema is missing or outdated. Restart the app with AUTO_CREATE_SCHEMA enabled "
@@ -135,8 +146,35 @@ def _register_error_handlers(app: Flask) -> None:
             return jsonify({"error": "Database query failed."}), 500
         return "Database query failed.", 500
 
+    def handle_unexpected_error(exc: Exception):
+        if app.debug:
+            raise exc
+        if isinstance(exc, HTTPException):
+            return exc
+
+        from flask import jsonify, request
+
+        rollback_session()
+        app.logger.exception("Unhandled application error.")
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "Unexpected server error."}), 500
+        return "Unexpected server error.", 500
+
     app.register_error_handler(ProgrammingError, handle_database_error)
     app.register_error_handler(OperationalError, handle_database_error)
+    app.register_error_handler(Exception, handle_unexpected_error)
+
+
+def _register_request_cleanup(app: Flask) -> None:
+    @app.teardown_request
+    def rollback_failed_request(exc):
+        if exc is None:
+            return None
+        try:
+            db.session.rollback()
+        except Exception:
+            app.logger.exception("Database session rollback failed during request teardown.")
+        return None
 
 
 def create_app() -> Flask:
@@ -154,6 +192,7 @@ def create_app() -> Flask:
         from . import models  # noqa: F401
         _initialize_database_schema(app)
 
+    _register_request_cleanup(app)
     _register_error_handlers(app)
     app.register_blueprint(api_bp)
     app.register_blueprint(web_bp)

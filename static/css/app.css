@@ -1092,7 +1092,8 @@ h2 {
     min-width: 0;
 }
 
-.builder-communication-table input {
+.builder-communication-table input,
+.builder-communication-table select {
     width: 100%;
     min-height: 2.4rem;
     padding: 0.55rem 0.7rem;

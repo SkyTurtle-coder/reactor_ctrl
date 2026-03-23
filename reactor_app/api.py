@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
 from .actuator_profiles import normalize_control_definition
@@ -327,6 +327,10 @@ def _commit() -> tuple[bool, Any]:
     except IntegrityError as exc:
         db.session.rollback()
         return False, _json_error("Database constraint violated.", 409, str(exc.orig))
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.exception("Database commit failed.")
+        return False, _json_error("Database operation failed.", 500)
 
 
 def _binding_to_dict(item: DeviceBindingCurrent | None) -> dict[str, Any] | None:

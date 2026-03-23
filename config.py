@@ -34,6 +34,11 @@ class Config:
         "DATABASE_URL",
         "mysql+pymysql://reactor_user:change-me@127.0.0.1:3306/reactor_ctrl",
     )
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_pre_ping": True,
+        "pool_recycle": _env_int("DB_POOL_RECYCLE_SECONDS", 1800),
+        "pool_timeout": _env_int("DB_POOL_TIMEOUT_SECONDS", 30),
+    }
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     DEBUG = _env_bool("FLASK_DEBUG", False)
     AUTO_CREATE_SCHEMA = _env_bool("AUTO_CREATE_SCHEMA", True)

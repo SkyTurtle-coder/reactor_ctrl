@@ -567,6 +567,106 @@
         manualResponse.classList.toggle("is-hidden", !text);
     }
 
+    function waitFor(ms) {
+        return new Promise((resolve) => {
+            window.setTimeout(resolve, ms);
+        });
+    }
+
+    async function readJsonResponse(response) {
+        const rawText = await response.text();
+        if (!rawText) {
+            return {};
+        }
+        try {
+            return JSON.parse(rawText);
+        } catch (_error) {
+            return { raw_text: rawText };
+        }
+    }
+
+    function responseMessage(payload, fallback) {
+        if (!payload || typeof payload !== "object") {
+            return fallback;
+        }
+
+        const parts = [];
+        if (typeof payload.error === "string" && payload.error.trim()) {
+            parts.push(payload.error.trim());
+        }
+        if (typeof payload.details === "string" && payload.details.trim()) {
+            parts.push(payload.details.trim());
+        }
+        if (!parts.length && typeof payload.raw_text === "string" && payload.raw_text.trim()) {
+            parts.push(payload.raw_text.trim().slice(0, 240));
+        }
+        return parts.join(" ") || fallback;
+    }
+
+    function isRetryableStatus(status) {
+        return [408, 425, 429, 502, 503, 504].includes(status);
+    }
+
+    async function fetchJson(url, options) {
+        const requestOptions = options || {};
+        const method = asString(requestOptions.method || "GET", "GET").toUpperCase();
+        const timeoutMs = asNumber(requestOptions.timeoutMs, 20000);
+        const maxRetries =
+            requestOptions.maxRetries == null
+                ? 0
+                : Math.max(0, Math.round(asNumber(requestOptions.maxRetries, 0)));
+        const { timeoutMs: _timeoutMs, maxRetries: _maxRetries, ...fetchOptions } = requestOptions;
+
+        let lastError = null;
+        for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+            const controller = new AbortController();
+            const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+            try {
+                const response = await window.fetch(url, {
+                    ...fetchOptions,
+                    headers: {
+                        Accept: "application/json",
+                        ...((fetchOptions && fetchOptions.headers) || {}),
+                    },
+                    cache: "no-store",
+                    credentials: "same-origin",
+                    signal: controller.signal,
+                });
+                const payload = await readJsonResponse(response);
+                if (!response.ok) {
+                    const error = new Error(responseMessage(payload, "Befehl konnte nicht gesendet werden."));
+                    error.status = response.status;
+                    error.payload = payload;
+                    throw error;
+                }
+                return payload;
+            } catch (error) {
+                const status = error?.status;
+                const retryable =
+                    attempt < maxRetries &&
+                    method === "GET" &&
+                    (error?.name === "AbortError" || error instanceof TypeError || isRetryableStatus(status));
+                if (retryable) {
+                    lastError = error;
+                    await waitFor(250 * (attempt + 1));
+                    continue;
+                }
+                if (error?.name === "AbortError") {
+                    throw new Error("Request Timeout. Bitte Verbindung und Serverstatus pruefen.");
+                }
+                if (error?.payload) {
+                    error.message = responseMessage(error.payload, error.message || "Befehl konnte nicht gesendet werden.");
+                }
+                throw error;
+            } finally {
+                window.clearTimeout(timer);
+            }
+        }
+
+        throw new Error(lastError?.message || "Befehl konnte nicht gesendet werden.");
+    }
+
     function selectedTarget() {
         return state.selectedNodeId ? manualTargets[state.selectedNodeId] || null : null;
     }
@@ -832,24 +932,16 @@
         const manualPayload = buildManualCommandPayload(target, text);
 
         try {
-            const response = await fetch(`/api/devices/${target.device_id}/commands`, {
+            const payload = await fetchJson(`/api/devices/${target.device_id}/commands`, {
                 method: "POST",
                 headers,
+                timeoutMs: manualPayload.expect_response ? 20000 : 12000,
                 body: JSON.stringify({
                     command_name: "manual_text",
                     requested_by: "process_manual",
                     payload: manualPayload,
                 }),
             });
-            const payload = await response.json().catch(() => ({}));
-
-            if (!response.ok) {
-                const errorMessage = [payload.error || "Befehl konnte nicht gesendet werden.", payload.details || ""]
-                    .filter(Boolean)
-                    .join(" ");
-                setManualResponse(JSON.stringify(payload, null, 2));
-                throw new Error(errorMessage);
-            }
 
             const responseText = asString(payload?.result?.response_text, "");
             const metadata = payload?.result?.metadata || {};
@@ -859,6 +951,9 @@
                 output,
             };
         } catch (error) {
+            if (error?.payload && typeof error.payload === "object" && Object.keys(error.payload).length > 0) {
+                setManualResponse(JSON.stringify(error.payload, null, 2));
+            }
             throw new Error(error?.message || "Befehl konnte nicht gesendet werden.");
         } finally {
             state.isSending = false;

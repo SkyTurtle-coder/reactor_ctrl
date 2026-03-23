@@ -570,6 +570,7 @@ def health_db():
         db.session.execute(text("SELECT 1"))
         return jsonify({"status": "ok", "database": "reachable"})
     except Exception as exc:
+        db.session.rollback()
         return (
             jsonify(
                 {

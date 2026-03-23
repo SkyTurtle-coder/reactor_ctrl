@@ -122,7 +122,11 @@
     const libraryCategoryData = parseJsonScript("builder-library-data", []);
     const buildData = parseJsonScript("builder-build-data", null);
     const actuatorProfileData = parseJsonScript("builder-actuator-profiles", []);
+    const supportedProtocolData = parseJsonScript("builder-supported-protocols", []);
     const metaData = parseJsonScript("builder-meta-data", {});
+    const supportedProtocols = Array.isArray(supportedProtocolData)
+        ? supportedProtocolData.map((item) => asString(item, "")).filter(Boolean)
+        : [];
 
     const libraryById = new Map();
     for (const category of Array.isArray(libraryCategoryData) ? libraryCategoryData : []) {
@@ -1015,8 +1019,6 @@
             const communicationFields = [
                 { key: "device_server_code", placeholder: "MOXA-01" },
                 { key: "connection_label", placeholder: "Port 3 / COM" },
-                { key: "protocol", placeholder: "RS-232 / ASCII" },
-                { key: "notes", placeholder: "optional" },
             ];
 
             for (const field of communicationFields) {
@@ -1039,6 +1041,64 @@
                 cell.appendChild(input);
                 row.appendChild(cell);
             }
+
+            const protocolCell = document.createElement("td");
+            const protocolSelect = document.createElement("select");
+            const currentProtocol = node.communication.protocol || "";
+
+            const emptyOption = document.createElement("option");
+            emptyOption.value = "";
+            emptyOption.textContent = "Protokoll auswaehlen";
+            emptyOption.selected = !currentProtocol;
+            protocolSelect.appendChild(emptyOption);
+
+            for (const protocolName of supportedProtocols) {
+                const option = document.createElement("option");
+                option.value = protocolName;
+                option.textContent = protocolName;
+                option.selected = protocolName === currentProtocol;
+                protocolSelect.appendChild(option);
+            }
+
+            if (currentProtocol && !supportedProtocols.includes(currentProtocol)) {
+                const customOption = document.createElement("option");
+                customOption.value = currentProtocol;
+                customOption.textContent = `${currentProtocol} (bestehend)`;
+                customOption.selected = true;
+                protocolSelect.appendChild(customOption);
+            }
+
+            protocolSelect.addEventListener("change", () => {
+                const nextValue = protocolSelect.value.trim();
+                if (nextValue === (node.communication.protocol || "")) {
+                    return;
+                }
+                pushUndoSnapshot();
+                node.communication.protocol = nextValue;
+                syncDirtyState();
+                setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
+            });
+            protocolCell.appendChild(protocolSelect);
+            row.appendChild(protocolCell);
+
+            const notesCell = document.createElement("td");
+            const notesInput = document.createElement("input");
+            notesInput.type = "text";
+            notesInput.value = node.communication.notes || "";
+            notesInput.placeholder = "optional";
+            notesInput.addEventListener("change", () => {
+                const nextValue = notesInput.value.trim();
+                if (nextValue === (node.communication.notes || "")) {
+                    return;
+                }
+                pushUndoSnapshot();
+                node.communication.notes = nextValue;
+                notesInput.value = nextValue;
+                syncDirtyState();
+                setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
+            });
+            notesCell.appendChild(notesInput);
+            row.appendChild(notesCell);
 
             communicationBody.appendChild(row);
         }
@@ -1991,38 +2051,103 @@
         return payload;
     }
 
-    async function fetchJson(url, options) {
-        const timeoutMs = asNumber(options?.timeoutMs, 20000);
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    function waitFor(ms) {
+        return new Promise((resolve) => {
+            window.setTimeout(resolve, ms);
+        });
+    }
 
-        try {
-            const response = await window.fetch(url, {
-                ...(options || {}),
-                headers: {
-                    Accept: "application/json",
-                    ...((options && options.headers) || {}),
-                },
-                cache: "no-store",
-                credentials: "same-origin",
-                signal: controller.signal,
-            });
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                const message = [payload.error || "Request fehlgeschlagen.", payload.details || ""]
-                    .filter(Boolean)
-                    .join(" ");
-                throw new Error(message);
-            }
-            return payload;
-        } catch (error) {
-            if (error && error.name === "AbortError") {
-                throw new Error("Request Timeout. Bitte Verbindung und Serverstatus pruefen.");
-            }
-            throw error;
-        } finally {
-            window.clearTimeout(timer);
+    async function readJsonResponse(response) {
+        const rawText = await response.text();
+        if (!rawText) {
+            return {};
         }
+        try {
+            return JSON.parse(rawText);
+        } catch (_error) {
+            return { raw_text: rawText };
+        }
+    }
+
+    function responseMessage(payload, fallback) {
+        if (!payload || typeof payload !== "object") {
+            return fallback;
+        }
+
+        const parts = [];
+        if (typeof payload.error === "string" && payload.error.trim()) {
+            parts.push(payload.error.trim());
+        }
+        if (typeof payload.details === "string" && payload.details.trim()) {
+            parts.push(payload.details.trim());
+        }
+        if (!parts.length && typeof payload.raw_text === "string" && payload.raw_text.trim()) {
+            parts.push(payload.raw_text.trim().slice(0, 240));
+        }
+        return parts.join(" ") || fallback;
+    }
+
+    function isRetryableStatus(status) {
+        return [408, 425, 429, 502, 503, 504].includes(status);
+    }
+
+    async function fetchJson(url, options) {
+        const requestOptions = options || {};
+        const method = asString(requestOptions.method || "GET", "GET").toUpperCase();
+        const timeoutMs = asNumber(requestOptions.timeoutMs, 20000);
+        const maxRetries =
+            requestOptions.maxRetries == null
+                ? method === "GET"
+                    ? 1
+                    : 0
+                : Math.max(0, Math.round(asNumber(requestOptions.maxRetries, 0)));
+        const { timeoutMs: _timeoutMs, maxRetries: _maxRetries, ...fetchOptions } = requestOptions;
+
+        let lastError = null;
+        for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+            const controller = new AbortController();
+            const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+            try {
+                const response = await window.fetch(url, {
+                    ...fetchOptions,
+                    headers: {
+                        Accept: "application/json",
+                        ...((fetchOptions && fetchOptions.headers) || {}),
+                    },
+                    cache: "no-store",
+                    credentials: "same-origin",
+                    signal: controller.signal,
+                });
+                const payload = await readJsonResponse(response);
+                if (!response.ok) {
+                    const error = new Error(responseMessage(payload, "Request fehlgeschlagen."));
+                    error.status = response.status;
+                    error.payload = payload;
+                    throw error;
+                }
+                return payload;
+            } catch (error) {
+                const status = error?.status;
+                const retryable =
+                    attempt < maxRetries &&
+                    method === "GET" &&
+                    (error?.name === "AbortError" || error instanceof TypeError || isRetryableStatus(status));
+                if (retryable) {
+                    lastError = error;
+                    await waitFor(250 * (attempt + 1));
+                    continue;
+                }
+                if (error?.name === "AbortError") {
+                    throw new Error("Request Timeout. Bitte Verbindung und Serverstatus pruefen.");
+                }
+                throw new Error(error?.message || "Request fehlgeschlagen.");
+            } finally {
+                window.clearTimeout(timer);
+            }
+        }
+
+        throw new Error(lastError?.message || "Request fehlgeschlagen.");
     }
 
     async function saveBuild(forceCreate) {
