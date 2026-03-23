@@ -352,12 +352,44 @@ def index() -> str:
 
 @web_bp.get("/process")
 def process_view() -> str:
-    saved_builds = (
-        ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
-    )
     build_id = request.args.get("build_id", type=int)
-    current_build = db.session.get(ReactorBuild, build_id) if build_id else None
-    selected_build_missing = build_id is not None and current_build is None
+    saved_builds: list[ReactorBuild] = []
+    current_build = None
+    selected_build_missing = False
+    process_notice = None
+    process_storage_available = True
+    try:
+        saved_builds = (
+            ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
+        )
+        current_build = db.session.get(ReactorBuild, build_id) if build_id else None
+        selected_build_missing = build_id is not None and current_build is None
+    except Exception as exc:
+        db.session.rollback()
+        process_storage_available = False
+        process_notice = (
+            "Flowsheets konnten nicht geladen werden. Die Prozessseite bleibt erreichbar, "
+            "Auswahl und manuelle Bedienung sind derzeit jedoch eingeschraenkt."
+        )
+        current_app.logger.exception("Process view database fallback activated: %s", exc)
+
+    manual_targets: dict[str, dict[str, Any]] = {}
+    if current_build is not None:
+        try:
+            manual_targets = _resolve_process_manual_targets(current_build)
+        except Exception as exc:
+            db.session.rollback()
+            if process_notice:
+                process_notice = (
+                    f"{process_notice} Die Geraetezuordnung fuer den manuellen Modus "
+                    "konnte ebenfalls nicht vollstaendig geladen werden."
+                )
+            else:
+                process_notice = (
+                    "Die Geraetezuordnung fuer den manuellen Modus konnte nicht geladen werden. "
+                    "Das Flowsheet bleibt jedoch sichtbar."
+                )
+            current_app.logger.exception("Process view manual target fallback activated: %s", exc)
 
     manual_write_token = None
     if current_app.config.get("API_AUTH_REQUIRED", True):
@@ -377,7 +409,9 @@ def process_view() -> str:
         selected_build_id=None if current_build is None else current_build.reactor_build_id,
         selected_build=_reactor_build_detail_to_dict(current_build),
         selected_build_missing=selected_build_missing,
-        manual_targets=_resolve_process_manual_targets(current_build),
+        process_notice=process_notice,
+        process_storage_available=process_storage_available,
+        manual_targets=manual_targets,
         manual_write_token=manual_write_token,
         actuator_profiles=list_actuator_profiles(),
         **_base_context(),

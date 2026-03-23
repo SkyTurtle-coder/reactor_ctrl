@@ -34,7 +34,7 @@
 
             <label class="process-select-field">
                 <span>Flowsheet</span>
-                <select name="build_id">
+                <select name="build_id" {% if not process_storage_available %}disabled{% endif %}>
                     <option value="">Flowsheet auswaehlen</option>
                     {% for build in saved_builds %}
                     <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
@@ -59,12 +59,18 @@
             </div>
 
             <div class="process-picker-actions">
-                <button class="btn btn-primary" type="submit" {% if not saved_builds %}disabled{% endif %}>Flowsheet anzeigen</button>
+                <button class="btn btn-primary" type="submit" {% if not saved_builds or not process_storage_available %}disabled{% endif %}>Flowsheet anzeigen</button>
                 {% if selected_build_id %}
                 <a class="btn" href="{{ url_for('web.process_view') }}">Auswahl leeren</a>
                 {% endif %}
             </div>
         </form>
+
+        {% if process_notice %}
+        <p class="process-selection-notice{% if process_storage_available %} muted{% else %} error-text{% endif %}">
+            {{ process_notice }}
+        </p>
+        {% endif %}
 
         {% if selected_build_missing %}
         <p class="process-selection-notice error-text">Das angeforderte Flowsheet wurde nicht gefunden.</p>
