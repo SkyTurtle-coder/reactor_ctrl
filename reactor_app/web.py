@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, render_template, request, url_for
 from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -60,11 +61,26 @@ def _bool_badge_class(value: bool) -> str:
 
 @web_bp.app_context_processor
 def inject_layout_helpers() -> dict[str, Any]:
+    def static_asset(filename: str) -> str:
+        asset_url = url_for("static", filename=filename)
+        static_root = current_app.static_folder
+        if not static_root:
+            return asset_url
+
+        asset_path = Path(static_root) / filename
+        try:
+            version = int(asset_path.stat().st_mtime)
+        except OSError:
+            return asset_url
+        separator = "&" if "?" in asset_url else "?"
+        return f"{asset_url}{separator}v={version}"
+
     return {
         "format_datetime": _format_datetime,
         "status_badge_class": _status_badge_class,
         "bool_badge_class": _bool_badge_class,
         "format_protocol_label": protocol_label,
+        "static_asset": static_asset,
     }
 
 

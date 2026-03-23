@@ -124,6 +124,14 @@
     const actuatorProfileData = parseJsonScript("builder-actuator-profiles", []);
     const supportedProtocolData = parseJsonScript("builder-supported-protocols", []);
     const metaData = parseJsonScript("builder-meta-data", {});
+    const buildCanvasData =
+        buildData && typeof buildData === "object" && buildData.definition_json && typeof buildData.definition_json === "object"
+            ? buildData.definition_json.canvas
+            : null;
+    const fallbackCanvasSize = {
+        width: Math.max(720, asNumber(buildCanvasData?.width, 1200)),
+        height: Math.max(560, asNumber(buildCanvasData?.height, 840)),
+    };
     const supportedProtocols = Array.isArray(supportedProtocolData)
         ? supportedProtocolData
               .map((item) => {
@@ -322,7 +330,8 @@
         button.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
-            openInstanceModal(symbolId, canvas.clientWidth / 2, canvas.clientHeight / 2);
+            const canvasSize = syncCanvasMetrics();
+            openInstanceModal(symbolId, canvasSize.width / 2, canvasSize.height / 2);
         });
     }
 
@@ -345,13 +354,35 @@
         edgeSegmentMove: null,
         undoStack: [],
         modalReturnFocus: null,
+        canvasSize: { ...fallbackCanvasSize },
     };
 
+    function measureVisibleCanvasSize() {
+        const rect = canvas.getBoundingClientRect();
+        const width = Math.round(rect.width || canvas.clientWidth || 0);
+        const height = Math.round(rect.height || canvas.clientHeight || 0);
+        if (width <= 0 || height <= 0) {
+            return null;
+        }
+        return { width, height };
+    }
+
+    function syncCanvasMetrics() {
+        const visibleSize = measureVisibleCanvasSize();
+        if (visibleSize) {
+            state.canvasSize = visibleSize;
+        } else if (!state.canvasSize) {
+            state.canvasSize = { ...fallbackCanvasSize };
+        }
+        return state.canvasSize;
+    }
+
     function buildDefinitionPayload() {
+        const canvasSize = syncCanvasMetrics();
         return {
             canvas: {
-                width: canvas.clientWidth,
-                height: canvas.clientHeight,
+                width: canvasSize.width,
+                height: canvasSize.height,
             },
             nodes: state.nodes.map((node) => ({
                 id: node.id,
@@ -820,8 +851,9 @@
 
     function clampNode(node) {
         const padding = 14;
-        const maxX = Math.max(padding, canvas.clientWidth - node.width - padding);
-        const maxY = Math.max(padding, canvas.clientHeight - node.height - padding);
+        const canvasSize = syncCanvasMetrics();
+        const maxX = Math.max(padding, canvasSize.width - node.width - padding);
+        const maxY = Math.max(padding, canvasSize.height - node.height - padding);
         node.x = clamp(node.x, padding, maxX);
         node.y = clamp(node.y, padding, maxY);
     }
@@ -1275,7 +1307,8 @@
             edgeLayer.removeChild(edgeLayer.firstChild);
         }
 
-        edgeLayer.setAttribute("viewBox", `0 0 ${canvas.clientWidth} ${canvas.clientHeight}`);
+        const canvasSize = syncCanvasMetrics();
+        edgeLayer.setAttribute("viewBox", `0 0 ${canvasSize.width} ${canvasSize.height}`);
 
         for (const edge of state.edges) {
             const sourceNode = getNodeById(edge.source_node_id);
@@ -1846,6 +1879,7 @@
     }
 
     function renderAll() {
+        syncCanvasMetrics();
         state.nodes.forEach(clampNode);
         renderEdges();
         renderNodes();
@@ -1943,13 +1977,21 @@
     }
 
     function setView(viewName) {
-        state.currentView = viewName === "communication" || viewName === "control" ? viewName : "layout";
+        const nextView = viewName === "communication" || viewName === "control" ? viewName : "layout";
+        const viewChanged = state.currentView !== nextView;
+        state.currentView = nextView;
         layoutView.classList.toggle("is-hidden", state.currentView !== "layout");
         communicationView.classList.toggle("is-hidden", state.currentView !== "communication");
         controlView.classList.toggle("is-hidden", state.currentView !== "control");
         layoutViewTabButton.classList.toggle("btn-primary", state.currentView === "layout");
         communicationViewTabButton.classList.toggle("btn-primary", state.currentView === "communication");
         controlViewTabButton.classList.toggle("btn-primary", state.currentView === "control");
+        if (viewChanged && state.currentView === "layout") {
+            window.requestAnimationFrame(() => {
+                syncCanvasMetrics();
+                renderAll();
+            });
+        }
     }
 
     function closeInstanceModal() {
@@ -2024,6 +2066,8 @@
             return;
         }
 
+        setView("layout");
+        const canvasSize = syncCanvasMetrics();
         pushUndoSnapshot();
         const node = normalizeNode({
             id: generateId("node"),
@@ -2034,8 +2078,8 @@
             svg_url: symbol.svg_url,
             width: symbol.width,
             height: symbol.height,
-            x: x - symbol.width / 2,
-            y: y - symbol.height / 2,
+            x: clamp(asNumber(x, canvasSize.width / 2), 0, canvasSize.width) - symbol.width / 2,
+            y: clamp(asNumber(y, canvasSize.height / 2), 0, canvasSize.height) - symbol.height / 2,
             communication: {},
             anchors: symbolAnchors(symbol),
         });
@@ -2447,6 +2491,11 @@
                 removeEdge(state.selectedEdgeId);
             }
         }
+    });
+
+    window.addEventListener("resize", () => {
+        syncCanvasMetrics();
+        renderAll();
     });
 
     window.addEventListener("beforeunload", (event) => {
