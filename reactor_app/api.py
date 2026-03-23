@@ -8,7 +8,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
-from .builder_auth import REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
+from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
 from .extensions import db
 from .flowsheet_library import build_symbol_index, load_flowsheet_library
 from .models import (
@@ -78,11 +78,26 @@ def _extract_builder_write_token() -> str | None:
     return token or None
 
 
+def _extract_process_manual_token() -> str | None:
+    token = request.headers.get("X-Process-Manual-Token")
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
+
+
 def _is_builder_write_request() -> bool:
     if request.method not in {"POST", "PATCH"}:
         return False
     path = request.path.rstrip("/")
     return path == "/api/reactor-builds" or path.startswith("/api/reactor-builds/")
+
+
+def _is_process_manual_request() -> bool:
+    if request.method != "POST":
+        return False
+    path = request.path.rstrip("/")
+    return re.fullmatch(r"/api/devices/\d+/commands", path) is not None
 
 
 @api_bp.before_request
@@ -94,6 +109,7 @@ def require_api_token_for_writes():
         return None
 
     builder_token = _extract_builder_write_token() if _is_builder_write_request() else None
+    manual_token = _extract_process_manual_token() if _is_process_manual_request() else None
     secret_key = current_app.config.get("SECRET_KEY")
     if builder_token and secret_key:
         if verify_scoped_token(
@@ -102,12 +118,24 @@ def require_api_token_for_writes():
             expected_scope=REACTOR_BUILDER_WRITE_SCOPE,
         ):
             return None
+    if manual_token and secret_key:
+        if verify_scoped_token(
+            manual_token,
+            secret_key=secret_key,
+            expected_scope=PROCESS_MANUAL_WRITE_SCOPE,
+        ):
+            return None
 
     expected_token = current_app.config.get("API_AUTH_TOKEN")
     if not expected_token:
         if builder_token is not None:
             return _json_auth_error(
                 "Invalid or expired Reactor Builder token. Reload the builder page and try again.",
+                401,
+            )
+        if manual_token is not None:
+            return _json_auth_error(
+                "Invalid or expired Process Manual token. Reload the process page and try again.",
                 401,
             )
         return _json_auth_error(
@@ -121,6 +149,8 @@ def require_api_token_for_writes():
 
     if builder_token is not None:
         return _json_auth_error("Invalid or expired Reactor Builder token. Reload the builder page and try again.", 401)
+    if manual_token is not None:
+        return _json_auth_error("Invalid or expired Process Manual token. Reload the process page and try again.", 401)
 
     if provided_token is None:
         return _json_auth_error("Missing API authentication token.", 401)

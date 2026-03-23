@@ -1,37 +1,198 @@
 {% extends "base.html" %}
 
-{% block title %}View Process | reactor_ctrl{% endblock %}
+{% block title %}Process View | reactor_ctrl{% endblock %}
 
 {% block page_header %}
 <section class="process-header">
     <div class="process-heading">
         <span class="eyebrow">Live</span>
-        <h1>{{ process_title }}</h1>
-        <p class="process-step">Step: <strong>{{ process_step }}</strong></p>
+        <h1>Process View</h1>
+        <p class="page-lead">
+            Freigegebene Flowsheets werden hier schreibgeschuetzt dargestellt.
+            Der manuelle Modus schaltet bei Bedarf direkte Aktor-Kommandos frei.
+        </p>
     </div>
+    {% if selected_build %}
+    <div class="process-header-meta">
+        <span class="badge badge-info">Build #{{ selected_build.reactor_build_id }}</span>
+        <span class="badge badge-success">{{ selected_build.node_count }} Elemente</span>
+    </div>
+    {% endif %}
 </section>
 {% endblock %}
 
 {% block content %}
-<section class="process-workspace">
-    <article class="process-stage">
-        <div class="process-stage-note">
-            <span class="section-label">Flowsheet Area</span>
-            <h2>Reserved for the future process diagram</h2>
-            <p>
-                Hier kommt spaeter das vom User konfigurierte Fliessbild hin:
-                Reaktoren, Sensoren, Aktoren, Schemabilder und Port-Zuweisungen.
-            </p>
+<section class="card process-control-card">
+    <div class="card-body">
+        <form class="process-picker-grid" method="get" action="{{ url_for('web.process_view') }}">
+            <label class="process-select-field">
+                <span>Rezept</span>
+                <select disabled>
+                    <option>Keine Rezepte verfuegbar</option>
+                </select>
+            </label>
+
+            <label class="process-select-field">
+                <span>Flowsheet</span>
+                <select name="build_id">
+                    <option value="">Flowsheet auswaehlen</option>
+                    {% for build in saved_builds %}
+                    <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
+                        {{ build.build_name }}{% if build.build_date %} | {{ build.build_date }}{% endif %}{% if build.updated_by or build.created_by %} | {{ build.updated_by or build.created_by }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <div class="process-manual-toggle-field">
+                <span>Manueller Modus</span>
+                <button
+                    id="process-manual-mode-toggle"
+                    class="btn"
+                    type="button"
+                    aria-pressed="false"
+                    {% if not selected_build %}disabled{% endif %}
+                >
+                    Aktivieren
+                </button>
+                <p class="muted">Aktoren werden erst im manuellen Modus klickbar.</p>
+            </div>
+
+            <div class="process-picker-actions">
+                <button class="btn btn-primary" type="submit" {% if not saved_builds %}disabled{% endif %}>Flowsheet anzeigen</button>
+                {% if selected_build_id %}
+                <a class="btn" href="{{ url_for('web.process_view') }}">Auswahl leeren</a>
+                {% endif %}
+            </div>
+        </form>
+
+        {% if selected_build_missing %}
+        <p class="process-selection-notice error-text">Das angeforderte Flowsheet wurde nicht gefunden.</p>
+        {% endif %}
+    </div>
+</section>
+
+<section class="process-display-grid">
+    <article class="card process-viewer-card">
+        <div class="card-header process-viewer-header">
+            <div>
+                <span class="section-label">Flowsheet</span>
+                <h2>{{ selected_build.build_name if selected_build else "Kein Flowsheet ausgewaehlt" }}</h2>
+                <p>
+                    {% if selected_build %}
+                    Die Darstellung ist schreibgeschuetzt. Layout-Anpassungen erfolgen ausschliesslich im Reactor Builder.
+                    {% else %}
+                    Waehle oben ein gespeichertes Flowsheet aus, um die aktuelle Prozessdarstellung zu laden.
+                    {% endif %}
+                </p>
+            </div>
+
+            {% if selected_build %}
+            <div class="process-viewer-meta">
+                <div class="process-viewer-meta-item">
+                    <span class="process-viewer-meta-label">Stand</span>
+                    <strong>{{ selected_build.build_date or "n/a" }}</strong>
+                </div>
+                <div class="process-viewer-meta-item">
+                    <span class="process-viewer-meta-label">Aktualisiert von</span>
+                    <strong>{{ selected_build.updated_by or selected_build.created_by or "n/a" }}</strong>
+                </div>
+                <div class="process-viewer-meta-item">
+                    <span class="process-viewer-meta-label">Leitungen</span>
+                    <strong>{{ selected_build.definition_json.edges|length if selected_build.definition_json and selected_build.definition_json.edges is iterable else 0 }}</strong>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="process-stage">
+            <div class="process-flowsheet-wrap">
+                <div class="process-flowsheet-surface" id="process-flowsheet-surface">
+                    <div class="builder-canvas-empty{% if selected_build %} is-hidden{% endif %}" id="process-flowsheet-empty">
+                        <h3>Kein Flowsheet geladen</h3>
+                        <p>Nach der Auswahl erscheint hier die freigegebene Prozessdarstellung mit allen Komponenten und Verbindungen.</p>
+                    </div>
+                    <svg class="builder-edge-layer process-edge-layer" id="process-edge-layer" aria-hidden="true"></svg>
+                    <div class="builder-node-layer process-node-layer" id="process-node-layer"></div>
+                </div>
+            </div>
         </div>
     </article>
 
-    <article class="card process-footnote">
-        <div class="card-body">
-            <p class="empty-state">
-                Naechster sinnvoller Ausbauschritt: eine Symbol- und Bildbibliothek fuer Reaktoren, Pumpen, Ventile,
-                Sensoren und Messpunkte, damit der User das Fliessbild selbst zusammensetzen kann.
-            </p>
+    <aside class="card process-manual-card">
+        <div class="card-header">
+            <span class="section-label">Bedienung</span>
+            <h2>Manueller Modus</h2>
+            <p>Direkte Steuerbefehle werden nur fuer Aktoren mit gueltiger Kommunikationszuordnung freigeschaltet.</p>
         </div>
-    </article>
+
+        <div class="card-body process-manual-body">
+            <div class="process-manual-state" id="process-manual-empty">
+                <h3>Bereit</h3>
+                <p id="process-manual-empty-text">
+                    {% if selected_build %}
+                    Aktiviere den manuellen Modus und klicke anschliessend auf einen Aktor im Flowsheet.
+                    {% else %}
+                    Lade zuerst ein Flowsheet, um den manuellen Modus zu verwenden.
+                    {% endif %}
+                </p>
+            </div>
+
+            <div class="process-manual-panel is-hidden" id="process-manual-panel">
+                <div class="process-manual-target">
+                    <span class="section-label">Ausgewaehlter Aktor</span>
+                    <h3 id="process-manual-target-title">-</h3>
+                    <p class="muted" id="process-manual-target-subtitle">-</p>
+                </div>
+
+                <dl class="process-manual-meta">
+                    <div>
+                        <dt>Geraet</dt>
+                        <dd id="process-manual-device">-</dd>
+                    </div>
+                    <div>
+                        <dt>Verbindung</dt>
+                        <dd id="process-manual-connection">-</dd>
+                    </div>
+                    <div>
+                        <dt>Protokoll</dt>
+                        <dd id="process-manual-protocol">-</dd>
+                    </div>
+                    <div>
+                        <dt>Status</dt>
+                        <dd id="process-manual-device-status">-</dd>
+                    </div>
+                </dl>
+
+                <div class="process-manual-quick-actions">
+                    <button class="btn" type="button" data-manual-command="START">START</button>
+                    <button class="btn" type="button" data-manual-command="STOP">STOP</button>
+                </div>
+
+                <form class="process-manual-command-form" id="process-manual-command-form">
+                    <label class="process-select-field">
+                        <span>Freitext-Befehl</span>
+                        <input
+                            id="process-manual-command-input"
+                            type="text"
+                            maxlength="160"
+                            placeholder="z. B. START, STOP, OPEN, CLOSE"
+                        >
+                    </label>
+                    <button class="btn btn-primary" id="process-manual-send-button" type="submit">Befehl senden</button>
+                </form>
+
+                <p class="process-manual-status muted" id="process-manual-status">Kein Befehl gesendet.</p>
+                <pre class="process-manual-response is-hidden" id="process-manual-response"></pre>
+            </div>
+        </div>
+    </aside>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script id="process-build-data" type="application/json">{{ selected_build | tojson }}</script>
+<script id="process-manual-targets" type="application/json">{{ manual_targets | tojson }}</script>
+<script id="process-meta-data" type="application/json">{{ {"apiAuthRequired": api_auth_required, "manualWriteToken": manual_write_token} | tojson }}</script>
+<script src="{{ url_for('static', filename='js/process_view.js') }}"></script>
 {% endblock %}

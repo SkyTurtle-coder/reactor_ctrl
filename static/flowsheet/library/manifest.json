@@ -239,6 +239,50 @@
           "direction": "west"
         }
       ]
+    },
+    {
+      "id": "qi",
+      "label": "QI",
+      "category": "sensors",
+      "svg_file": "sensors/QI.svg",
+      "default_width": 103,
+      "default_height": 42,
+      "ports": [
+        {
+          "id": "right_center",
+          "x": 101,
+          "y": 20.83,
+          "direction": "east"
+        },
+        {
+          "id": "left_center",
+          "x": 1,
+          "y": 20.83,
+          "direction": "west"
+        }
+      ]
+    },
+    {
+      "id": "qic",
+      "label": "QIC",
+      "category": "sensors",
+      "svg_file": "sensors/QIC.svg",
+      "default_width": 103,
+      "default_height": 42,
+      "ports": [
+        {
+          "id": "right_center",
+          "x": 101,
+          "y": 20.83,
+          "direction": "east"
+        },
+        {
+          "id": "left_center",
+          "x": 1,
+          "y": 20.83,
+          "direction": "west"
+        }
+      ]
     }
   ]
 }
