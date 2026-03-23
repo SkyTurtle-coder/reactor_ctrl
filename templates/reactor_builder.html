@@ -36,7 +36,7 @@
                 {% if symbol_categories %}
                 <div class="builder-library">
                     {% for category in symbol_categories %}
-                    <details class="builder-category" open>
+                    <details class="builder-category">
                         <summary class="builder-category-summary">
                             <span>{{ category.label }}</span>
                             <span class="badge badge-info">{{ category.symbols | length }}</span>

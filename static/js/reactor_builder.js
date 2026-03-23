@@ -396,6 +396,8 @@
             category.hidden = !visibleInCategory;
             if (query && visibleInCategory) {
                 category.open = true;
+            } else if (!query) {
+                category.open = false;
             }
         }
 
