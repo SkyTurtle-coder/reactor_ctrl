@@ -35,7 +35,10 @@ Fuer die Basis wird die Moxa-Standardabbildung verwendet:
 
 Die HTML-Basis ist bewusst serverseitig und schlank gehalten, damit spaeter ohne grossen Umbau eine Bootstrap- oder eigene CSS-Oberflaeche daruebergelegt werden kann.
 
-- `GET /`
+- `GET /` fuer die Software-Auswahl zwischen `Reactor Control System` und `InfraredCamera`
+- `GET /reactor-control`
+- `GET /reactor-control-system`
+- `GET /infrared-camera`
 - `GET /devices`
 - `GET /device-servers`
 - `GET /device-connections`

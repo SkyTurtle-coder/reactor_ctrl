@@ -18,6 +18,7 @@
                         <strong>Reactor Control System</strong>
                     </a>
                     <nav class="nav">
+                        <a class="nav-link" href="{{ url_for('web.software_portal') }}">Software Auswahl</a>
                         <a class="nav-link{% if active_page == 'process' %} active{% endif %}" href="{{ url_for('web.process_view') }}">View Process</a>
                         <a class="nav-link{% if active_page == 'recipes' %} active{% endif %}" href="{{ url_for('web.recipes_view') }}">Recipes</a>
                         <a class="nav-link{% if active_page == 'alerts' %} active{% endif %}" href="{{ url_for('web.alerts_view') }}">Alerts</a>

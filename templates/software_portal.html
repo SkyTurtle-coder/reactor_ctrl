@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Software Auswahl | reactor_ctrl</title>
+    <link rel="stylesheet" href="{{ static_asset('css/app.css') }}">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="site-header">
+            <div class="container">
+                <div class="navbar">
+                    <a class="brand" href="{{ url_for('web.software_portal') }}">
+                        <span class="brand-kicker">fhnw services</span>
+                        <strong>Software Auswahl</strong>
+                    </a>
+                </div>
+            </div>
+        </header>
+
+        <main class="container page-shell">
+            <section class="control-hero">
+                <div class="page-header">
+                    <span class="eyebrow">Landing Page</span>
+                    <h1>Welche Software moechtest du verwenden?</h1>
+                    <p class="page-lead">
+                        Waehle den passenden Einstieg fuer deine Arbeit. Die Webdienstleistung stellt aktuell das
+                        Reactor Control System und die InfraredCamera-Software getrennt bereit.
+                    </p>
+                </div>
+                <div class="hero-callout">
+                    <p class="section-label">Available software</p>
+                    <div class="status-stack">
+                        <div><strong>2</strong><span>Software-Einstiege</span></div>
+                        <div><strong>1</strong><span>Reaktorsteuerung</span></div>
+                        <div><strong>1</strong><span>Infrarotkamera</span></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tile-grid">
+                {% for tile in software_tiles %}
+                <a class="feature-tile" href="{{ tile.href }}">
+                    <span class="eyebrow">{{ tile.eyebrow }}</span>
+                    <h2>{{ tile.title }}</h2>
+                    <p>{{ tile.description }}</p>
+                    <div class="tile-stats">
+                        {% for stat in tile.stats %}
+                        <div class="tile-stat">
+                            <strong>{{ stat.value }}</strong>
+                            <span>{{ stat.label }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <span class="tile-link">{{ tile.cta }}</span>
+                </a>
+                {% endfor %}
+            </section>
+        </main>
+
+        <footer class="site-footer">
+            <div class="container footer-bar">
+                <p>Zentrale Auswahl fuer die bereitgestellten Labor- und Anlagenanwendungen.</p>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>

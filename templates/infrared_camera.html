@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>InfraredCamera | reactor_ctrl</title>
+    <link rel="stylesheet" href="{{ static_asset('css/app.css') }}">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="site-header">
+            <div class="container">
+                <div class="navbar">
+                    <a class="brand" href="{{ url_for('web.software_portal') }}">
+                        <span class="brand-kicker">fhnw services</span>
+                        <strong>InfraredCamera</strong>
+                    </a>
+                    <nav class="nav">
+                        <a class="nav-link" href="{{ url_for('web.software_portal') }}">Software Auswahl</a>
+                        <a class="nav-link" href="{{ url_for('web.index') }}">Reactor Control System</a>
+                    </nav>
+                </div>
+            </div>
+        </header>
+
+        <main class="container page-shell">
+            <section class="control-hero">
+                <div class="page-header">
+                    <span class="eyebrow">Imaging</span>
+                    <h1>InfraredCamera</h1>
+                    <p class="page-lead">
+                        Dieser Einstiegspunkt ist fuer die Infrarotkamera vorgesehen. Hier kann die eigentliche
+                        Kamera-Software oder deren Weboberflaeche als naechsten Schritt eingebunden werden.
+                    </p>
+                </div>
+                <div class="hero-actions">
+                    <a class="btn" href="{{ url_for('web.software_portal') }}">Zur Software Auswahl</a>
+                    <a class="btn" href="{{ url_for('web.index') }}">Zum Reactor Control System</a>
+                </div>
+            </section>
+        </main>
+
+        <footer class="site-footer">
+            <div class="container footer-bar">
+                <p>Reservierter Einstiegspunkt fuer die InfraredCamera-Webanwendung.</p>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>

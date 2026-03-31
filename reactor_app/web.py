@@ -306,6 +306,40 @@ def _run_web_query(loader, *, fallback, log_label: str, notice: str):
 
 
 @web_bp.get("/")
+def software_portal() -> str:
+    software_tiles = [
+        {
+            "title": "Reactor Control System",
+            "href": url_for("web.index"),
+            "eyebrow": "Process Control",
+            "description": "Steuerung, Monitoring, Recipes, Alerts und Reactor Builder fuer das Reaktorsystem.",
+            "stats": [
+                {"label": "Area", "value": "Reactor"},
+                {"label": "Mode", "value": "Control"},
+            ],
+            "cta": "Open software",
+        },
+        {
+            "title": "InfraredCamera",
+            "href": url_for("web.infrared_camera_home"),
+            "eyebrow": "Imaging",
+            "description": "Zugang zur Software fuer die Infrarotkamera und ihre Auswertung.",
+            "stats": [
+                {"label": "Area", "value": "Camera"},
+                {"label": "Mode", "value": "Thermal"},
+            ],
+            "cta": "Open software",
+        },
+    ]
+    return render_template(
+        "software_portal.html",
+        active_page="software_portal",
+        software_tiles=software_tiles,
+    )
+
+
+@web_bp.get("/reactor-control-system")
+@web_bp.get("/reactor-control")
 def index() -> str:
     summary = _control_summary()
     feature_tiles = [
@@ -356,6 +390,14 @@ def index() -> str:
         summary=summary,
         feature_tiles=feature_tiles,
         **_base_context(),
+    )
+
+
+@web_bp.get("/infrared-camera")
+def infrared_camera_home() -> str:
+    return render_template(
+        "infrared_camera.html",
+        active_page="infrared_camera",
     )
 
 
