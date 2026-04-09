@@ -365,9 +365,13 @@ h2 {
 
 .process-display-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.7fr) minmax(300px, 360px);
+    grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
+}
+
+.process-display-grid.has-manual-panel {
+    grid-template-columns: minmax(0, 1.7fr) minmax(300px, 360px);
 }
 
 .process-viewer-header {
@@ -511,39 +515,16 @@ h2 {
 }
 
 .process-manual-card-header {
-    padding: 0;
-}
-
-.process-manual-card-toggle {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
     padding: 1.2rem 1.25rem;
-    border: 0;
     background:
         linear-gradient(160deg, rgba(15, 92, 82, 0.08), rgba(41, 93, 134, 0.03)),
         var(--surface);
-    color: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-.process-manual-card-toggle:hover {
-    background:
-        linear-gradient(160deg, rgba(15, 92, 82, 0.11), rgba(41, 93, 134, 0.05)),
-        var(--surface);
-}
-
-.process-manual-card-toggle:focus-visible {
-    outline: 3px solid rgba(41, 93, 134, 0.24);
-    outline-offset: -3px;
 }
 
 .process-manual-card-copy {
     display: grid;
     gap: 0.28rem;
+    margin: 0;
 }
 
 .process-manual-card-title {
@@ -554,30 +535,10 @@ h2 {
 }
 
 .process-manual-card-text {
+    margin: 0;
     color: var(--muted);
 }
 
-.process-manual-card-chevron {
-    width: 0.9rem;
-    height: 0.9rem;
-    border-right: 2px solid var(--accent-strong);
-    border-bottom: 2px solid var(--accent-strong);
-    transform: rotate(45deg);
-    transition: transform 0.18s ease;
-    flex: 0 0 auto;
-}
-
-.process-manual-card-toggle[aria-expanded="true"] .process-manual-card-chevron {
-    transform: rotate(225deg);
-}
-
-.process-manual-state,
-.process-manual-panel {
-    display: grid;
-    gap: 1rem;
-}
-
-.process-manual-state,
 .process-manual-target,
 .process-manual-controls,
 .process-manual-meta div {
@@ -587,18 +548,14 @@ h2 {
     background: rgba(255, 253, 250, 0.9);
 }
 
-.process-manual-state h3,
 .process-manual-target h3 {
     margin-top: 0.1rem;
 }
 
-.process-manual-state p,
 .process-manual-target p {
     margin: 0;
 }
 
-.process-manual-panel.is-hidden,
-.process-manual-state.is-hidden,
 .process-manual-controls.is-hidden {
     display: none;
 }

@@ -117,95 +117,67 @@
         </div>
     </article>
 
-    <aside class="card process-manual-card">
+    <aside class="card process-manual-card" id="process-manual-card" hidden>
         <div class="card-header process-manual-card-header">
-            <button
-                class="process-manual-card-toggle"
-                id="process-manual-card-toggle"
-                type="button"
-                aria-expanded="false"
-                aria-controls="process-manual-region"
-            >
-                <span class="process-manual-card-copy">
-                    <span class="section-label">Controls</span>
-                    <span class="process-manual-card-title">Manual Control</span>
-                    <span class="process-manual-card-text">Direct device control for actuators with a valid communication mapping.</span>
-                </span>
-                <span class="process-manual-card-chevron" aria-hidden="true"></span>
-            </button>
+            <div class="process-manual-card-copy">
+                <span class="section-label">Selected Actuator</span>
+                <h2 class="process-manual-card-title" id="process-manual-target-title">-</h2>
+                <p class="process-manual-card-text" id="process-manual-target-subtitle">-</p>
+            </div>
         </div>
 
-        <div class="card-body process-manual-body" id="process-manual-region">
-            <div class="process-manual-state" id="process-manual-empty">
-                <h3>Ready</h3>
-                <p id="process-manual-empty-text">
-                    {% if selected_build %}
-                    Enable manual mode and then click an actuator in the flowsheet.
-                    {% else %}
-                    Load a flowsheet first to use manual control.
-                    {% endif %}
-                </p>
-            </div>
-
-            <div class="process-manual-panel is-hidden" id="process-manual-panel">
-                <div class="process-manual-target">
-                    <span class="section-label">Selected Actuator</span>
-                    <h3 id="process-manual-target-title">-</h3>
-                    <p class="muted" id="process-manual-target-subtitle">-</p>
+        <div class="card-body process-manual-body">
+            <section class="process-manual-controls" id="process-manual-controls">
+                <div class="process-manual-controls-header">
+                    <span class="section-label">Device Settings</span>
+                    <h3>IKA Stirrer</h3>
+                    <p class="muted">Set power state and RPM, then submit the change.</p>
                 </div>
 
-                <section class="process-manual-controls" id="process-manual-controls">
-                    <div class="process-manual-controls-header">
-                        <span class="section-label">Control</span>
-                        <h3>IKA Stirrer</h3>
-                        <p class="muted">Set the desired state and speed, then submit both values to the device.</p>
-                    </div>
+                <form class="process-manual-settings-form" id="process-manual-settings-form">
+                    <label class="process-select-field process-manual-state-field">
+                        <span>State</span>
+                        <select id="process-manual-state-input">
+                            <option value="off">Off</option>
+                            <option value="on">On</option>
+                        </select>
+                    </label>
 
-                    <form class="process-manual-settings-form" id="process-manual-settings-form">
-                        <label class="process-select-field process-manual-state-field">
-                            <span>State</span>
-                            <select id="process-manual-state-input">
-                                <option value="off">Off</option>
-                                <option value="on">On</option>
-                            </select>
-                        </label>
+                    <label class="process-select-field process-manual-speed-field">
+                        <span>RPM</span>
+                        <input
+                            id="process-manual-speed-input"
+                            type="number"
+                            min="0"
+                            max="10000"
+                            step="10"
+                            inputmode="numeric"
+                        >
+                    </label>
+                    <button class="btn btn-primary" id="process-manual-submit-button" type="submit">Submit</button>
+                </form>
+            </section>
 
-                        <label class="process-select-field process-manual-speed-field">
-                            <span>RPM</span>
-                            <input
-                                id="process-manual-speed-input"
-                                type="number"
-                                min="0"
-                                max="10000"
-                                step="10"
-                                inputmode="numeric"
-                            >
-                        </label>
-                        <button class="btn btn-primary" id="process-manual-submit-button" type="submit">Submit</button>
-                    </form>
-                </section>
+            <dl class="process-manual-meta">
+                <div>
+                    <dt>Port</dt>
+                    <dd id="process-manual-port">-</dd>
+                </div>
+                <div>
+                    <dt>Moxa</dt>
+                    <dd id="process-manual-server">-</dd>
+                </div>
+                <div>
+                    <dt>Protocol</dt>
+                    <dd id="process-manual-protocol">-</dd>
+                </div>
+                <div>
+                    <dt>Status</dt>
+                    <dd id="process-manual-device-status">-</dd>
+                </div>
+            </dl>
 
-                <dl class="process-manual-meta">
-                    <div>
-                        <dt>Port</dt>
-                        <dd id="process-manual-port">-</dd>
-                    </div>
-                    <div>
-                        <dt>Moxa</dt>
-                        <dd id="process-manual-server">-</dd>
-                    </div>
-                    <div>
-                        <dt>Protocol</dt>
-                        <dd id="process-manual-protocol">-</dd>
-                    </div>
-                    <div>
-                        <dt>Status</dt>
-                        <dd id="process-manual-device-status">-</dd>
-                    </div>
-                </dl>
-
-                <p class="process-manual-status muted" id="process-manual-status">No command sent yet.</p>
-            </div>
+            <p class="process-manual-status muted" id="process-manual-status">Select an actuator to configure it.</p>
         </div>
     </aside>
 </section>

@@ -7,15 +7,12 @@
     const edgeLayer = document.getElementById("process-edge-layer");
     const nodeLayer = document.getElementById("process-node-layer");
     const emptyState = document.getElementById("process-flowsheet-empty");
+    const processDisplayGrid = document.querySelector(".process-display-grid");
     const processPickerForm = document.getElementById("process-picker-form");
     const processBuildSelect = document.getElementById("process-build-select");
     const processClearSelectionLink = document.getElementById("process-clear-selection");
     const manualToggleButton = document.getElementById("process-manual-mode-toggle");
-    const manualCardToggle = document.getElementById("process-manual-card-toggle");
-    const manualRegion = document.getElementById("process-manual-region");
-    const manualEmpty = document.getElementById("process-manual-empty");
-    const manualEmptyText = document.getElementById("process-manual-empty-text");
-    const manualPanel = document.getElementById("process-manual-panel");
+    const manualCard = document.getElementById("process-manual-card");
     const manualTargetTitle = document.getElementById("process-manual-target-title");
     const manualTargetSubtitle = document.getElementById("process-manual-target-subtitle");
     const manualControls = document.getElementById("process-manual-controls");
@@ -471,6 +468,41 @@
         return Boolean(manualTargets[nodeId]?.is_resolved);
     }
 
+    function hideManualCard() {
+        processDisplayGrid?.classList.remove("has-manual-panel");
+        if (manualCard) {
+            manualCard.hidden = true;
+        }
+    }
+
+    function showManualCard() {
+        processDisplayGrid?.classList.add("has-manual-panel");
+        if (manualCard) {
+            manualCard.hidden = false;
+        }
+    }
+
+    function resetManualSummary() {
+        if (manualTargetTitle) {
+            manualTargetTitle.textContent = "-";
+        }
+        if (manualTargetSubtitle) {
+            manualTargetSubtitle.textContent = "-";
+        }
+        if (manualPort) {
+            manualPort.textContent = "-";
+        }
+        if (manualServer) {
+            manualServer.textContent = "-";
+        }
+        if (manualProtocol) {
+            manualProtocol.textContent = "-";
+        }
+        if (manualDeviceStatus) {
+            manualDeviceStatus.textContent = "-";
+        }
+    }
+
     function selectActuator(nodeId) {
         if (!state.manualMode) {
             return;
@@ -484,7 +516,6 @@
             return;
         }
         state.selectedNodeId = nodeId;
-        setManualPanelExpanded(true);
         persistViewState();
         renderNodes();
         updateManualPanel();
@@ -562,29 +593,6 @@
 
     function updateEmptyState() {
         emptyState.classList.toggle("is-hidden", state.nodes.length > 0);
-    }
-
-    function showManualState(message) {
-        manualEmpty.classList.remove("is-hidden");
-        manualPanel.classList.add("is-hidden");
-        manualEmptyText.textContent = message;
-    }
-
-    function showManualPanel() {
-        manualEmpty.classList.add("is-hidden");
-        manualPanel.classList.remove("is-hidden");
-    }
-
-    function setManualPanelExpanded(expanded) {
-        const next = Boolean(expanded);
-        if (manualCardToggle) {
-            manualCardToggle.setAttribute("aria-expanded", String(next));
-        }
-        if (manualRegion) {
-            manualRegion.hidden = !next;
-        }
-        state.manualPanelExpanded = next;
-        persistViewState();
     }
 
     function setManualStatus(message, tone) {
@@ -750,7 +758,6 @@
                 JSON.stringify({
                     buildId,
                     manualMode: state.manualMode,
-                    manualPanelExpanded: state.manualPanelExpanded,
                     selectedNodeId: state.selectedNodeId || null,
                 }),
             );
@@ -835,43 +842,51 @@
 
     function updateManualPanel() {
         if (state.nodes.length === 0) {
+            hideManualCard();
+            resetManualSummary();
             syncManualControlsEnabled(false);
-            showManualState("Load a flowsheet first to use manual control.");
+            setManualStatus("Load a flowsheet first to use manual control.", "muted");
             return;
         }
 
         if (!state.manualMode) {
+            hideManualCard();
+            resetManualSummary();
             syncManualControlsEnabled(false);
-            showManualState("Enable manual mode to operate actuators directly from the flowsheet.");
+            setManualStatus("Enable manual mode to operate actuators directly from the flowsheet.", "muted");
             return;
         }
 
         const node = getNodeById(state.selectedNodeId);
         if (!node) {
+            hideManualCard();
+            resetManualSummary();
             syncManualControlsEnabled(false);
-            showManualState("Click an actuator in the flowsheet to open its controls.");
+            setManualStatus("Click an actuator in the flowsheet to open its settings.", "muted");
             return;
         }
 
         const target = selectedTarget();
+        showManualCard();
+        manualTargetTitle.textContent = node.instance_id || node.label;
+        manualTargetSubtitle.textContent = target?.device_display_name || node.symbol_id || "Actuator";
+        manualPort.textContent = target?.connection_label || "-";
+        manualServer.textContent = target?.server_code || "-";
+        manualProtocol.textContent = protocolLabel(target?.protocol);
+        manualDeviceStatus.textContent = target ? formatDeviceStatus(target) : "-";
+
         if (!target || !target.is_resolved) {
             syncManualControlsEnabled(false);
+            manualControls?.classList.add("is-hidden");
             const reason = target?.resolution_note || "No valid communication mapping is available for this actuator.";
-            showManualState(reason);
+            setManualStatus(reason, "error");
             return;
         }
 
-        showManualPanel();
-        manualTargetTitle.textContent = node.instance_id || node.label;
-        manualTargetSubtitle.textContent = target.device_display_name || node.symbol_id || "Actuator";
-        manualPort.textContent = target.connection_label || "-";
-        manualServer.textContent = target.server_code || "-";
-        manualProtocol.textContent = protocolLabel(target.protocol);
-        manualDeviceStatus.textContent = formatDeviceStatus(target);
         renderOperatorControls(node, target);
         syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(node, target));
         if (isIkaMotorTarget(node, target)) {
-            setManualStatus("Adjust On/Off and RPM, then submit the settings to the device.", "muted");
+            setManualStatus("Set On/Off and RPM, then submit the change.", "muted");
             return;
         }
         setManualStatus("A simplified operator panel is not available for this actuator yet.", "muted");
@@ -894,10 +909,9 @@
         state.manualMode = Boolean(enabled);
         if (!state.manualMode) {
             state.selectedNodeId = null;
-            setManualPanelExpanded(false);
-        } else {
+        }
+        if (state.manualMode && !getNodeById(state.selectedNodeId)) {
             state.selectedNodeId = null;
-            setManualPanelExpanded(false);
         }
 
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
@@ -1001,7 +1015,6 @@
         edges,
         canvasSize: parseCanvasSize(definition, nodes),
         manualMode: Boolean(canRestorePersistedState && persistedViewState?.manualMode),
-        manualPanelExpanded: Boolean(canRestorePersistedState && persistedViewState?.manualPanelExpanded),
         selectedNodeId: restoredSelectedNodeId,
         isSending: false,
     };
@@ -1033,12 +1046,20 @@
             manualSpeedInput.value = String(speed);
         }
 
-        const commands = nextState ? [`OUT_SP_4 ${speed}`, "START_4"] : ["STOP_4"];
+        if (nextState && speed <= 0) {
+            setManualStatus("Enter an RPM greater than 0 before switching the stirrer on.", "error");
+            return;
+        }
+
+        const commands = nextState ? ["START_4", `OUT_SP_4 ${speed}`] : ["STOP_4"];
         void (async () => {
             for (const command of commands) {
                 const result = await sendManualCommand(command, { quiet: true });
                 if (!result) {
                     return;
+                }
+                if (nextState && command === "START_4") {
+                    await waitFor(180);
                 }
             }
 
@@ -1061,10 +1082,6 @@
             .catch((error) => {
                 setManualStatus(error?.message || "Device settings could not be sent.", "error");
             });
-    });
-
-    manualCardToggle?.addEventListener("click", () => {
-        setManualPanelExpanded(!state.manualPanelExpanded);
     });
 
     processBuildSelect?.addEventListener("change", () => {
@@ -1092,7 +1109,6 @@
         manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
     }
 
-    setManualPanelExpanded(state.manualPanelExpanded);
     renderAll();
     persistViewState();
 })();
