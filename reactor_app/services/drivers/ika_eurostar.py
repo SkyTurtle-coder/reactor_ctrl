@@ -75,10 +75,12 @@ class IkaEurostarDriver(DeviceDriver):
             field_name="expect_response",
             default=_default_expect_response(command_text),
         )
+        # Field devices have been observed to answer with CRLF, sometimes with an extra
+        # carriage return before LF, even though commands themselves use "blank CRLF".
         response_terminator_name = _coerce_line_ending(
             payload.get("response_terminator"),
             field_name="response_terminator",
-            default=line_ending_name if expect_response else "none",
+            default="crlf" if expect_response else "none",
         )
         max_response_bytes = _coerce_int(
             payload.get("max_response_bytes"),

@@ -834,7 +834,7 @@
                 text: normalizedText,
                 encoding: "ascii",
                 line_ending: "space_crlf",
-                response_terminator: "space_crlf",
+                response_terminator: "crlf",
                 expect_response: expectResponse,
                 strip_response: true,
             };
