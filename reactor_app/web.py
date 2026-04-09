@@ -225,13 +225,13 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
         if device is None and normalized_server and normalized_connection:
             device = connection_lookup.get((normalized_server, normalized_connection))
             if device is not None and normalized_protocol:
-                target["resolution_note"] = "Zuordnung ueber Server und Connection aufgeloest."
+                target["resolution_note"] = "Resolved by server and connection mapping."
 
         if device is None:
             if not normalized_server or not normalized_connection:
-                target["resolution_note"] = "Kommunikationszuordnung fuer diesen Aktor ist noch unvollstaendig."
+                target["resolution_note"] = "The communication mapping for this actuator is still incomplete."
             else:
-                target["resolution_note"] = "Kein gebundenes Geraet fuer diese Zuordnung gefunden."
+                target["resolution_note"] = "No bound device was found for this mapping."
             targets[node_id] = target
             continue
 
@@ -419,8 +419,8 @@ def process_view() -> str:
         db.session.rollback()
         process_storage_available = False
         process_notice = (
-            "Flowsheets konnten nicht geladen werden. Die Prozessseite bleibt erreichbar, "
-            "Auswahl und manuelle Bedienung sind derzeit jedoch eingeschraenkt."
+            "Flowsheets could not be loaded. The process page is still available, "
+            "but selection and manual control are currently limited."
         )
         current_app.logger.exception("Process view database fallback activated: %s", exc)
 
@@ -432,13 +432,13 @@ def process_view() -> str:
             db.session.rollback()
             if process_notice:
                 process_notice = (
-                    f"{process_notice} Die Geraetezuordnung fuer den manuellen Modus "
-                    "konnte ebenfalls nicht vollstaendig geladen werden."
+                    f"{process_notice} The device mapping for manual control "
+                    "could also not be loaded completely."
                 )
             else:
                 process_notice = (
-                    "Die Geraetezuordnung fuer den manuellen Modus konnte nicht geladen werden. "
-                    "Das Flowsheet bleibt jedoch sichtbar."
+                    "The device mapping for manual control could not be loaded. "
+                    "The flowsheet remains visible."
                 )
             current_app.logger.exception("Process view manual target fallback activated: %s", exc)
 

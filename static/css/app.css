@@ -510,6 +510,67 @@ h2 {
     gap: 1rem;
 }
 
+.process-manual-card-header {
+    padding: 0;
+}
+
+.process-manual-card-toggle {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1.2rem 1.25rem;
+    border: 0;
+    background:
+        linear-gradient(160deg, rgba(15, 92, 82, 0.08), rgba(41, 93, 134, 0.03)),
+        var(--surface);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.process-manual-card-toggle:hover {
+    background:
+        linear-gradient(160deg, rgba(15, 92, 82, 0.11), rgba(41, 93, 134, 0.05)),
+        var(--surface);
+}
+
+.process-manual-card-toggle:focus-visible {
+    outline: 3px solid rgba(41, 93, 134, 0.24);
+    outline-offset: -3px;
+}
+
+.process-manual-card-copy {
+    display: grid;
+    gap: 0.28rem;
+}
+
+.process-manual-card-title {
+    font-family: "Aptos Display", "Georgia", serif;
+    font-size: 1.35rem;
+    line-height: 1.1;
+    font-weight: 700;
+}
+
+.process-manual-card-text {
+    color: var(--muted);
+}
+
+.process-manual-card-chevron {
+    width: 0.9rem;
+    height: 0.9rem;
+    border-right: 2px solid var(--accent-strong);
+    border-bottom: 2px solid var(--accent-strong);
+    transform: rotate(45deg);
+    transition: transform 0.18s ease;
+    flex: 0 0 auto;
+}
+
+.process-manual-card-toggle[aria-expanded="true"] .process-manual-card-chevron {
+    transform: rotate(225deg);
+}
+
 .process-manual-state,
 .process-manual-panel {
     display: grid;
@@ -564,6 +625,9 @@ h2 {
 .process-manual-controls {
     display: grid;
     gap: 0.9rem;
+    background:
+        linear-gradient(160deg, rgba(15, 92, 82, 0.08), rgba(41, 93, 134, 0.03)),
+        rgba(255, 253, 250, 0.95);
 }
 
 .process-manual-controls-header {
@@ -582,6 +646,11 @@ h2 {
     gap: 0.75rem;
 }
 
+.process-manual-control-actions .btn,
+.process-manual-speed-form .btn {
+    min-height: 3rem;
+}
+
 .process-manual-speed-field {
     min-width: 0;
 }
@@ -596,6 +665,10 @@ h2 {
 
 .process-manual-status {
     margin: 0;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid rgba(212, 198, 178, 0.78);
+    border-radius: 12px;
+    background: rgba(255, 253, 250, 0.92);
 }
 
 .builder-shell {

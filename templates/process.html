@@ -8,14 +8,14 @@
         <span class="eyebrow">Live</span>
         <h1>Process View</h1>
         <p class="page-lead">
-            Freigegebene Flowsheets werden hier schreibgeschuetzt dargestellt.
-            Der manuelle Modus schaltet bei Bedarf direkte Aktor-Kommandos frei.
+            Approved flowsheets are rendered read-only here.
+            Manual mode unlocks direct actuator control when needed.
         </p>
     </div>
     {% if selected_build %}
     <div class="process-header-meta">
         <span class="badge badge-info">Build #{{ selected_build.reactor_build_id }}</span>
-        <span class="badge badge-success">{{ selected_build.node_count }} Elemente</span>
+        <span class="badge badge-success">{{ selected_build.node_count }} Nodes</span>
     </div>
     {% endif %}
 </section>
@@ -26,16 +26,16 @@
     <div class="card-body">
         <form class="process-picker-grid" method="get" action="{{ url_for('web.process_view') }}">
             <label class="process-select-field">
-                <span>Rezept</span>
+                <span>Recipe</span>
                 <select disabled>
-                    <option>Keine Rezepte verfuegbar</option>
+                    <option>No recipes available</option>
                 </select>
             </label>
 
             <label class="process-select-field">
                 <span>Flowsheet</span>
                 <select name="build_id" {% if not process_storage_available %}disabled{% endif %}>
-                    <option value="">Flowsheet auswaehlen</option>
+                    <option value="">Select flowsheet</option>
                     {% for build in saved_builds %}
                     <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
                         {{ build.build_name }}{% if build.build_date %} | {{ build.build_date }}{% endif %}{% if build.updated_by or build.created_by %} | {{ build.updated_by or build.created_by }}{% endif %}
@@ -45,7 +45,7 @@
             </label>
 
             <div class="process-manual-toggle-field">
-                <span>Manueller Modus</span>
+                <span>Manual Mode</span>
                 <button
                     id="process-manual-mode-toggle"
                     class="btn"
@@ -53,15 +53,15 @@
                     aria-pressed="false"
                     {% if not selected_build %}disabled{% endif %}
                 >
-                    Aktivieren
+                    Enable
                 </button>
-                <p class="muted">Aktoren werden erst im manuellen Modus klickbar.</p>
+                <p class="muted">Actuators become clickable only when manual mode is enabled.</p>
             </div>
 
             <div class="process-picker-actions">
-                <button class="btn btn-primary" type="submit" {% if not saved_builds or not process_storage_available %}disabled{% endif %}>Flowsheet anzeigen</button>
+                <button class="btn btn-primary" type="submit" {% if not saved_builds or not process_storage_available %}disabled{% endif %}>Show Flowsheet</button>
                 {% if selected_build_id %}
-                <a class="btn" href="{{ url_for('web.process_view') }}">Auswahl leeren</a>
+                <a class="btn" href="{{ url_for('web.process_view') }}">Clear Selection</a>
                 {% endif %}
             </div>
         </form>
@@ -73,7 +73,7 @@
         {% endif %}
 
         {% if selected_build_missing %}
-        <p class="process-selection-notice error-text">Das angeforderte Flowsheet wurde nicht gefunden.</p>
+        <p class="process-selection-notice error-text">The requested flowsheet could not be found.</p>
         {% endif %}
     </div>
 </section>
@@ -83,12 +83,12 @@
         <div class="card-header process-viewer-header">
             <div>
                 <span class="section-label">Flowsheet</span>
-                <h2>{{ selected_build.build_name if selected_build else "Kein Flowsheet ausgewaehlt" }}</h2>
+                <h2>{{ selected_build.build_name if selected_build else "No flowsheet selected" }}</h2>
                 <p>
                     {% if selected_build %}
-                    Die Darstellung ist schreibgeschuetzt. Layout-Anpassungen erfolgen ausschliesslich im Reactor Builder.
+                    This view is read-only. Layout changes are handled in the Reactor Builder.
                     {% else %}
-                    Waehle oben ein gespeichertes Flowsheet aus, um die aktuelle Prozessdarstellung zu laden.
+                    Select a saved flowsheet above to load the current process layout.
                     {% endif %}
                 </p>
             </div>
@@ -96,15 +96,15 @@
             {% if selected_build %}
             <div class="process-viewer-meta">
                 <div class="process-viewer-meta-item">
-                    <span class="process-viewer-meta-label">Stand</span>
+                    <span class="process-viewer-meta-label">Version</span>
                     <strong>{{ selected_build.build_date or "n/a" }}</strong>
                 </div>
                 <div class="process-viewer-meta-item">
-                    <span class="process-viewer-meta-label">Aktualisiert von</span>
+                    <span class="process-viewer-meta-label">Updated By</span>
                     <strong>{{ selected_build.updated_by or selected_build.created_by or "n/a" }}</strong>
                 </div>
                 <div class="process-viewer-meta-item">
-                    <span class="process-viewer-meta-label">Leitungen</span>
+                    <span class="process-viewer-meta-label">Connections</span>
                     <strong>{{ selected_build.definition_json.edges|length if selected_build.definition_json and selected_build.definition_json.edges is iterable else 0 }}</strong>
                 </div>
             </div>
@@ -115,8 +115,8 @@
             <div class="process-flowsheet-wrap">
                 <div class="process-flowsheet-surface" id="process-flowsheet-surface">
                     <div class="builder-canvas-empty{% if selected_build %} is-hidden{% endif %}" id="process-flowsheet-empty">
-                        <h3>Kein Flowsheet geladen</h3>
-                        <p>Nach der Auswahl erscheint hier die freigegebene Prozessdarstellung mit allen Komponenten und Verbindungen.</p>
+                        <h3>No Flowsheet Loaded</h3>
+                        <p>The approved process layout will appear here once a flowsheet has been selected.</p>
                     </div>
                     <svg class="builder-edge-layer process-edge-layer" id="process-edge-layer" aria-hidden="true"></svg>
                     <div class="builder-node-layer process-node-layer" id="process-node-layer"></div>
@@ -126,36 +126,47 @@
     </article>
 
     <aside class="card process-manual-card">
-        <div class="card-header">
-            <span class="section-label">Bedienung</span>
-            <h2>Manueller Modus</h2>
-            <p>Direkte Steuerbefehle werden nur fuer Aktoren mit gueltiger Kommunikationszuordnung freigeschaltet.</p>
+        <div class="card-header process-manual-card-header">
+            <button
+                class="process-manual-card-toggle"
+                id="process-manual-card-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="process-manual-region"
+            >
+                <span class="process-manual-card-copy">
+                    <span class="section-label">Controls</span>
+                    <span class="process-manual-card-title">Manual Control</span>
+                    <span class="process-manual-card-text">Direct device control for actuators with a valid communication mapping.</span>
+                </span>
+                <span class="process-manual-card-chevron" aria-hidden="true"></span>
+            </button>
         </div>
 
-        <div class="card-body process-manual-body">
+        <div class="card-body process-manual-body" id="process-manual-region">
             <div class="process-manual-state" id="process-manual-empty">
-                <h3>Bereit</h3>
+                <h3>Ready</h3>
                 <p id="process-manual-empty-text">
                     {% if selected_build %}
-                    Aktiviere den manuellen Modus und klicke anschliessend auf einen Aktor im Flowsheet.
+                    Enable manual mode and then click an actuator in the flowsheet.
                     {% else %}
-                    Lade zuerst ein Flowsheet, um den manuellen Modus zu verwenden.
+                    Load a flowsheet first to use manual control.
                     {% endif %}
                 </p>
             </div>
 
             <div class="process-manual-panel is-hidden" id="process-manual-panel">
                 <div class="process-manual-target">
-                    <span class="section-label">Ausgewaehlter Aktor</span>
+                    <span class="section-label">Selected Actuator</span>
                     <h3 id="process-manual-target-title">-</h3>
                     <p class="muted" id="process-manual-target-subtitle">-</p>
                 </div>
 
                 <section class="process-manual-controls" id="process-manual-controls">
                     <div class="process-manual-controls-header">
-                        <span class="section-label">Steuerung</span>
-                        <h3>Ruehrer bedienen</h3>
-                        <p class="muted">Start, Stop und Drehzahl direkt fuer das IKA-60-Protokoll.</p>
+                        <span class="section-label">Control</span>
+                        <h3>Stirrer Control</h3>
+                        <p class="muted">Direct start, stop, and speed control for the IKA 60 protocol.</p>
                     </div>
 
                     <div class="process-manual-control-actions">
@@ -165,7 +176,7 @@
 
                     <form class="process-manual-speed-form" id="process-manual-speed-form">
                         <label class="process-select-field process-manual-speed-field">
-                            <span>Drehzahl</span>
+                            <span>Speed</span>
                             <input
                                 id="process-manual-speed-input"
                                 type="number"
@@ -175,7 +186,7 @@
                                 inputmode="numeric"
                             >
                         </label>
-                        <button class="btn btn-primary" id="process-manual-speed-apply-button" type="submit">Drehzahl senden</button>
+                        <button class="btn btn-primary" id="process-manual-speed-apply-button" type="submit">Apply Speed</button>
                     </form>
                 </section>
 
@@ -189,7 +200,7 @@
                         <dd id="process-manual-server">-</dd>
                     </div>
                     <div>
-                        <dt>Protokoll</dt>
+                        <dt>Protocol</dt>
                         <dd id="process-manual-protocol">-</dd>
                     </div>
                     <div>
@@ -198,7 +209,7 @@
                     </div>
                 </dl>
 
-                <p class="process-manual-status muted" id="process-manual-status">Kein Befehl gesendet.</p>
+                <p class="process-manual-status muted" id="process-manual-status">No command sent yet.</p>
             </div>
         </div>
     </aside>

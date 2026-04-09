@@ -8,6 +8,8 @@
     const nodeLayer = document.getElementById("process-node-layer");
     const emptyState = document.getElementById("process-flowsheet-empty");
     const manualToggleButton = document.getElementById("process-manual-mode-toggle");
+    const manualCardToggle = document.getElementById("process-manual-card-toggle");
+    const manualRegion = document.getElementById("process-manual-region");
     const manualEmpty = document.getElementById("process-manual-empty");
     const manualEmptyText = document.getElementById("process-manual-empty-text");
     const manualPanel = document.getElementById("process-manual-panel");
@@ -458,6 +460,7 @@
             return;
         }
         state.selectedNodeId = nodeId;
+        setManualPanelExpanded(true);
         renderNodes();
         updateManualPanel();
     }
@@ -475,10 +478,10 @@
                 element.classList.add("is-manual");
                 if (isTargetResolved(node.id)) {
                     element.classList.add("is-manual-ready");
-                    element.title = `${node.instance_id || node.label}: manueller Zugriff verfuegbar`;
+                    element.title = `${node.instance_id || node.label}: manual control available`;
                 } else {
                     element.classList.add("is-manual-unresolved");
-                    element.title = `${node.instance_id || node.label}: keine gueltige Kommunikationszuordnung`;
+                    element.title = `${node.instance_id || node.label}: no valid communication mapping`;
                 }
                 element.tabIndex = 0;
                 element.setAttribute("role", "button");
@@ -545,6 +548,17 @@
     function showManualPanel() {
         manualEmpty.classList.add("is-hidden");
         manualPanel.classList.remove("is-hidden");
+    }
+
+    function setManualPanelExpanded(expanded) {
+        const next = Boolean(expanded);
+        if (manualCardToggle) {
+            manualCardToggle.setAttribute("aria-expanded", String(next));
+        }
+        if (manualRegion) {
+            manualRegion.hidden = !next;
+        }
+        state.manualPanelExpanded = next;
     }
 
     function setManualStatus(message, tone) {
@@ -633,7 +647,7 @@
                 });
                 const payload = await readJsonResponse(response);
                 if (!response.ok) {
-                    const error = new Error(responseMessage(payload, "Befehl konnte nicht gesendet werden."));
+                    const error = new Error(responseMessage(payload, "Command could not be sent."));
                     error.status = response.status;
                     error.payload = payload;
                     throw error;
@@ -651,10 +665,10 @@
                     continue;
                 }
                 if (error?.name === "AbortError") {
-                    throw new Error("Request Timeout. Bitte Verbindung und Serverstatus pruefen.");
+                    throw new Error("Request timeout. Please check the connection and server status.");
                 }
                 if (error?.payload) {
-                    error.message = responseMessage(error.payload, error.message || "Befehl konnte nicht gesendet werden.");
+                    error.message = responseMessage(error.payload, error.message || "Command could not be sent.");
                 }
                 throw error;
             } finally {
@@ -662,7 +676,7 @@
             }
         }
 
-        throw new Error(lastError?.message || "Befehl konnte nicht gesendet werden.");
+        throw new Error(lastError?.message || "Command could not be sent.");
     }
 
     function selectedTarget() {
@@ -745,34 +759,34 @@
     function updateManualPanel() {
         if (state.nodes.length === 0) {
             syncManualControlsEnabled(false);
-            showManualState("Lade zuerst ein Flowsheet, um den manuellen Modus zu verwenden.");
+            showManualState("Load a flowsheet first to use manual control.");
             return;
         }
 
         if (!state.manualMode) {
             syncManualControlsEnabled(false);
-            showManualState("Aktiviere den manuellen Modus, um Aktoren direkt im Flowsheet zu bedienen.");
+            showManualState("Enable manual mode to operate actuators directly from the flowsheet.");
             return;
         }
 
         const node = getNodeById(state.selectedNodeId);
         if (!node) {
             syncManualControlsEnabled(false);
-            showManualState("Klicke im Flowsheet auf einen Aktor, um dessen Bedienfunktionen zu oeffnen.");
+            showManualState("Click an actuator in the flowsheet to open its controls.");
             return;
         }
 
         const target = selectedTarget();
         if (!target || !target.is_resolved) {
             syncManualControlsEnabled(false);
-            const reason = target?.resolution_note || "Fuer diesen Aktor ist keine gueltige Kommunikationszuordnung vorhanden.";
+            const reason = target?.resolution_note || "No valid communication mapping is available for this actuator.";
             showManualState(reason);
             return;
         }
 
         showManualPanel();
         manualTargetTitle.textContent = node.instance_id || node.label;
-        manualTargetSubtitle.textContent = target.device_display_name || node.symbol_id || "Aktor";
+        manualTargetSubtitle.textContent = target.device_display_name || node.symbol_id || "Actuator";
         manualPort.textContent = target.connection_label || "-";
         manualServer.textContent = target.server_code || "-";
         manualProtocol.textContent = protocolLabel(target.protocol);
@@ -780,10 +794,10 @@
         renderOperatorControls(node, target);
         syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(node, target));
         if (isIkaMotorTarget(node, target)) {
-            setManualStatus("Bereit fuer Start, Stop und Drehzahl.", "muted");
+            setManualStatus("Ready for start, stop, and speed control.", "muted");
             return;
         }
-        setManualStatus("Fuer diesen Aktor ist noch keine vereinfachte Bedienung hinterlegt.", "muted");
+        setManualStatus("A simplified operator panel is not available for this actuator yet.", "muted");
     }
 
     function renderAll() {
@@ -804,11 +818,14 @@
         if (!state.manualMode) {
             state.selectedNodeId = null;
             setManualResponse("");
+            setManualPanelExpanded(false);
+        } else {
+            setManualPanelExpanded(true);
         }
 
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
-        manualToggleButton.textContent = state.manualMode ? "Aktiv" : "Aktivieren";
+        manualToggleButton.textContent = state.manualMode ? "Enabled" : "Enable";
         renderAll();
     }
 
@@ -817,22 +834,22 @@
         const target = selectedTarget();
         const text = String(commandText || "").trim();
         if (!state.manualMode || !target || !target.is_resolved || !target.device_id) {
-            setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
+            setManualStatus("Select an actuator with a valid device mapping first.", "error");
             return;
         }
         if (!text) {
-            setManualStatus("Ein Befehlstext ist erforderlich.", "error");
+            setManualStatus("A command is required.", "error");
             return;
         }
         if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
-            setManualStatus("Fuer den manuellen Modus ist kein gueltiger Web-Token verfuegbar.", "error");
+            setManualStatus("No valid manual-control token is available for this page.", "error");
             return;
         }
 
         state.isSending = true;
         syncManualControlsEnabled(true);
         if (!settings.quiet) {
-            setManualStatus(`Sende ${text} an ${target.device_display_name} ...`, "muted");
+            setManualStatus(`Sending ${text} to ${target.device_display_name} ...`, "muted");
         }
 
         const headers = {
@@ -865,7 +882,7 @@
                 payload,
             };
         } catch (error) {
-            throw new Error(error?.message || "Befehl konnte nicht gesendet werden.");
+            throw new Error(error?.message || "Command could not be sent.");
         } finally {
             state.isSending = false;
             syncManualControlsEnabled(true);
@@ -884,6 +901,7 @@
         edges,
         canvasSize: parseCanvasSize(definition, nodes),
         manualMode: false,
+        manualPanelExpanded: false,
         selectedNodeId: null,
         isSending: false,
     };
@@ -895,20 +913,20 @@
     manualStartButton?.addEventListener("click", () => {
         void sendManualCommand("START_4")
             .then(() => {
-                setManualStatus("Startbefehl erfolgreich gesendet.", "success");
+                setManualStatus("Start command sent successfully.", "success");
             })
             .catch((error) => {
-                setManualStatus(error?.message || "Startbefehl konnte nicht gesendet werden.", "error");
+                setManualStatus(error?.message || "Start command could not be sent.", "error");
             });
     });
 
     manualStopButton?.addEventListener("click", () => {
         void sendManualCommand("STOP_4")
             .then(() => {
-                setManualStatus("Stopbefehl erfolgreich gesendet.", "success");
+                setManualStatus("Stop command sent successfully.", "success");
             })
             .catch((error) => {
-                setManualStatus(error?.message || "Stopbefehl konnte nicht gesendet werden.", "error");
+                setManualStatus(error?.message || "Stop command could not be sent.", "error");
             });
     });
 
@@ -919,7 +937,7 @@
         const speed = Math.max(0, Math.round(asNumber(manualSpeedInput?.value, 0)));
 
         if (!node || !target || !isIkaMotorTarget(node, target)) {
-            setManualStatus("Waehle zuerst einen gueltig zugeordneten IKA-Ruehrer aus.", "error");
+            setManualStatus("Select a mapped IKA stirrer first.", "error");
             return;
         }
 
@@ -936,12 +954,17 @@
                         speed,
                     },
                 };
-                setManualStatus(`Drehzahl ${speed} rpm erfolgreich gesendet.`, "success");
+                setManualStatus(`Speed setpoint ${speed} rpm sent successfully.`, "success");
             })
             .catch((error) => {
-                setManualStatus(error?.message || "Drehzahl konnte nicht gesendet werden.", "error");
+                setManualStatus(error?.message || "Speed setpoint could not be sent.", "error");
             });
     });
 
+    manualCardToggle?.addEventListener("click", () => {
+        setManualPanelExpanded(!state.manualPanelExpanded);
+    });
+
+    setManualPanelExpanded(state.manualPanelExpanded);
     renderAll();
 })();
