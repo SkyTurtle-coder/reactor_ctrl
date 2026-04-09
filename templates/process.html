@@ -24,7 +24,7 @@
 {% block content %}
 <section class="card process-control-card">
     <div class="card-body">
-        <form class="process-picker-grid" method="get" action="{{ url_for('web.process_view') }}">
+        <form class="process-picker-grid" id="process-picker-form" method="get" action="{{ url_for('web.process_view') }}">
             <label class="process-select-field">
                 <span>Recipe</span>
                 <select disabled>
@@ -34,7 +34,7 @@
 
             <label class="process-select-field">
                 <span>Flowsheet</span>
-                <select name="build_id" {% if not process_storage_available %}disabled{% endif %}>
+                <select id="process-build-select" name="build_id" {% if not process_storage_available %}disabled{% endif %}>
                     <option value="">Select flowsheet</option>
                     {% for build in saved_builds %}
                     <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
@@ -61,7 +61,7 @@
             <div class="process-picker-actions">
                 <button class="btn btn-primary" type="submit" {% if not saved_builds or not process_storage_available %}disabled{% endif %}>Show Flowsheet</button>
                 {% if selected_build_id %}
-                <a class="btn" href="{{ url_for('web.process_view') }}">Clear Selection</a>
+                <a class="btn" id="process-clear-selection" href="{{ url_for('web.process_view') }}">Clear Selection</a>
                 {% endif %}
             </div>
         </form>

@@ -7,6 +7,9 @@
     const edgeLayer = document.getElementById("process-edge-layer");
     const nodeLayer = document.getElementById("process-node-layer");
     const emptyState = document.getElementById("process-flowsheet-empty");
+    const processPickerForm = document.getElementById("process-picker-form");
+    const processBuildSelect = document.getElementById("process-build-select");
+    const processClearSelectionLink = document.getElementById("process-clear-selection");
     const manualToggleButton = document.getElementById("process-manual-mode-toggle");
     const manualCardToggle = document.getElementById("process-manual-card-toggle");
     const manualRegion = document.getElementById("process-manual-region");
@@ -26,6 +29,7 @@
     const manualProtocol = document.getElementById("process-manual-protocol");
     const manualDeviceStatus = document.getElementById("process-manual-device-status");
     const manualStatus = document.getElementById("process-manual-status");
+    const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -461,6 +465,7 @@
         }
         state.selectedNodeId = nodeId;
         setManualPanelExpanded(true);
+        persistViewState();
         renderNodes();
         updateManualPanel();
     }
@@ -559,6 +564,7 @@
             manualRegion.hidden = !next;
         }
         state.manualPanelExpanded = next;
+        persistViewState();
     }
 
     function setManualStatus(message, tone) {
@@ -681,6 +687,60 @@
 
     function selectedTarget() {
         return state.selectedNodeId ? manualTargets[state.selectedNodeId] || null : null;
+    }
+
+    function readPersistedViewState() {
+        try {
+            const raw = window.localStorage.getItem(PROCESS_VIEW_STORAGE_KEY);
+            if (!raw) {
+                return {};
+            }
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === "object" ? parsed : {};
+        } catch (_error) {
+            return {};
+        }
+    }
+
+    function clearPersistedViewState() {
+        try {
+            window.localStorage.removeItem(PROCESS_VIEW_STORAGE_KEY);
+        } catch (_error) {
+            // Ignore storage failures and continue with in-memory state only.
+        }
+    }
+
+    function queryBuildId() {
+        const rawValue = new URLSearchParams(window.location.search).get("build_id");
+        const buildId = Number(rawValue);
+        return Number.isInteger(buildId) && buildId > 0 ? buildId : null;
+    }
+
+    function currentBuildId() {
+        const buildId = Number(buildData?.reactor_build_id);
+        return Number.isInteger(buildId) && buildId > 0 ? buildId : null;
+    }
+
+    function persistViewState() {
+        const buildId = currentBuildId();
+        if (!buildId) {
+            clearPersistedViewState();
+            return;
+        }
+
+        try {
+            window.localStorage.setItem(
+                PROCESS_VIEW_STORAGE_KEY,
+                JSON.stringify({
+                    buildId,
+                    manualMode: state.manualMode,
+                    manualPanelExpanded: state.manualPanelExpanded,
+                    selectedNodeId: state.selectedNodeId || null,
+                }),
+            );
+        } catch (_error) {
+            // Ignore storage failures and continue with in-memory state only.
+        }
     }
 
     function formatDeviceStatus(target) {
@@ -810,6 +870,14 @@
         updateManualPanel();
     }
 
+    function defaultManualSelection() {
+        const resolvedActuators = state.nodes.filter((node) => isActuator(node) && isTargetResolved(node.id));
+        if (resolvedActuators.length === 1) {
+            return resolvedActuators[0].id;
+        }
+        return null;
+    }
+
     function setManualMode(enabled) {
         if (manualToggleButton.disabled) {
             return;
@@ -820,12 +888,17 @@
             setManualResponse("");
             setManualPanelExpanded(false);
         } else {
+            const existingNode = getNodeById(state.selectedNodeId);
+            if (!existingNode || !isActuator(existingNode)) {
+                state.selectedNodeId = defaultManualSelection();
+            }
             setManualPanelExpanded(true);
         }
 
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
-        manualToggleButton.textContent = state.manualMode ? "Enabled" : "Enable";
+        manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
+        persistViewState();
         renderAll();
     }
 
@@ -895,16 +968,41 @@
     const definition = buildData && typeof buildData === "object" ? buildData.definition_json || {} : {};
     const nodes = Array.isArray(definition?.nodes) ? definition.nodes.map(normalizeNode) : [];
     const edges = Array.isArray(definition?.edges) ? definition.edges.map((edge) => normalizeEdge(edge, nodes)) : [];
+    const persistedViewState = readPersistedViewState();
+    const requestedBuildId = queryBuildId();
+    const activeBuildId = currentBuildId();
+
+    if (!activeBuildId && !requestedBuildId) {
+        const persistedBuildId = Number(persistedViewState?.buildId);
+        if (Number.isInteger(persistedBuildId) && persistedBuildId > 0) {
+            const params = new URLSearchParams(window.location.search);
+            params.set("build_id", String(persistedBuildId));
+            window.location.replace(`${window.location.pathname}?${params.toString()}`);
+            return;
+        }
+    }
+
+    const canRestorePersistedState = activeBuildId && Number(persistedViewState?.buildId) === activeBuildId;
+    const restoredSelectedNodeId = canRestorePersistedState
+        ? asString(persistedViewState?.selectedNodeId, "").trim() || null
+        : null;
 
     const state = {
         nodes,
         edges,
         canvasSize: parseCanvasSize(definition, nodes),
-        manualMode: false,
-        manualPanelExpanded: false,
-        selectedNodeId: null,
+        manualMode: Boolean(canRestorePersistedState && persistedViewState?.manualMode),
+        manualPanelExpanded: Boolean(canRestorePersistedState && persistedViewState?.manualPanelExpanded),
+        selectedNodeId: restoredSelectedNodeId,
         isSending: false,
     };
+
+    if (state.selectedNodeId) {
+        const restoredNode = getNodeById(state.selectedNodeId);
+        if (!restoredNode || !isActuator(restoredNode)) {
+            state.selectedNodeId = null;
+        }
+    }
 
     manualToggleButton?.addEventListener("click", () => {
         setManualMode(!state.manualMode);
@@ -965,6 +1063,36 @@
         setManualPanelExpanded(!state.manualPanelExpanded);
     });
 
+    processBuildSelect?.addEventListener("change", () => {
+        if (!processPickerForm || processBuildSelect.disabled) {
+            return;
+        }
+        if (!String(processBuildSelect.value || "").trim()) {
+            clearPersistedViewState();
+            return;
+        }
+        if (typeof processPickerForm.requestSubmit === "function") {
+            processPickerForm.requestSubmit();
+            return;
+        }
+        processPickerForm.submit();
+    });
+
+    processClearSelectionLink?.addEventListener("click", () => {
+        clearPersistedViewState();
+    });
+
+    if (state.manualMode && !state.selectedNodeId) {
+        state.selectedNodeId = defaultManualSelection();
+    }
+
+    if (manualToggleButton) {
+        manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
+        manualToggleButton.classList.toggle("btn-primary", state.manualMode);
+        manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
+    }
+
     setManualPanelExpanded(state.manualPanelExpanded);
     renderAll();
+    persistViewState();
 })();
