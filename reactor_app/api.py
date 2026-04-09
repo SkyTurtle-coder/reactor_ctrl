@@ -41,6 +41,23 @@ _MAX_REACTOR_BUILD_EDGES = 800
 _MAX_REACTOR_BUILD_ANCHORS_PER_NODE = 64
 _MAX_REACTOR_BUILD_ROUTE_POINTS = 64
 _INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
+_REQUESTED_BY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
+_PROCESS_MANUAL_ALLOWED_COMMANDS = {"manual_text"}
+_PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS = {
+    "text",
+    "command_text",
+    "encoding",
+    "line_ending",
+    "response_terminator",
+    "expect_response",
+    "strip_response",
+    "max_response_bytes",
+    "response_timeout_ms",
+    "write_timeout_ms",
+    "connect_timeout_ms",
+    "recv_size",
+}
+_PROCESS_MANUAL_MAX_TEXT_LENGTH = 160
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -257,6 +274,68 @@ def _parse_float(value: Any, *, field_name: str) -> float:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Field '{field_name}' must be a number.") from exc
+
+
+def _normalize_requested_by(value: Any, *, default: str) -> str:
+    cleaned = _clean_string(value, field_name="requested_by") or default
+    if not _REQUESTED_BY_PATTERN.fullmatch(cleaned):
+        raise ValueError(
+            "Field 'requested_by' must contain only letters, numbers, '.', '_', ':' or '-' and no spaces."
+        )
+    return cleaned
+
+
+def _validate_process_manual_command_payload(command_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    normalized_command = str(command_name or "").strip().lower()
+    if normalized_command not in _PROCESS_MANUAL_ALLOWED_COMMANDS:
+        allowed = ", ".join(sorted(_PROCESS_MANUAL_ALLOWED_COMMANDS))
+        raise ValueError(f"Process manual control may only execute these command names: {allowed}.")
+
+    unexpected_fields = sorted(set(payload) - _PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS)
+    if unexpected_fields:
+        field_list = ", ".join(unexpected_fields)
+        raise ValueError(f"Process manual payload contains unsupported fields: {field_list}.")
+
+    command_text = _clean_string(payload.get("text", payload.get("command_text")), field_name="payload.text", required=True)
+    assert command_text is not None
+    if len(command_text) > _PROCESS_MANUAL_MAX_TEXT_LENGTH:
+        raise ValueError(
+            f"Field 'payload.text' must not exceed {_PROCESS_MANUAL_MAX_TEXT_LENGTH} characters for manual control."
+        )
+
+    sanitized = dict(payload)
+    sanitized.pop("command_text", None)
+    sanitized["text"] = command_text
+
+    for field_name in ("encoding", "line_ending", "response_terminator"):
+        if field_name in sanitized:
+            cleaned = _clean_string(sanitized.get(field_name), field_name=f"payload.{field_name}")
+            if cleaned is None:
+                sanitized.pop(field_name, None)
+            else:
+                sanitized[field_name] = cleaned
+
+    for field_name in ("expect_response", "strip_response"):
+        if field_name in sanitized:
+            sanitized[field_name] = _parse_bool(sanitized[field_name], field_name=f"payload.{field_name}")
+
+    bounded_int_fields = {
+        "max_response_bytes": (1, 65536),
+        "response_timeout_ms": (100, 60000),
+        "write_timeout_ms": (100, 60000),
+        "connect_timeout_ms": (100, 60000),
+        "recv_size": (1, 65536),
+    }
+    for field_name, bounds in bounded_int_fields.items():
+        if field_name in sanitized:
+            sanitized[field_name] = _parse_int(
+                sanitized[field_name],
+                field_name=f"payload.{field_name}",
+                min_value=bounds[0],
+                max_value=bounds[1],
+            )
+
+    return sanitized
 
 
 def _builder_symbol_lookup() -> dict[str, dict[str, Any]]:
@@ -1302,11 +1381,14 @@ def execute_command_for_device(device_id: int):
     try:
         body = _load_json_payload()
         command_name = _clean_string(body.get("command_name"), field_name="command_name", required=True)
-        requested_by = _clean_string(body.get("requested_by"), field_name="requested_by") or "api"
+        requested_by = _normalize_requested_by(body.get("requested_by"), default="api")
         command_payload = body.get("payload", {})
         if not isinstance(command_payload, dict):
             raise ValueError("Field 'payload' must be a JSON object.")
         assert command_name is not None
+        if _extract_process_manual_token() is not None:
+            requested_by = "process_manual"
+            command_payload = _validate_process_manual_command_payload(command_name, command_payload)
     except ValueError as exc:
         return _json_error(str(exc), 400)
 

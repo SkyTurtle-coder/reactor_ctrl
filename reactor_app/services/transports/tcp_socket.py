@@ -14,6 +14,28 @@ class TcpSocketConfig:
     write_timeout_s: float = 1.2
     recv_size: int = 4096
 
+    def __post_init__(self) -> None:
+        if not str(self.host or "").strip():
+            raise ValueError("TcpSocketConfig.host must not be empty.")
+        try:
+            port = int(self.port)
+            connect_timeout = float(self.connect_timeout_s)
+            read_timeout = float(self.read_timeout_s)
+            write_timeout = float(self.write_timeout_s)
+            recv_size = int(self.recv_size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TcpSocketConfig contains invalid numeric values.") from exc
+        if not 1 <= port <= 65535:
+            raise ValueError("TcpSocketConfig.port must be between 1 and 65535.")
+        if connect_timeout <= 0:
+            raise ValueError("TcpSocketConfig.connect_timeout_s must be > 0.")
+        if read_timeout <= 0:
+            raise ValueError("TcpSocketConfig.read_timeout_s must be > 0.")
+        if write_timeout <= 0:
+            raise ValueError("TcpSocketConfig.write_timeout_s must be > 0.")
+        if recv_size <= 0:
+            raise ValueError("TcpSocketConfig.recv_size must be > 0.")
+
 
 @dataclass(frozen=True)
 class TcpSocketProbeResult:
@@ -62,20 +84,24 @@ class TcpSocketTransport:
     def receive_until(self, delimiter: bytes, *, max_bytes: int = 65536) -> bytes:
         self.connect()
         assert self._sock is not None
+        if not delimiter:
+            raise ValueError("TcpSocketTransport.receive_until requires a non-empty delimiter.")
+        if max_bytes <= 0:
+            raise ValueError("TcpSocketTransport.receive_until requires max_bytes > 0.")
 
         buffer = bytearray()
         chunk_size = min(self.config.recv_size, max_bytes)
         while len(buffer) < max_bytes:
             chunk = self._sock.recv(chunk_size)
             if not chunk:
-                break
+                raise socket.timeout("Connection closed before the expected response terminator was received.")
             buffer.extend(chunk)
             if delimiter in buffer:
-                break
+                return bytes(buffer)
             chunk_size = min(self.config.recv_size, max_bytes - len(buffer))
             if chunk_size <= 0:
                 break
-        return bytes(buffer)
+        raise socket.timeout("Response terminator was not received before the maximum response size was reached.")
 
     def send_and_receive(self, payload: bytes, recv_size: int | None = None) -> bytes:
         self.send(payload)

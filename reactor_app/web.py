@@ -449,7 +449,7 @@ def process_view() -> str:
             manual_write_token = create_scoped_token(
                 secret_key,
                 scope=PROCESS_MANUAL_WRITE_SCOPE,
-                ttl_seconds=current_app.config.get("BUILDER_WRITE_TOKEN_TTL_SECONDS", 43200),
+                ttl_seconds=current_app.config.get("PROCESS_MANUAL_WRITE_TOKEN_TTL_SECONDS", 43200),
             )
 
     return render_template(

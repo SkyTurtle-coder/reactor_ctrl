@@ -58,6 +58,23 @@
         return text || fallback;
     }
 
+    function boundedIntegerInputValue(inputElement, fallback) {
+        const element = inputElement;
+        if (!element) {
+            return fallback;
+        }
+        const minValue = Number(element.min);
+        const maxValue = Number(element.max);
+        let nextValue = Math.round(asNumber(element.value, fallback));
+        if (Number.isFinite(minValue)) {
+            nextValue = Math.max(nextValue, minValue);
+        }
+        if (Number.isFinite(maxValue)) {
+            nextValue = Math.min(nextValue, maxValue);
+        }
+        return nextValue;
+    }
+
     function directionToSide(direction, xRatio, yRatio) {
         const normalized = String(direction || "").trim().toLowerCase();
         if (normalized === "west" || normalized === "east" || normalized === "north" || normalized === "south") {
@@ -581,10 +598,6 @@
         manualStatus.classList.add("muted");
     }
 
-    function setManualResponse(content) {
-        void content;
-    }
-
     function waitFor(ms) {
         return new Promise((resolve) => {
             window.setTimeout(resolve, ms);
@@ -885,7 +898,6 @@
         state.manualMode = Boolean(enabled);
         if (!state.manualMode) {
             state.selectedNodeId = null;
-            setManualResponse("");
             setManualPanelExpanded(false);
         } else {
             const existingNode = getNodeById(state.selectedNodeId);
@@ -906,17 +918,21 @@
         const settings = options || {};
         const target = selectedTarget();
         const text = String(commandText || "").trim();
+        if (state.isSending) {
+            setManualStatus("Please wait until the current command is finished.", "muted");
+            return null;
+        }
         if (!state.manualMode || !target || !target.is_resolved || !target.device_id) {
             setManualStatus("Select an actuator with a valid device mapping first.", "error");
-            return;
+            return null;
         }
         if (!text) {
             setManualStatus("A command is required.", "error");
-            return;
+            return null;
         }
         if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
             setManualStatus("No valid manual-control token is available for this page.", "error");
-            return;
+            return null;
         }
 
         state.isSending = true;
@@ -1032,7 +1048,7 @@
         event.preventDefault();
         const node = getNodeById(state.selectedNodeId);
         const target = selectedTarget();
-        const speed = Math.max(0, Math.round(asNumber(manualSpeedInput?.value, 0)));
+        const speed = boundedIntegerInputValue(manualSpeedInput, 0);
 
         if (!node || !target || !isIkaMotorTarget(node, target)) {
             setManualStatus("Select a mapped IKA stirrer first.", "error");
