@@ -19,18 +19,10 @@
     const manualTargetTitle = document.getElementById("process-manual-target-title");
     const manualTargetSubtitle = document.getElementById("process-manual-target-subtitle");
     const manualControls = document.getElementById("process-manual-controls");
-    const manualStartButton = document.getElementById("process-manual-start-button");
-    const manualStopButton = document.getElementById("process-manual-stop-button");
-    const manualSpeedForm = document.getElementById("process-manual-speed-form");
+    const manualSettingsForm = document.getElementById("process-manual-settings-form");
+    const manualStateInput = document.getElementById("process-manual-state-input");
     const manualSpeedInput = document.getElementById("process-manual-speed-input");
-    const manualSpeedApplyButton = document.getElementById("process-manual-speed-apply-button");
-    const manualLiveSection = document.getElementById("process-manual-live");
-    const manualLiveUpdated = document.getElementById("process-manual-live-updated");
-    const manualLiveName = document.getElementById("process-manual-live-name");
-    const manualLiveMode = document.getElementById("process-manual-live-mode");
-    const manualLiveSetpoint = document.getElementById("process-manual-live-setpoint");
-    const manualLiveActual = document.getElementById("process-manual-live-actual");
-    const manualLivePv5 = document.getElementById("process-manual-live-pv5");
+    const manualSubmitButton = document.getElementById("process-manual-submit-button");
     const manualPort = document.getElementById("process-manual-port");
     const manualServer = document.getElementById("process-manual-server");
     const manualProtocol = document.getElementById("process-manual-protocol");
@@ -80,26 +72,6 @@
             nextValue = Math.min(nextValue, maxValue);
         }
         return nextValue;
-    }
-
-    function formatLocalTimestamp(value) {
-        if (!value) {
-            return "No live data loaded yet.";
-        }
-        const date = value instanceof Date ? value : new Date(value);
-        if (Number.isNaN(date.getTime())) {
-            return "No live data loaded yet.";
-        }
-        return `Updated ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
-    }
-
-    function parseIkaNumericValue(responseText, unit) {
-        const text = asString(responseText, "");
-        if (!text) {
-            return "-";
-        }
-        const [value] = text.split(/\s+/);
-        return value ? `${value} ${unit}` : text;
     }
 
     function directionToSide(direction, xRatio, yRatio) {
@@ -511,14 +483,11 @@
         if (!node || !isActuator(node)) {
             return;
         }
-        state.manualTelemetryRequestId += 1;
-        state.manualTelemetry = null;
         state.selectedNodeId = nodeId;
         setManualPanelExpanded(true);
         persistViewState();
         renderNodes();
         updateManualPanel();
-        void refreshManualTelemetry({ quiet: true });
     }
 
     function renderNodes() {
@@ -803,17 +772,14 @@
 
     function syncManualControlsEnabled(enabled) {
         const allow = enabled && !state.isSending;
-        if (manualStartButton) {
-            manualStartButton.disabled = !allow;
-        }
-        if (manualStopButton) {
-            manualStopButton.disabled = !allow;
+        if (manualStateInput) {
+            manualStateInput.disabled = !allow;
         }
         if (manualSpeedInput) {
             manualSpeedInput.disabled = !allow;
         }
-        if (manualSpeedApplyButton) {
-            manualSpeedApplyButton.disabled = !allow;
+        if (manualSubmitButton) {
+            manualSubmitButton.disabled = !allow;
         }
     }
 
@@ -828,39 +794,9 @@
         if (manualSpeedInput) {
             manualSpeedInput.value = String(speed);
         }
-    }
-
-    function updateManualLivePanel(node, target) {
-        const enabled = Boolean(node && target && isIkaMotorTarget(node, target));
-        manualLiveSection?.classList.toggle("is-hidden", !enabled);
-        if (!enabled) {
-            return;
-        }
-
-        const telemetry = state.manualTelemetry;
-        const isLoading = Boolean(telemetry?.isLoading);
-        const fallbackValue = isLoading ? "Loading..." : "-";
-
-        if (manualLiveUpdated) {
-            manualLiveUpdated.textContent = isLoading
-                ? "Loading live values..."
-                : formatLocalTimestamp(telemetry?.updatedAt);
-        }
-
-        if (manualLiveName) {
-            manualLiveName.textContent = telemetry?.name || fallbackValue;
-        }
-        if (manualLiveMode) {
-            manualLiveMode.textContent = telemetry?.mode || fallbackValue;
-        }
-        if (manualLiveSetpoint) {
-            manualLiveSetpoint.textContent = telemetry?.setpoint || fallbackValue;
-        }
-        if (manualLiveActual) {
-            manualLiveActual.textContent = telemetry?.actual || fallbackValue;
-        }
-        if (manualLivePv5) {
-            manualLivePv5.textContent = telemetry?.pv5 || fallbackValue;
+        if (manualStateInput) {
+            const isOn = Boolean(node?.control?.config?.is_on);
+            manualStateInput.value = isOn ? "on" : "off";
         }
     }
 
@@ -901,14 +837,12 @@
         if (state.nodes.length === 0) {
             syncManualControlsEnabled(false);
             showManualState("Load a flowsheet first to use manual control.");
-            updateManualLivePanel(null, null);
             return;
         }
 
         if (!state.manualMode) {
             syncManualControlsEnabled(false);
             showManualState("Enable manual mode to operate actuators directly from the flowsheet.");
-            updateManualLivePanel(null, null);
             return;
         }
 
@@ -916,7 +850,6 @@
         if (!node) {
             syncManualControlsEnabled(false);
             showManualState("Click an actuator in the flowsheet to open its controls.");
-            updateManualLivePanel(null, null);
             return;
         }
 
@@ -925,7 +858,6 @@
             syncManualControlsEnabled(false);
             const reason = target?.resolution_note || "No valid communication mapping is available for this actuator.";
             showManualState(reason);
-            updateManualLivePanel(node, target);
             return;
         }
 
@@ -937,12 +869,9 @@
         manualProtocol.textContent = protocolLabel(target.protocol);
         manualDeviceStatus.textContent = formatDeviceStatus(target);
         renderOperatorControls(node, target);
-        updateManualLivePanel(node, target);
         syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(node, target));
         if (isIkaMotorTarget(node, target)) {
-            if (!state.manualTelemetry?.updatedAt && !state.manualTelemetry?.isLoading) {
-                setManualStatus("Click an actuator to load current device values.", "muted");
-            }
+            setManualStatus("Adjust On/Off and RPM, then submit the settings to the device.", "muted");
             return;
         }
         setManualStatus("A simplified operator panel is not available for this actuator yet.", "muted");
@@ -958,94 +887,17 @@
         updateManualPanel();
     }
 
-    function defaultManualSelection() {
-        const resolvedActuators = state.nodes.filter((node) => isActuator(node) && isTargetResolved(node.id));
-        if (resolvedActuators.length === 1) {
-            return resolvedActuators[0].id;
-        }
-        return null;
-    }
-
-    async function refreshManualTelemetry(options) {
-        const settings = options || {};
-        const node = getNodeById(state.selectedNodeId);
-        const target = selectedTarget();
-        if (!node || !target || !target.is_resolved || !target.device_id || !isIkaMotorTarget(node, target)) {
-            state.manualTelemetry = null;
-            updateManualLivePanel(node, target);
-            return null;
-        }
-        if (state.isSending) {
-            return null;
-        }
-
-        const requestId = state.manualTelemetryRequestId + 1;
-        state.manualTelemetryRequestId = requestId;
-        state.manualTelemetry = {
-            ...state.manualTelemetry,
-            isLoading: true,
-        };
-        updateManualLivePanel(node, target);
-        if (!settings.quiet) {
-            setManualStatus("Loading live stirrer status...", "muted");
-        }
-
-        try {
-            const queries = [
-                { key: "name", command: "IN_NAME", map: (value) => asString(value, "-") || "-" },
-                { key: "mode", command: "IN_MODE", map: (value) => asString(value, "-") || "-" },
-                { key: "setpoint", command: "IN_SP_4", map: (value) => parseIkaNumericValue(value, "rpm") },
-                { key: "actual", command: "IN_PV_4", map: (value) => parseIkaNumericValue(value, "rpm") },
-                { key: "pv5", command: "IN_PV_5", map: (value) => asString(value, "-") || "-" },
-            ];
-            const nextTelemetry = {};
-
-            for (const query of queries) {
-                const response = await sendManualCommand(query.command, { quiet: true });
-                if (requestId !== state.manualTelemetryRequestId || state.selectedNodeId !== node.id) {
-                    return null;
-                }
-                nextTelemetry[query.key] = query.map(response?.output);
-            }
-
-            state.manualTelemetry = {
-                ...nextTelemetry,
-                updatedAt: new Date().toISOString(),
-                isLoading: false,
-            };
-            updateManualLivePanel(node, target);
-            setManualStatus("Live device values updated.", "success");
-            return state.manualTelemetry;
-        } catch (error) {
-            if (requestId !== state.manualTelemetryRequestId || state.selectedNodeId !== node.id) {
-                return null;
-            }
-            state.manualTelemetry = {
-                ...(state.manualTelemetry || {}),
-                isLoading: false,
-            };
-            updateManualLivePanel(node, target);
-            setManualStatus(error?.message || "Live device values could not be loaded.", "error");
-            return null;
-        }
-    }
-
     function setManualMode(enabled) {
         if (manualToggleButton.disabled) {
             return;
         }
         state.manualMode = Boolean(enabled);
         if (!state.manualMode) {
-            state.manualTelemetryRequestId += 1;
-            state.manualTelemetry = null;
             state.selectedNodeId = null;
             setManualPanelExpanded(false);
         } else {
-            const existingNode = getNodeById(state.selectedNodeId);
-            if (!existingNode || !isActuator(existingNode)) {
-                state.selectedNodeId = defaultManualSelection();
-            }
-            setManualPanelExpanded(true);
+            state.selectedNodeId = null;
+            setManualPanelExpanded(false);
         }
 
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
@@ -1053,9 +905,6 @@
         manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
         persistViewState();
         renderAll();
-        if (state.manualMode && state.selectedNodeId) {
-            void refreshManualTelemetry({ quiet: true });
-        }
     }
 
     async function sendManualCommand(commandText, options) {
@@ -1155,8 +1004,6 @@
         manualPanelExpanded: Boolean(canRestorePersistedState && persistedViewState?.manualPanelExpanded),
         selectedNodeId: restoredSelectedNodeId,
         isSending: false,
-        manualTelemetry: null,
-        manualTelemetryRequestId: 0,
     };
 
     if (state.selectedNodeId) {
@@ -1170,39 +1017,12 @@
         setManualMode(!state.manualMode);
     });
 
-    manualStartButton?.addEventListener("click", () => {
-        void sendManualCommand("START_4")
-            .then(async (result) => {
-                if (!result) {
-                    return;
-                }
-                setManualStatus("Start command sent successfully.", "success");
-                await refreshManualTelemetry({ quiet: true });
-            })
-            .catch((error) => {
-                setManualStatus(error?.message || "Start command could not be sent.", "error");
-            });
-    });
-
-    manualStopButton?.addEventListener("click", () => {
-        void sendManualCommand("STOP_4")
-            .then(async (result) => {
-                if (!result) {
-                    return;
-                }
-                setManualStatus("Stop command sent successfully.", "success");
-                await refreshManualTelemetry({ quiet: true });
-            })
-            .catch((error) => {
-                setManualStatus(error?.message || "Stop command could not be sent.", "error");
-            });
-    });
-
-    manualSpeedForm?.addEventListener("submit", (event) => {
+    manualSettingsForm?.addEventListener("submit", (event) => {
         event.preventDefault();
         const node = getNodeById(state.selectedNodeId);
         const target = selectedTarget();
         const speed = boundedIntegerInputValue(manualSpeedInput, 0);
+        const nextState = asString(manualStateInput?.value, "off").toLowerCase() === "on";
 
         if (!node || !target || !isIkaMotorTarget(node, target)) {
             setManualStatus("Select a mapped IKA stirrer first.", "error");
@@ -1213,23 +1033,33 @@
             manualSpeedInput.value = String(speed);
         }
 
-        void sendManualCommand(`OUT_SP_4 ${speed}`)
-            .then(async (result) => {
+        const commands = nextState ? [`OUT_SP_4 ${speed}`, "START_4"] : ["STOP_4"];
+        void (async () => {
+            for (const command of commands) {
+                const result = await sendManualCommand(command, { quiet: true });
                 if (!result) {
                     return;
                 }
-                node.control = {
-                    profile_id: node.control?.profile_id || "motor_rpm",
-                    config: {
-                        ...(node.control?.config || {}),
-                        speed,
-                    },
-                };
-                setManualStatus(`Speed setpoint ${speed} rpm sent successfully.`, "success");
-                await refreshManualTelemetry({ quiet: true });
-            })
+            }
+
+            node.control = {
+                profile_id: node.control?.profile_id || "motor_rpm",
+                config: {
+                    ...(node.control?.config || {}),
+                    speed,
+                    is_on: nextState,
+                },
+            };
+            setManualStatus(
+                nextState
+                    ? `Device updated: on at ${speed} rpm.`
+                    : "Device updated: off.",
+                "success",
+            );
+            renderOperatorControls(node, target);
+        })()
             .catch((error) => {
-                setManualStatus(error?.message || "Speed setpoint could not be sent.", "error");
+                setManualStatus(error?.message || "Device settings could not be sent.", "error");
             });
     });
 
@@ -1256,10 +1086,6 @@
         clearPersistedViewState();
     });
 
-    if (state.manualMode && !state.selectedNodeId) {
-        state.selectedNodeId = defaultManualSelection();
-    }
-
     if (manualToggleButton) {
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
@@ -1269,7 +1095,4 @@
     setManualPanelExpanded(state.manualPanelExpanded);
     renderAll();
     persistViewState();
-    if (state.manualMode && state.selectedNodeId) {
-        void refreshManualTelemetry({ quiet: true });
-    }
 })();
