@@ -26,6 +26,7 @@
     const manualDeviceStatus = document.getElementById("process-manual-device-status");
     const manualStatus = document.getElementById("process-manual-status");
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
+    const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -69,6 +70,16 @@
             nextValue = Math.min(nextValue, maxValue);
         }
         return nextValue;
+    }
+
+    function parseIkaNumericResponse(value) {
+        const text = asString(value, "");
+        if (!text) {
+            return null;
+        }
+        const [head] = text.split(/\s+/);
+        const numeric = Number.parseFloat(head);
+        return Number.isFinite(numeric) ? numeric : null;
     }
 
     function directionToSide(direction, xRatio, yRatio) {
@@ -507,7 +518,7 @@
         if (!state.manualMode) {
             return;
         }
-        if (state.isSending) {
+        if (state.isSending || state.isManualBusy) {
             setManualStatus("Please wait until the current device request is finished.", "muted");
             return;
         }
@@ -519,6 +530,7 @@
         persistViewState();
         renderNodes();
         updateManualPanel();
+        void loadManualSettings(nodeId);
     }
 
     function renderNodes() {
@@ -607,6 +619,13 @@
             return;
         }
         manualStatus.classList.add("muted");
+    }
+
+    function syncManualModeToggle() {
+        if (!manualToggleButton) {
+            return;
+        }
+        manualToggleButton.disabled = manualToggleInitiallyDisabled || state.isManualBusy || state.isSending;
     }
 
     function waitFor(ms) {
@@ -778,7 +797,7 @@
     }
 
     function syncManualControlsEnabled(enabled) {
-        const allow = enabled && !state.isSending;
+        const allow = enabled && !state.isSending && !state.isManualBusy;
         if (manualStateInput) {
             manualStateInput.disabled = !allow;
         }
@@ -788,6 +807,7 @@
         if (manualSubmitButton) {
             manualSubmitButton.disabled = !allow;
         }
+        syncManualModeToggle();
     }
 
     function renderOperatorControls(node, target) {
@@ -838,6 +858,92 @@
             expect_response: true,
             strip_response: true,
         };
+    }
+
+    function canLoadIkaSettings(node, target) {
+        return Boolean(node && target && target.is_resolved && target.device_id && isIkaMotorTarget(node, target));
+    }
+
+    async function readCurrentIkaSettings(nodeId, requestId) {
+        const setpointResult = await sendManualCommand("IN_SP_4", { quiet: true });
+        if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+            return null;
+        }
+
+        const actualResult = await sendManualCommand("IN_PV_4", { quiet: true });
+        if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+            return null;
+        }
+
+        return {
+            setpointRpm: parseIkaNumericResponse(setpointResult?.output),
+            actualRpm: parseIkaNumericResponse(actualResult?.output),
+        };
+    }
+
+    async function loadManualSettings(nodeId) {
+        const node = getNodeById(nodeId);
+        const target = manualTargets[nodeId] || null;
+        if (!canLoadIkaSettings(node, target)) {
+            return;
+        }
+
+        const requestId = state.manualRequestId + 1;
+        state.manualRequestId = requestId;
+        state.isManualBusy = true;
+        syncManualControlsEnabled(true);
+        setManualStatus("Loading current device settings...", "muted");
+
+        try {
+            const telemetry = await readCurrentIkaSettings(nodeId, requestId);
+            if (!telemetry) {
+                return;
+            }
+
+            const currentNode = getNodeById(nodeId);
+            if (!currentNode) {
+                return;
+            }
+
+            const nextSpeed = telemetry.setpointRpm == null
+                ? Math.max(0, Math.round(asNumber(currentNode.control?.config?.speed, 0)))
+                : Math.max(0, Math.round(telemetry.setpointRpm));
+            const appearsRunning = telemetry.actualRpm != null && telemetry.actualRpm > 0.5;
+
+            currentNode.control = {
+                profile_id: currentNode.control?.profile_id || "motor_rpm",
+                config: {
+                    ...(currentNode.control?.config || {}),
+                    speed: nextSpeed,
+                    is_on: appearsRunning,
+                },
+            };
+
+            renderOperatorControls(currentNode, target);
+            syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(currentNode, target));
+            if (appearsRunning) {
+                setManualStatus(
+                    `Device state loaded. The stirrer is running at approximately ${Math.round(telemetry.actualRpm)} rpm.`,
+                    "success",
+                );
+            } else {
+                setManualStatus(
+                    `Device state loaded. Current setpoint is ${nextSpeed} rpm and the drive is idle.`,
+                    "success",
+                );
+            }
+        } catch (error) {
+            if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+                return;
+            }
+            setManualStatus(error?.message || "Current device settings could not be loaded.", "error");
+        } finally {
+            if (requestId === state.manualRequestId && state.selectedNodeId === nodeId) {
+                state.isManualBusy = false;
+                const currentNode = getNodeById(nodeId);
+                syncManualControlsEnabled(Boolean(target?.device_id) && isIkaMotorTarget(currentNode, target));
+            }
+        }
     }
 
     function updateManualPanel() {
@@ -903,7 +1009,10 @@
     }
 
     function setManualMode(enabled) {
-        if (manualToggleButton.disabled) {
+        if (manualToggleButton.disabled || state.isManualBusy || state.isSending) {
+            if (state.isManualBusy || state.isSending) {
+                setManualStatus("Please wait until the current device request is finished.", "muted");
+            }
             return;
         }
         state.manualMode = Boolean(enabled);
@@ -1017,6 +1126,8 @@
         manualMode: Boolean(canRestorePersistedState && persistedViewState?.manualMode),
         selectedNodeId: restoredSelectedNodeId,
         isSending: false,
+        isManualBusy: false,
+        manualRequestId: 0,
     };
 
     if (state.selectedNodeId) {
@@ -1051,36 +1162,80 @@
             return;
         }
 
-        const commands = nextState ? ["START_4", `OUT_SP_4 ${speed}`] : ["STOP_4"];
+        const requestId = state.manualRequestId + 1;
+        state.manualRequestId = requestId;
+        state.isManualBusy = true;
+        syncManualControlsEnabled(true);
+        setManualStatus("Submitting device settings...", "muted");
+
         void (async () => {
-            for (const command of commands) {
-                const result = await sendManualCommand(command, { quiet: true });
-                if (!result) {
+            if (nextState) {
+                const startResult = await sendManualCommand("START_4", { quiet: true });
+                if (!startResult) {
                     return;
                 }
-                if (nextState && command === "START_4") {
-                    await waitFor(180);
+                await waitFor(180);
+
+                const speedResult = await sendManualCommand(`OUT_SP_4 ${speed}`, { quiet: true });
+                if (!speedResult) {
+                    return;
                 }
+            } else {
+                const stopResult = await sendManualCommand("STOP_4", { quiet: true });
+                if (!stopResult) {
+                    return;
+                }
+                await waitFor(180);
             }
+
+            if (requestId !== state.manualRequestId || state.selectedNodeId !== node.id) {
+                return;
+            }
+
+            const telemetry = await readCurrentIkaSettings(node.id, requestId);
+            if (!telemetry) {
+                return;
+            }
+
+            const verifiedSpeed = telemetry.setpointRpm == null
+                ? speed
+                : Math.max(0, Math.round(telemetry.setpointRpm));
+            const verifiedRunning = telemetry.actualRpm != null && telemetry.actualRpm > 0.5;
 
             node.control = {
                 profile_id: node.control?.profile_id || "motor_rpm",
                 config: {
                     ...(node.control?.config || {}),
-                    speed,
-                    is_on: nextState,
+                    speed: verifiedSpeed,
+                    is_on: verifiedRunning,
                 },
             };
-            setManualStatus(
-                nextState
-                    ? `Device updated: on at ${speed} rpm.`
-                    : "Device updated: off.",
-                "success",
-            );
+
             renderOperatorControls(node, target);
+            if (nextState) {
+                const actualLabel = telemetry.actualRpm == null ? "unknown rpm" : `${Math.round(telemetry.actualRpm)} rpm`;
+                setManualStatus(
+                    `Device updated successfully. Setpoint ${verifiedSpeed} rpm, measured speed ${actualLabel}.`,
+                    "success",
+                );
+            } else if (telemetry.actualRpm != null && telemetry.actualRpm <= 0.5) {
+                setManualStatus("Device updated successfully. The stirrer is stopped.", "success");
+            } else {
+                const fallbackActual = telemetry.actualRpm == null ? "unknown rpm" : `${Math.round(telemetry.actualRpm)} rpm`;
+                setManualStatus(
+                    `Stop command sent. The device still reports ${fallbackActual}; please verify the hardware state.`,
+                    "error",
+                );
+            }
         })()
             .catch((error) => {
                 setManualStatus(error?.message || "Device settings could not be sent.", "error");
+            })
+            .finally(() => {
+                if (requestId === state.manualRequestId && state.selectedNodeId === node?.id) {
+                    state.isManualBusy = false;
+                    syncManualControlsEnabled(Boolean(target?.device_id) && isIkaMotorTarget(node, target));
+                }
             });
     });
 
@@ -1109,6 +1264,7 @@
         manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
     }
 
+    syncManualModeToggle();
     renderAll();
     persistViewState();
 })();

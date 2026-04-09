@@ -70,6 +70,19 @@ class ProcessViewTemplateTests(unittest.TestCase):
         for text in forbidden_strings:
             self.assertNotIn(text, source)
 
+    def test_process_view_script_keeps_verified_ika_workflow_order(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('await sendManualCommand("START_4", { quiet: true })', source)
+        self.assertIn('await sendManualCommand(`OUT_SP_4 ${speed}`, { quiet: true })', source)
+        self.assertLess(
+            source.index('await sendManualCommand("START_4", { quiet: true })'),
+            source.index('await sendManualCommand(`OUT_SP_4 ${speed}`, { quiet: true })'),
+        )
+        self.assertIn('await sendManualCommand("IN_SP_4", { quiet: true })', source)
+        self.assertIn('await sendManualCommand("IN_PV_4", { quiet: true })', source)
+
 
 if __name__ == "__main__":
     unittest.main()
