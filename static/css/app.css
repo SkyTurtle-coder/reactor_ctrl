@@ -169,7 +169,7 @@ pre,
 
 .process-picker-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1.45fr) minmax(240px, 0.85fr);
     gap: 1rem;
     align-items: end;
 }
@@ -215,7 +215,7 @@ pre,
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
-    grid-column: 1 / -1;
+    justify-content: flex-end;
 }
 
 .process-selection-notice {
@@ -580,6 +580,7 @@ h2 {
 .process-manual-state,
 .process-manual-target,
 .process-manual-controls,
+.process-manual-live,
 .process-manual-meta div {
     padding: 0.95rem 1rem;
     border: 1px solid rgba(212, 198, 178, 0.82);
@@ -599,7 +600,8 @@ h2 {
 
 .process-manual-panel.is-hidden,
 .process-manual-state.is-hidden,
-.process-manual-controls.is-hidden {
+.process-manual-controls.is-hidden,
+.process-manual-live.is-hidden {
     display: none;
 }
 
@@ -628,6 +630,50 @@ h2 {
     background:
         linear-gradient(160deg, rgba(15, 92, 82, 0.08), rgba(41, 93, 134, 0.03)),
         rgba(255, 253, 250, 0.95);
+}
+
+.process-manual-live {
+    display: grid;
+    gap: 0.9rem;
+}
+
+.process-manual-live-header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.process-manual-live-header p {
+    margin: 0;
+    text-align: right;
+}
+
+.process-manual-live-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin: 0;
+}
+
+.process-manual-live-grid div {
+    padding: 0.8rem 0.9rem;
+    border: 1px solid rgba(212, 198, 178, 0.78);
+    border-radius: 12px;
+    background: rgba(255, 253, 250, 0.92);
+}
+
+.process-manual-live-grid dt {
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.process-manual-live-grid dd {
+    margin: 0.25rem 0 0;
+    font-weight: 600;
 }
 
 .process-manual-controls-header {
@@ -1764,8 +1810,17 @@ kbd {
 
     .process-manual-control-actions,
     .process-manual-speed-form,
-    .process-manual-meta {
+    .process-manual-meta,
+    .process-manual-live-grid {
         grid-template-columns: 1fr;
+    }
+
+    .process-manual-live-header {
+        display: grid;
+    }
+
+    .process-manual-live-header p {
+        text-align: left;
     }
 
     .tile-stats {

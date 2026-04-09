@@ -26,13 +26,6 @@
     <div class="card-body">
         <form class="process-picker-grid" id="process-picker-form" method="get" action="{{ url_for('web.process_view') }}">
             <label class="process-select-field">
-                <span>Recipe</span>
-                <select disabled>
-                    <option>No recipes available</option>
-                </select>
-            </label>
-
-            <label class="process-select-field">
                 <span>Flowsheet</span>
                 <select id="process-build-select" name="build_id" {% if not process_storage_available %}disabled{% endif %}>
                     <option value="">Select flowsheet</option>
@@ -55,15 +48,14 @@
                 >
                     Enable
                 </button>
-                <p class="muted">Actuators become clickable only when manual mode is enabled.</p>
+                <p class="muted">Click an actuator in the flowsheet to open its controls and load live values.</p>
             </div>
 
+            {% if selected_build_id %}
             <div class="process-picker-actions">
-                <button class="btn btn-primary" type="submit" {% if not saved_builds or not process_storage_available %}disabled{% endif %}>Show Flowsheet</button>
-                {% if selected_build_id %}
                 <a class="btn" id="process-clear-selection" href="{{ url_for('web.process_view') }}">Clear Selection</a>
-                {% endif %}
             </div>
+            {% endif %}
         </form>
 
         {% if process_notice %}
@@ -165,8 +157,8 @@
                 <section class="process-manual-controls" id="process-manual-controls">
                     <div class="process-manual-controls-header">
                         <span class="section-label">Control</span>
-                        <h3>Stirrer Control</h3>
-                        <p class="muted">Direct start, stop, and speed control for the IKA 60 protocol.</p>
+                        <h3>IKA Stirrer</h3>
+                        <p class="muted">Direct start, stop, speed setting, and automatic live status for mapped IKA 60 devices.</p>
                     </div>
 
                     <div class="process-manual-control-actions">
@@ -188,6 +180,39 @@
                         </label>
                         <button class="btn btn-primary" id="process-manual-speed-apply-button" type="submit">Apply Speed</button>
                     </form>
+                </section>
+
+                <section class="process-manual-live is-hidden" id="process-manual-live">
+                    <div class="process-manual-live-header">
+                        <div>
+                            <span class="section-label">Live Status</span>
+                            <h3>Current Device Values</h3>
+                        </div>
+                        <p class="muted" id="process-manual-live-updated">Waiting for actuator selection.</p>
+                    </div>
+
+                    <dl class="process-manual-live-grid">
+                        <div>
+                            <dt>Name</dt>
+                            <dd id="process-manual-live-name">-</dd>
+                        </div>
+                        <div>
+                            <dt>Mode</dt>
+                            <dd id="process-manual-live-mode">-</dd>
+                        </div>
+                        <div>
+                            <dt>Setpoint</dt>
+                            <dd id="process-manual-live-setpoint">-</dd>
+                        </div>
+                        <div>
+                            <dt>Actual</dt>
+                            <dd id="process-manual-live-actual">-</dd>
+                        </div>
+                        <div>
+                            <dt>PV_5</dt>
+                            <dd id="process-manual-live-pv5">-</dd>
+                        </div>
+                    </dl>
                 </section>
 
                 <dl class="process-manual-meta">
