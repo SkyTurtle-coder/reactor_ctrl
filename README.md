@@ -94,8 +94,11 @@ curl -H "Authorization: Bearer <token>" `
 {
   "device_server_id": 1,
   "port_number": 1,
-  "baud_rate": 9600,
-  "parity": "N"
+  "baud_rate": 115200,
+  "data_bits": 8,
+  "stop_bits": 1,
+  "parity": "N",
+  "flow_control": "none"
 }
 ```
 
@@ -214,6 +217,57 @@ Beispiel fuer die API mit Simulator statt echter Moxa:
 ```
 
 Danach kann eine `device_connection` fuer `port_number: 1` angelegt werden; der Standard-TCP-Port wird automatisch auf `4001` gesetzt.
+
+## Produktive Moxa-Konfiguration
+
+Fuer die produktive NPort-Anbindung verwendet die Software pro Port eine direkte TCP-Socket-Verbindung auf den Datenport des Moxa-Geraets. Die Web- oder Management-Schnittstelle des NPort wird fuer die eigentliche Geraetekommunikation nicht verwendet.
+
+Moxa-Weboberflaeche pro Port:
+
+- `Interface = RS-232`
+- `Baud rate = 115200`
+- `Data bits = 8`
+- `Stop bits = 1`
+- `Parity = None`
+- `Flow ctrl = None`
+- `FIFO = Enable`
+- `Operating mode = TCP Server`
+
+App-seitiges Port-Mapping:
+
+- Port `1` -> TCP `4001`
+- Port `2` -> TCP `4002`
+- Port `3` -> TCP `4003`
+- Port `4` -> TCP `4004`
+- Port `5` -> TCP `4005`
+- Port `6` -> TCP `4006`
+- Port `7` -> TCP `4007`
+- Port `8` -> TCP `4008`
+
+Fuer die wiederholbare Einrichtung des Device-Servers und aller `8` Verbindungen gibt es ein CLI-Skript:
+
+```powershell
+python configure_moxa_nport.py `
+  --base-url http://127.0.0.1:5000 `
+  --api-token <token> `
+  --host 10.90.95.178 `
+  --server-code MOXA-01 `
+  --display-name "Moxa NPort 5610-8-DT" `
+  --probe
+```
+
+Das Skript legt den `device_server` an oder aktualisiert ihn und provisioniert danach alle Ports mit:
+
+- `transport_type = tcp_socket`
+- `serial_standard = rs232`
+- `baud_rate = 115200`
+- `data_bits = 8`
+- `parity = N`
+- `stop_bits = 1`
+- `flow_control = none`
+- `tcp_port = 4000 + port_number`
+
+Wenn dein NPort eine andere IP oder andere serielle Parameter verwendet, koennen diese direkt ueber die CLI-Argumente angepasst werden.
 
 ## Wiederholbarer Funktionstest
 
