@@ -170,6 +170,46 @@
                     </div>
                 </dl>
 
+                <section class="process-manual-protocol-hint is-hidden" id="process-manual-protocol-hint">
+                    <span class="section-label">Protokollhinweis</span>
+                    <p id="process-manual-protocol-note">-</p>
+                </section>
+
+                <section class="process-manual-readout is-hidden" id="process-manual-readout">
+                    <div class="process-manual-readout-header">
+                        <div>
+                            <span class="section-label">Live-Werte</span>
+                            <h3>Geraetestatus</h3>
+                            <p class="muted">Der Istwert ist fuer die reale Bewegung entscheidend, nicht nur der Sollwert.</p>
+                        </div>
+                        <button class="btn" id="process-manual-refresh-button" type="button">Status lesen</button>
+                    </div>
+                    <div class="process-manual-readout-grid">
+                        <div>
+                            <span class="process-manual-readout-label">Name</span>
+                            <strong class="process-manual-readout-value" id="process-manual-readout-name">-</strong>
+                        </div>
+                        <div>
+                            <span class="process-manual-readout-label">Modus</span>
+                            <strong class="process-manual-readout-value" id="process-manual-readout-mode">-</strong>
+                        </div>
+                        <div>
+                            <span class="process-manual-readout-label">Sollwert</span>
+                            <strong class="process-manual-readout-value" id="process-manual-readout-setpoint">-</strong>
+                        </div>
+                        <div>
+                            <span class="process-manual-readout-label">Istwert</span>
+                            <strong class="process-manual-readout-value" id="process-manual-readout-actual">-</strong>
+                        </div>
+                        <div>
+                            <span class="process-manual-readout-label">Rueckmeldung PV_5</span>
+                            <strong class="process-manual-readout-value" id="process-manual-readout-pv5">-</strong>
+                        </div>
+                    </div>
+                </section>
+
+                <div class="process-manual-quick-actions is-hidden" id="process-manual-quick-actions"></div>
+
                 <form class="process-manual-profile-form" id="process-manual-profile-form">
                     <div class="process-manual-profile-grid" id="process-manual-profile-grid"></div>
                     <button class="btn btn-primary" id="process-manual-apply-button" type="submit">Aktor anwenden</button>

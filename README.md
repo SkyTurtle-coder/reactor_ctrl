@@ -222,16 +222,15 @@ Danach kann eine `device_connection` fuer `port_number: 1` angelegt werden; der 
 
 Fuer die produktive NPort-Anbindung verwendet die Software pro Port eine direkte TCP-Socket-Verbindung auf den Datenport des Moxa-Geraets. Die Web- oder Management-Schnittstelle des NPort wird fuer die eigentliche Geraetekommunikation nicht verwendet.
 
+Die TCP-Abbildung bleibt pro Port gleich, die seriellen Parameter sind jedoch **geraetespezifisch** und muessen immer dem Herstellerprotokoll des angeschlossenen RS-232-Geraets entsprechen.
+
 Moxa-Weboberflaeche pro Port:
 
 - `Interface = RS-232`
-- `Baud rate = 115200`
-- `Data bits = 8`
-- `Stop bits = 1`
-- `Parity = None`
-- `Flow ctrl = None`
 - `FIFO = Enable`
 - `Operating mode = TCP Server`
+
+Typische serielle Parameter wie `baud_rate`, `data_bits`, `parity`, `stop_bits` und `flow_control` werden pro Geraetetyp gesetzt und anschliessend in `device_connection` gespiegelt.
 
 App-seitiges Port-Mapping:
 
@@ -260,14 +259,73 @@ Das Skript legt den `device_server` an oder aktualisiert ihn und provisioniert d
 
 - `transport_type = tcp_socket`
 - `serial_standard = rs232`
-- `baud_rate = 115200`
-- `data_bits = 8`
-- `parity = N`
-- `stop_bits = 1`
-- `flow_control = none`
+- `baud_rate = 115200` (Default, bei Bedarf per CLI ueberschreiben)
+- `data_bits = 8` (Default)
+- `parity = N` (Default)
+- `stop_bits = 1` (Default)
+- `flow_control = none` (Default)
 - `tcp_port = 4000 + port_number`
 
 Wenn dein NPort eine andere IP oder andere serielle Parameter verwendet, koennen diese direkt ueber die CLI-Argumente angepasst werden.
+
+Beispiel fuer einen IKA-Port mit `9600 / 7E1 / none`:
+
+```powershell
+python configure_moxa_nport.py `
+  --base-url http://127.0.0.1:5000 `
+  --api-token <token> `
+  --host 10.90.95.178 `
+  --server-code MOXA-01 `
+  --display-name "Moxa NPort 5610-8-DT" `
+  --baud-rate 9600 `
+  --data-bits 7 `
+  --parity E `
+  --stop-bits 1 `
+  --flow-control none `
+  --probe
+```
+
+## Validierter IKA EUROSTAR 60 Betrieb
+
+Die erste reale Inbetriebnahme wurde erfolgreich mit einem `IKA EUROSTAR 60` ueber `MOXA-01 / Port 1 / TCP 4001` verifiziert.
+
+Validierte serielle Parameter:
+
+- `Baud rate = 9600`
+- `Data bits = 7`
+- `Parity = Even`
+- `Stop bits = 1`
+- `Flow ctrl = None`
+- `Encoding = ascii`
+- `Line ending = blank + CRLF`
+
+Validierte IKA-Kommandos:
+
+- `IN_NAME` -> Antwort z. B. `IKA ES 60`
+- `IN_MODE` -> Antwort z. B. `IN_MODE_1`
+- `IN_SP_4` -> Sollwert Drehzahl
+- `IN_PV_4` -> Istwert Drehzahl
+- `IN_PV_5` -> weiterer Geraeterueckkanal
+- `START_4`
+- `OUT_SP_4 <wert>`
+- `STOP_4`
+
+Wichtige Betriebsbeobachtungen aus dem Realtest:
+
+- Die echte Bewegung wird ueber `IN_PV_4` nachgewiesen, nicht ueber `IN_SP_4`.
+- `IN_SP_4` bestaetigt nur den Sollwert, z. B. `300.0 4`.
+- Nach `START_4` plus `OUT_SP_4 300` lieferte `IN_PV_4` real `299.07 4`.
+- Schreibkommandos ohne Rueckantwort erscheinen API-seitig als `acked`; die fachliche Wirkung wird anschliessend mit einem Lesekommando geprueft.
+
+Empfohlene Reihenfolge fuer den ersten Porttest:
+
+1. `IN_NAME`
+2. `IN_MODE`
+3. `START_4`
+4. `OUT_SP_4 <wert>`
+5. `IN_SP_4`
+6. `IN_PV_4`
+7. `STOP_4`
 
 ## Wiederholbarer Funktionstest
 

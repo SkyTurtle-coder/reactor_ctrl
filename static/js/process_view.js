@@ -17,6 +17,16 @@
     const manualConnection = document.getElementById("process-manual-connection");
     const manualProtocol = document.getElementById("process-manual-protocol");
     const manualDeviceStatus = document.getElementById("process-manual-device-status");
+    const manualProtocolHint = document.getElementById("process-manual-protocol-hint");
+    const manualProtocolNote = document.getElementById("process-manual-protocol-note");
+    const manualReadout = document.getElementById("process-manual-readout");
+    const manualRefreshButton = document.getElementById("process-manual-refresh-button");
+    const manualReadoutName = document.getElementById("process-manual-readout-name");
+    const manualReadoutMode = document.getElementById("process-manual-readout-mode");
+    const manualReadoutSetpoint = document.getElementById("process-manual-readout-setpoint");
+    const manualReadoutActual = document.getElementById("process-manual-readout-actual");
+    const manualReadoutPv5 = document.getElementById("process-manual-readout-pv5");
+    const manualQuickActions = document.getElementById("process-manual-quick-actions");
     const manualProfileForm = document.getElementById("process-manual-profile-form");
     const manualProfileGrid = document.getElementById("process-manual-profile-grid");
     const manualApplyButton = document.getElementById("process-manual-apply-button");
@@ -25,7 +35,10 @@
     const manualSendButton = document.getElementById("process-manual-send-button");
     const manualStatus = document.getElementById("process-manual-status");
     const manualResponse = document.getElementById("process-manual-response");
-    const manualCommandButtons = Array.from(document.querySelectorAll("[data-manual-command]"));
+
+    function getManualActionButtons() {
+        return Array.from(manualQuickActions?.querySelectorAll("button") || []);
+    }
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -701,7 +714,10 @@
         if (manualApplyButton) {
             manualApplyButton.disabled = !allow;
         }
-        for (const button of manualCommandButtons) {
+        if (manualRefreshButton) {
+            manualRefreshButton.disabled = !allow || Boolean(manualRefreshButton.hidden);
+        }
+        for (const button of getManualActionButtons()) {
             button.disabled = !allow;
         }
     }
@@ -812,12 +828,180 @@
         return protocolLabelMap.get(id) || id || "n/a";
     }
 
+    function protocolUiConfig(target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        if (protocol === "ika_eurostar_60") {
+            return {
+                note: "Validierter IKA-Betrieb ueber Moxa mit 9600 / 7E1 / none. Echte Bewegung immer ueber IN_PV_4 pruefen; IN_SP_4 zeigt nur den Sollwert.",
+                placeholder: "z. B. IN_NAME, IN_PV_4, START_4, OUT_SP_4 300",
+                applyLabel: "Start/Stop und Sollwert senden",
+                quickActions: [
+                    { label: "Status lesen", action: "refresh-status" },
+                    { label: "IN_NAME", command: "IN_NAME" },
+                    { label: "IN_MODE", command: "IN_MODE" },
+                    { label: "IN_SP_4", command: "IN_SP_4" },
+                    { label: "IN_PV_4", command: "IN_PV_4" },
+                    { label: "IN_PV_5", command: "IN_PV_5" },
+                    { label: "START_4", command: "START_4" },
+                    { label: "STOP_4", command: "STOP_4" },
+                ],
+            };
+        }
+
+        return {
+            note: "",
+            placeholder: "z. B. START, STOP, OPEN, CLOSE",
+            applyLabel: "Aktor anwenden",
+            quickActions: [],
+        };
+    }
+
+    function selectedSnapshot(target) {
+        const deviceId = asString(target?.device_id, "");
+        if (!deviceId) {
+            return {};
+        }
+        return state.protocolSnapshots[deviceId] || {};
+    }
+
+    function setReadoutValue(element, value) {
+        if (!element) {
+            return;
+        }
+        element.textContent = asString(value, "-");
+    }
+
+    function renderProtocolReadout(target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        if (protocol !== "ika_eurostar_60") {
+            manualReadout?.classList.add("is-hidden");
+            setReadoutValue(manualReadoutName, "-");
+            setReadoutValue(manualReadoutMode, "-");
+            setReadoutValue(manualReadoutSetpoint, "-");
+            setReadoutValue(manualReadoutActual, "-");
+            setReadoutValue(manualReadoutPv5, "-");
+            return;
+        }
+
+        const snapshot = selectedSnapshot(target);
+        manualReadout?.classList.remove("is-hidden");
+        setReadoutValue(manualReadoutName, snapshot.name || "-");
+        setReadoutValue(manualReadoutMode, snapshot.mode || "-");
+        setReadoutValue(manualReadoutSetpoint, snapshot.setpoint_rpm || "-");
+        setReadoutValue(manualReadoutActual, snapshot.actual_rpm || "-");
+        setReadoutValue(manualReadoutPv5, snapshot.pv5 || "-");
+    }
+
+    function renderProtocolQuickActions(target) {
+        if (!manualQuickActions) {
+            return;
+        }
+
+        const config = protocolUiConfig(target);
+        manualQuickActions.innerHTML = "";
+        for (const action of config.quickActions) {
+            const button = document.createElement("button");
+            button.className = "btn";
+            button.type = "button";
+            button.textContent = action.label;
+            if (action.command) {
+                button.dataset.manualCommand = action.command;
+            }
+            if (action.action) {
+                button.dataset.manualAction = action.action;
+            }
+            manualQuickActions.appendChild(button);
+        }
+        manualQuickActions.classList.toggle("is-hidden", config.quickActions.length === 0);
+    }
+
+    function renderProtocolSections(target) {
+        const config = protocolUiConfig(target);
+        manualCommandInput.placeholder = config.placeholder;
+        manualApplyButton.textContent = config.applyLabel;
+
+        if (config.note) {
+            manualProtocolNote.textContent = config.note;
+            manualProtocolHint?.classList.remove("is-hidden");
+        } else {
+            manualProtocolNote.textContent = "";
+            manualProtocolHint?.classList.add("is-hidden");
+        }
+
+        if (manualRefreshButton) {
+            manualRefreshButton.hidden = normalizedProtocolName(target?.protocol) !== "ika_eurostar_60";
+        }
+        renderProtocolQuickActions(target);
+        renderProtocolReadout(target);
+    }
+
+    function extractIkaChannelValue(responseText, suffix) {
+        const text = asString(responseText, "");
+        if (!text) {
+            return "";
+        }
+        const normalizedSuffix = String(suffix);
+        if (text.endsWith(` ${normalizedSuffix}`)) {
+            return text.slice(0, -(` ${normalizedSuffix}`.length)).trim();
+        }
+        return text;
+    }
+
+    function updateIkaSnapshot(target, commandText, responseText) {
+        const deviceId = asString(target?.device_id, "");
+        if (!deviceId) {
+            return;
+        }
+
+        const normalizedCommand = asString(commandText, "").toUpperCase();
+        const response = asString(responseText, "");
+        const nextSnapshot = {
+            ...selectedSnapshot(target),
+        };
+
+        if (normalizedCommand === "IN_NAME") {
+            nextSnapshot.name = response;
+        } else if (normalizedCommand === "IN_MODE") {
+            nextSnapshot.mode = response;
+        } else if (normalizedCommand === "IN_SP_4") {
+            const value = extractIkaChannelValue(response, 4);
+            nextSnapshot.setpoint_rpm = value ? `${value} rpm` : response;
+        } else if (normalizedCommand === "IN_PV_4") {
+            const value = extractIkaChannelValue(response, 4);
+            nextSnapshot.actual_rpm = value ? `${value} rpm` : response;
+        } else if (normalizedCommand === "IN_PV_5") {
+            nextSnapshot.pv5 = extractIkaChannelValue(response, 5) || response;
+        }
+
+        state.protocolSnapshots[deviceId] = nextSnapshot;
+        renderProtocolReadout(target);
+    }
+
+    async function refreshProtocolStatus(target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        if (protocol !== "ika_eurostar_60") {
+            return;
+        }
+
+        const commands = ["IN_NAME", "IN_MODE", "IN_SP_4", "IN_PV_4", "IN_PV_5"];
+        const outputs = [];
+        for (const command of commands) {
+            const result = await sendManualCommand(command, { quiet: true });
+            outputs.push(`> ${result.commandText}\n${result.output || "OK"}`);
+        }
+        setManualResponse(outputs.join("\n\n"));
+        setManualStatus("IKA-Status erfolgreich aktualisiert.", "success");
+    }
+
     function buildProtocolAwareCommandSequence(node, target, profile, values) {
         const protocol = normalizedProtocolName(target?.protocol);
         const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
         if (protocol === "ika_eurostar_60" && symbolId === "motor") {
+            if (!values.is_on) {
+                return ["STOP_4"];
+            }
             return [
-                values.is_on ? "START_4" : "STOP_4",
+                "START_4",
                 `OUT_SP_4 ${Math.round(asNumber(values.speed, 0))}`,
             ];
         }
@@ -890,6 +1074,7 @@
         manualConnection.textContent = `${target.server_code} | ${target.connection_label}`;
         manualProtocol.textContent = protocolLabel(target.protocol);
         manualDeviceStatus.textContent = formatDeviceStatus(target);
+        renderProtocolSections(target);
         renderManualProfile(node, profile);
         syncManualControlsEnabled(Boolean(target.device_id));
     }
@@ -920,7 +1105,8 @@
         renderAll();
     }
 
-    async function sendManualCommand(commandText) {
+    async function sendManualCommand(commandText, options) {
+        const settings = options || {};
         const target = selectedTarget();
         const text = String(commandText || "").trim();
         if (!state.manualMode || !target || !target.is_resolved || !target.device_id) {
@@ -938,7 +1124,9 @@
 
         state.isSending = true;
         syncManualControlsEnabled(true);
-        setManualStatus(`Sende ${text} an ${target.device_display_name} ...`, "muted");
+        if (!settings.quiet) {
+            setManualStatus(`Sende ${text} an ${target.device_display_name} ...`, "muted");
+        }
 
         const headers = {
             "Content-Type": "application/json",
@@ -964,9 +1152,13 @@
             const responseText = asString(payload?.result?.response_text, "");
             const metadata = payload?.result?.metadata || {};
             const output = responseText || (manualPayload.expect_response ? JSON.stringify(metadata, null, 2) : "OK");
+            if (responseText && normalizedProtocolName(target.protocol) === "ika_eurostar_60") {
+                updateIkaSnapshot(target, manualPayload.text, responseText);
+            }
             return {
                 commandText: text,
                 output,
+                payload,
             };
         } catch (error) {
             if (error?.payload && typeof error.payload === "object" && Object.keys(error.payload).length > 0) {
@@ -999,7 +1191,7 @@
         try {
             const outputs = [];
             for (const command of commands) {
-                const result = await sendManualCommand(command);
+                const result = await sendManualCommand(command, { quiet: true });
                 outputs.push(`> ${result.commandText}\n${result.output || "OK"}`);
             }
             node.control = {
@@ -1007,7 +1199,11 @@
                 config: values,
             };
             renderManualProfile(node, profile);
-            setManualResponse(outputs.join("\n\n"));
+            if (normalizedProtocolName(target.protocol) === "ika_eurostar_60") {
+                await refreshProtocolStatus(target);
+            } else {
+                setManualResponse(outputs.join("\n\n"));
+            }
             setManualStatus(`Aktorwerte fuer ${node.instance_id || node.label} angewendet.`, "success");
         } catch (error) {
             setManualStatus(error?.message || "Aktorwerte konnten nicht angewendet werden.", "error");
@@ -1028,6 +1224,7 @@
         manualMode: false,
         selectedNodeId: null,
         isSending: false,
+        protocolSnapshots: {},
     };
 
     manualToggleButton?.addEventListener("click", () => {
@@ -1050,20 +1247,53 @@
             });
     });
 
-    for (const button of manualCommandButtons) {
-        const command = String(button.dataset.manualCommand || "").trim();
-        button.addEventListener("click", () => {
-            manualCommandInput.value = command;
-            void sendManualCommand(command)
-                .then((result) => {
-                    setManualResponse(`> ${result.commandText}\n${result.output || "OK"}`);
-                    setManualStatus(`Befehl ${result.commandText} erfolgreich gesendet.`, "success");
-                })
-                .catch((error) => {
-                    setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
-                });
+    manualRefreshButton?.addEventListener("click", () => {
+        const target = selectedTarget();
+        if (!target) {
+            setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
+            return;
+        }
+        void refreshProtocolStatus(target).catch((error) => {
+            setManualStatus(error?.message || "Status konnte nicht gelesen werden.", "error");
         });
-    }
+    });
+
+    manualQuickActions?.addEventListener("click", (event) => {
+        const button =
+            event.target instanceof Element
+                ? event.target.closest("button[data-manual-command], button[data-manual-action]")
+                : null;
+        if (!button) {
+            return;
+        }
+
+        const manualAction = String(button.dataset.manualAction || "").trim();
+        if (manualAction === "refresh-status") {
+            const target = selectedTarget();
+            if (!target) {
+                setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
+                return;
+            }
+            void refreshProtocolStatus(target).catch((error) => {
+                setManualStatus(error?.message || "Status konnte nicht gelesen werden.", "error");
+            });
+            return;
+        }
+
+        const command = String(button.dataset.manualCommand || "").trim();
+        if (!command) {
+            return;
+        }
+        manualCommandInput.value = command;
+        void sendManualCommand(command)
+            .then((result) => {
+                setManualResponse(`> ${result.commandText}\n${result.output || "OK"}`);
+                setManualStatus(`Befehl ${result.commandText} erfolgreich gesendet.`, "success");
+            })
+            .catch((error) => {
+                setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
+            });
+    });
 
     renderAll();
 })();

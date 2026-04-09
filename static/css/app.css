@@ -518,6 +518,8 @@ h2 {
 
 .process-manual-state,
 .process-manual-target,
+.process-manual-protocol-hint,
+.process-manual-readout,
 .process-manual-meta div {
     padding: 0.95rem 1rem;
     border: 1px solid rgba(212, 198, 178, 0.82);
@@ -537,6 +539,8 @@ h2 {
 
 .process-manual-panel.is-hidden,
 .process-manual-state.is-hidden,
+.process-manual-protocol-hint.is-hidden,
+.process-manual-readout.is-hidden,
 .process-manual-response.is-hidden {
     display: none;
 }
@@ -564,6 +568,71 @@ h2 {
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
+}
+
+.process-manual-quick-actions.is-hidden {
+    display: none;
+}
+
+.process-manual-quick-actions .btn {
+    min-width: 8rem;
+}
+
+.process-manual-protocol-hint {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.process-manual-protocol-hint p {
+    margin: 0;
+}
+
+.process-manual-readout {
+    display: grid;
+    gap: 0.9rem;
+    background:
+        linear-gradient(160deg, rgba(15, 92, 82, 0.06), rgba(41, 93, 134, 0.03)),
+        rgba(255, 253, 250, 0.95);
+}
+
+.process-manual-readout-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: start;
+}
+
+.process-manual-readout-header p {
+    margin: 0.4rem 0 0;
+}
+
+.process-manual-readout-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.75rem;
+}
+
+.process-manual-readout-grid div {
+    padding: 0.8rem 0.9rem;
+    border: 1px solid rgba(212, 198, 178, 0.78);
+    border-radius: 12px;
+    background: rgba(255, 253, 250, 0.92);
+}
+
+.process-manual-readout-label {
+    display: block;
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.process-manual-readout-value {
+    display: block;
+    margin-top: 0.28rem;
+    font-size: 1rem;
+    font-weight: 700;
 }
 
 .process-manual-command-form {
