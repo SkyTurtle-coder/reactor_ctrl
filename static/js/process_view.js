@@ -13,32 +13,17 @@
     const manualPanel = document.getElementById("process-manual-panel");
     const manualTargetTitle = document.getElementById("process-manual-target-title");
     const manualTargetSubtitle = document.getElementById("process-manual-target-subtitle");
-    const manualDevice = document.getElementById("process-manual-device");
-    const manualConnection = document.getElementById("process-manual-connection");
+    const manualControls = document.getElementById("process-manual-controls");
+    const manualStartButton = document.getElementById("process-manual-start-button");
+    const manualStopButton = document.getElementById("process-manual-stop-button");
+    const manualSpeedForm = document.getElementById("process-manual-speed-form");
+    const manualSpeedInput = document.getElementById("process-manual-speed-input");
+    const manualSpeedApplyButton = document.getElementById("process-manual-speed-apply-button");
+    const manualPort = document.getElementById("process-manual-port");
+    const manualServer = document.getElementById("process-manual-server");
     const manualProtocol = document.getElementById("process-manual-protocol");
     const manualDeviceStatus = document.getElementById("process-manual-device-status");
-    const manualProtocolHint = document.getElementById("process-manual-protocol-hint");
-    const manualProtocolNote = document.getElementById("process-manual-protocol-note");
-    const manualReadout = document.getElementById("process-manual-readout");
-    const manualRefreshButton = document.getElementById("process-manual-refresh-button");
-    const manualReadoutName = document.getElementById("process-manual-readout-name");
-    const manualReadoutMode = document.getElementById("process-manual-readout-mode");
-    const manualReadoutSetpoint = document.getElementById("process-manual-readout-setpoint");
-    const manualReadoutActual = document.getElementById("process-manual-readout-actual");
-    const manualReadoutPv5 = document.getElementById("process-manual-readout-pv5");
-    const manualQuickActions = document.getElementById("process-manual-quick-actions");
-    const manualProfileForm = document.getElementById("process-manual-profile-form");
-    const manualProfileGrid = document.getElementById("process-manual-profile-grid");
-    const manualApplyButton = document.getElementById("process-manual-apply-button");
-    const manualCommandInput = document.getElementById("process-manual-command-input");
-    const manualCommandForm = document.getElementById("process-manual-command-form");
-    const manualSendButton = document.getElementById("process-manual-send-button");
     const manualStatus = document.getElementById("process-manual-status");
-    const manualResponse = document.getElementById("process-manual-response");
-
-    function getManualActionButtons() {
-        return Array.from(manualQuickActions?.querySelectorAll("button") || []);
-    }
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -225,17 +210,6 @@
             profile_id: profile.id,
             config: normalizeProfileConfig(profile, payload.config),
         };
-    }
-
-    function profileForNode(node) {
-        if (!node) {
-            return null;
-        }
-        const explicit = actuatorProfileById.get(asString(node.control?.profile_id, ""));
-        if (explicit && explicit.allowed_symbols.includes(String(node.symbol_id || ""))) {
-            return explicit;
-        }
-        return profileForSymbol(node.symbol_id);
     }
 
     function normalizeAnchor(anchor, index) {
@@ -588,9 +562,7 @@
     }
 
     function setManualResponse(content) {
-        const text = String(content || "").trim();
-        manualResponse.textContent = text;
-        manualResponse.classList.toggle("is-hidden", !text);
+        void content;
     }
 
     function waitFor(ms) {
@@ -702,121 +674,39 @@
         return target.quality_state ? `${onlineText} | ${target.quality_state}` : onlineText;
     }
 
+    function isIkaMotorTarget(node, target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
+        return protocol === "ika_eurostar_60" && symbolId === "motor";
+    }
+
     function syncManualControlsEnabled(enabled) {
         const allow = enabled && !state.isSending;
-        if (manualProfileForm) {
-            for (const element of manualProfileForm.elements) {
-                element.disabled = !allow;
-            }
+        if (manualStartButton) {
+            manualStartButton.disabled = !allow;
         }
-        manualCommandInput.disabled = !allow;
-        manualSendButton.disabled = !allow;
-        if (manualApplyButton) {
-            manualApplyButton.disabled = !allow;
+        if (manualStopButton) {
+            manualStopButton.disabled = !allow;
         }
-        if (manualRefreshButton) {
-            manualRefreshButton.disabled = !allow || Boolean(manualRefreshButton.hidden);
+        if (manualSpeedInput) {
+            manualSpeedInput.disabled = !allow;
         }
-        for (const button of getManualActionButtons()) {
-            button.disabled = !allow;
+        if (manualSpeedApplyButton) {
+            manualSpeedApplyButton.disabled = !allow;
         }
     }
 
-    function renderManualProfile(node, profile) {
-        if (!manualProfileGrid) {
+    function renderOperatorControls(node, target) {
+        const enabled = isIkaMotorTarget(node, target);
+        manualControls?.classList.toggle("is-hidden", !enabled);
+        if (!enabled) {
             return;
         }
 
-        manualProfileGrid.innerHTML = "";
-        if (!node || !profile) {
-            return;
+        const speed = Math.max(0, Math.round(asNumber(node?.control?.config?.speed, 0)));
+        if (manualSpeedInput) {
+            manualSpeedInput.value = String(speed);
         }
-
-        const config = node.control?.config || {};
-        for (const field of profile.fields) {
-            if (field.type === "boolean") {
-                const toggle = document.createElement("label");
-                toggle.className = "process-manual-profile-toggle";
-                const checkbox = document.createElement("input");
-                checkbox.type = "checkbox";
-                checkbox.name = `manual-${field.key}`;
-                checkbox.checked = Boolean(config[field.key]);
-                const copy = document.createElement("span");
-                copy.textContent = field.label;
-                toggle.appendChild(checkbox);
-                toggle.appendChild(copy);
-                manualProfileGrid.appendChild(toggle);
-                continue;
-            }
-
-            const fieldLabel = document.createElement("label");
-            fieldLabel.className = "process-select-field process-manual-profile-field";
-            const fieldText = document.createElement("span");
-            fieldText.textContent = field.unit ? `${field.label} (${field.unit})` : field.label;
-            const input = document.createElement("input");
-            input.type = "number";
-            input.name = `manual-${field.key}`;
-            input.value = String(config[field.key] ?? field.default ?? "");
-            if (field.min != null) {
-                input.min = String(field.min);
-            }
-            if (field.max != null) {
-                input.max = String(field.max);
-            }
-            if (field.step != null) {
-                input.step = String(field.step);
-            }
-            fieldLabel.appendChild(fieldText);
-            fieldLabel.appendChild(input);
-            manualProfileGrid.appendChild(fieldLabel);
-        }
-    }
-
-    function collectManualProfileValues(node, profile) {
-        const current = node.control?.config || {};
-        const nextValues = {};
-        for (const field of profile.fields) {
-            const input = manualProfileGrid?.querySelector(`[name="manual-${field.key}"]`);
-            if (!input) {
-                nextValues[field.key] = current[field.key] ?? field.default;
-                continue;
-            }
-            if (field.type === "boolean") {
-                nextValues[field.key] = Boolean(input.checked);
-                continue;
-            }
-            let nextValue = asNumber(input.value, current[field.key] ?? field.default ?? 0);
-            if (field.min != null) {
-                nextValue = Math.max(nextValue, field.min);
-            }
-            if (field.max != null) {
-                nextValue = Math.min(nextValue, field.max);
-            }
-            if (field.mode === "int") {
-                nextValue = Math.round(nextValue);
-            } else {
-                nextValue = Math.round(nextValue * 1000) / 1000;
-            }
-            input.value = String(nextValue);
-            nextValues[field.key] = nextValue;
-        }
-        return nextValues;
-    }
-
-    function buildManualCommandSequence(profile, values) {
-        const commands = [];
-        for (const item of profile.command_sequence || []) {
-            if (item.kind === "choice") {
-                commands.push(values[item.field] ? item.true : item.false);
-                continue;
-            }
-            if (item.kind === "template") {
-                commands.push(
-                    item.template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, key) => String(values[key] ?? "")),
-                );
-            }
-        }
-        return commands.map((item) => String(item || "").trim()).filter(Boolean);
     }
 
     function normalizedProtocolName(value) {
@@ -826,186 +716,6 @@
     function protocolLabel(value) {
         const id = asString(value, "");
         return protocolLabelMap.get(id) || id || "n/a";
-    }
-
-    function protocolUiConfig(target) {
-        const protocol = normalizedProtocolName(target?.protocol);
-        if (protocol === "ika_eurostar_60") {
-            return {
-                note: "Validierter IKA-Betrieb ueber Moxa mit 9600 / 7E1 / none. Echte Bewegung immer ueber IN_PV_4 pruefen; IN_SP_4 zeigt nur den Sollwert.",
-                placeholder: "z. B. IN_NAME, IN_PV_4, START_4, OUT_SP_4 300",
-                applyLabel: "Start/Stop und Sollwert senden",
-                quickActions: [
-                    { label: "Status lesen", action: "refresh-status" },
-                    { label: "IN_NAME", command: "IN_NAME" },
-                    { label: "IN_MODE", command: "IN_MODE" },
-                    { label: "IN_SP_4", command: "IN_SP_4" },
-                    { label: "IN_PV_4", command: "IN_PV_4" },
-                    { label: "IN_PV_5", command: "IN_PV_5" },
-                    { label: "START_4", command: "START_4" },
-                    { label: "STOP_4", command: "STOP_4" },
-                ],
-            };
-        }
-
-        return {
-            note: "",
-            placeholder: "z. B. START, STOP, OPEN, CLOSE",
-            applyLabel: "Aktor anwenden",
-            quickActions: [],
-        };
-    }
-
-    function selectedSnapshot(target) {
-        const deviceId = asString(target?.device_id, "");
-        if (!deviceId) {
-            return {};
-        }
-        return state.protocolSnapshots[deviceId] || {};
-    }
-
-    function setReadoutValue(element, value) {
-        if (!element) {
-            return;
-        }
-        element.textContent = asString(value, "-");
-    }
-
-    function renderProtocolReadout(target) {
-        const protocol = normalizedProtocolName(target?.protocol);
-        if (protocol !== "ika_eurostar_60") {
-            manualReadout?.classList.add("is-hidden");
-            setReadoutValue(manualReadoutName, "-");
-            setReadoutValue(manualReadoutMode, "-");
-            setReadoutValue(manualReadoutSetpoint, "-");
-            setReadoutValue(manualReadoutActual, "-");
-            setReadoutValue(manualReadoutPv5, "-");
-            return;
-        }
-
-        const snapshot = selectedSnapshot(target);
-        manualReadout?.classList.remove("is-hidden");
-        setReadoutValue(manualReadoutName, snapshot.name || "-");
-        setReadoutValue(manualReadoutMode, snapshot.mode || "-");
-        setReadoutValue(manualReadoutSetpoint, snapshot.setpoint_rpm || "-");
-        setReadoutValue(manualReadoutActual, snapshot.actual_rpm || "-");
-        setReadoutValue(manualReadoutPv5, snapshot.pv5 || "-");
-    }
-
-    function renderProtocolQuickActions(target) {
-        if (!manualQuickActions) {
-            return;
-        }
-
-        const config = protocolUiConfig(target);
-        manualQuickActions.innerHTML = "";
-        for (const action of config.quickActions) {
-            const button = document.createElement("button");
-            button.className = "btn";
-            button.type = "button";
-            button.textContent = action.label;
-            if (action.command) {
-                button.dataset.manualCommand = action.command;
-            }
-            if (action.action) {
-                button.dataset.manualAction = action.action;
-            }
-            manualQuickActions.appendChild(button);
-        }
-        manualQuickActions.classList.toggle("is-hidden", config.quickActions.length === 0);
-    }
-
-    function renderProtocolSections(target) {
-        const config = protocolUiConfig(target);
-        manualCommandInput.placeholder = config.placeholder;
-        manualApplyButton.textContent = config.applyLabel;
-
-        if (config.note) {
-            manualProtocolNote.textContent = config.note;
-            manualProtocolHint?.classList.remove("is-hidden");
-        } else {
-            manualProtocolNote.textContent = "";
-            manualProtocolHint?.classList.add("is-hidden");
-        }
-
-        if (manualRefreshButton) {
-            manualRefreshButton.hidden = normalizedProtocolName(target?.protocol) !== "ika_eurostar_60";
-        }
-        renderProtocolQuickActions(target);
-        renderProtocolReadout(target);
-    }
-
-    function extractIkaChannelValue(responseText, suffix) {
-        const text = asString(responseText, "");
-        if (!text) {
-            return "";
-        }
-        const normalizedSuffix = String(suffix);
-        if (text.endsWith(` ${normalizedSuffix}`)) {
-            return text.slice(0, -(` ${normalizedSuffix}`.length)).trim();
-        }
-        return text;
-    }
-
-    function updateIkaSnapshot(target, commandText, responseText) {
-        const deviceId = asString(target?.device_id, "");
-        if (!deviceId) {
-            return;
-        }
-
-        const normalizedCommand = asString(commandText, "").toUpperCase();
-        const response = asString(responseText, "");
-        const nextSnapshot = {
-            ...selectedSnapshot(target),
-        };
-
-        if (normalizedCommand === "IN_NAME") {
-            nextSnapshot.name = response;
-        } else if (normalizedCommand === "IN_MODE") {
-            nextSnapshot.mode = response;
-        } else if (normalizedCommand === "IN_SP_4") {
-            const value = extractIkaChannelValue(response, 4);
-            nextSnapshot.setpoint_rpm = value ? `${value} rpm` : response;
-        } else if (normalizedCommand === "IN_PV_4") {
-            const value = extractIkaChannelValue(response, 4);
-            nextSnapshot.actual_rpm = value ? `${value} rpm` : response;
-        } else if (normalizedCommand === "IN_PV_5") {
-            nextSnapshot.pv5 = extractIkaChannelValue(response, 5) || response;
-        }
-
-        state.protocolSnapshots[deviceId] = nextSnapshot;
-        renderProtocolReadout(target);
-    }
-
-    async function refreshProtocolStatus(target) {
-        const protocol = normalizedProtocolName(target?.protocol);
-        if (protocol !== "ika_eurostar_60") {
-            return;
-        }
-
-        const commands = ["IN_NAME", "IN_MODE", "IN_SP_4", "IN_PV_4", "IN_PV_5"];
-        const outputs = [];
-        for (const command of commands) {
-            const result = await sendManualCommand(command, { quiet: true });
-            outputs.push(`> ${result.commandText}\n${result.output || "OK"}`);
-        }
-        setManualResponse(outputs.join("\n\n"));
-        setManualStatus("IKA-Status erfolgreich aktualisiert.", "success");
-    }
-
-    function buildProtocolAwareCommandSequence(node, target, profile, values) {
-        const protocol = normalizedProtocolName(target?.protocol);
-        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
-        if (protocol === "ika_eurostar_60" && symbolId === "motor") {
-            if (!values.is_on) {
-                return ["STOP_4"];
-            }
-            return [
-                "START_4",
-                `OUT_SP_4 ${Math.round(asNumber(values.speed, 0))}`,
-            ];
-        }
-        return buildManualCommandSequence(profile, values);
     }
 
     function buildManualCommandPayload(target, commandText) {
@@ -1060,23 +770,20 @@
             return;
         }
 
-        const profile = profileForNode(node);
-        if (!profile) {
-            syncManualControlsEnabled(false);
-            showManualState("Fuer diesen Aktor ist kein Bedienprofil hinterlegt.");
-            return;
-        }
-
         showManualPanel();
         manualTargetTitle.textContent = node.instance_id || node.label;
-        manualTargetSubtitle.textContent = `${node.symbol_id} | ${profile.label}`;
-        manualDevice.textContent = `${target.device_display_name} (${target.asset_serial})`;
-        manualConnection.textContent = `${target.server_code} | ${target.connection_label}`;
+        manualTargetSubtitle.textContent = target.device_display_name || node.symbol_id || "Aktor";
+        manualPort.textContent = target.connection_label || "-";
+        manualServer.textContent = target.server_code || "-";
         manualProtocol.textContent = protocolLabel(target.protocol);
         manualDeviceStatus.textContent = formatDeviceStatus(target);
-        renderProtocolSections(target);
-        renderManualProfile(node, profile);
-        syncManualControlsEnabled(Boolean(target.device_id));
+        renderOperatorControls(node, target);
+        syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(node, target));
+        if (isIkaMotorTarget(node, target)) {
+            setManualStatus("Bereit fuer Start, Stop und Drehzahl.", "muted");
+            return;
+        }
+        setManualStatus("Fuer diesen Aktor ist noch keine vereinfachte Bedienung hinterlegt.", "muted");
     }
 
     function renderAll() {
@@ -1152,61 +859,16 @@
             const responseText = asString(payload?.result?.response_text, "");
             const metadata = payload?.result?.metadata || {};
             const output = responseText || (manualPayload.expect_response ? JSON.stringify(metadata, null, 2) : "OK");
-            if (responseText && normalizedProtocolName(target.protocol) === "ika_eurostar_60") {
-                updateIkaSnapshot(target, manualPayload.text, responseText);
-            }
             return {
                 commandText: text,
                 output,
                 payload,
             };
         } catch (error) {
-            if (error?.payload && typeof error.payload === "object" && Object.keys(error.payload).length > 0) {
-                setManualResponse(JSON.stringify(error.payload, null, 2));
-            }
             throw new Error(error?.message || "Befehl konnte nicht gesendet werden.");
         } finally {
             state.isSending = false;
             syncManualControlsEnabled(true);
-        }
-    }
-
-    async function applyManualProfile(event) {
-        event.preventDefault();
-        const node = getNodeById(state.selectedNodeId);
-        const target = selectedTarget();
-        const profile = profileForNode(node);
-        if (!node || !target || !profile) {
-            setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
-            return;
-        }
-
-        const values = collectManualProfileValues(node, profile);
-        const commands = buildProtocolAwareCommandSequence(node, target, profile, values);
-        if (commands.length === 0) {
-            setManualStatus("Fuer dieses Profil sind keine ausfuehrbaren Befehle hinterlegt.", "error");
-            return;
-        }
-
-        try {
-            const outputs = [];
-            for (const command of commands) {
-                const result = await sendManualCommand(command, { quiet: true });
-                outputs.push(`> ${result.commandText}\n${result.output || "OK"}`);
-            }
-            node.control = {
-                profile_id: profile.id,
-                config: values,
-            };
-            renderManualProfile(node, profile);
-            if (normalizedProtocolName(target.protocol) === "ika_eurostar_60") {
-                await refreshProtocolStatus(target);
-            } else {
-                setManualResponse(outputs.join("\n\n"));
-            }
-            setManualStatus(`Aktorwerte fuer ${node.instance_id || node.label} angewendet.`, "success");
-        } catch (error) {
-            setManualStatus(error?.message || "Aktorwerte konnten nicht angewendet werden.", "error");
         }
     }
 
@@ -1224,74 +886,60 @@
         manualMode: false,
         selectedNodeId: null,
         isSending: false,
-        protocolSnapshots: {},
     };
 
     manualToggleButton?.addEventListener("click", () => {
         setManualMode(!state.manualMode);
     });
 
-    manualProfileForm?.addEventListener("submit", (event) => {
-        void applyManualProfile(event);
+    manualStartButton?.addEventListener("click", () => {
+        void sendManualCommand("START_4")
+            .then(() => {
+                setManualStatus("Startbefehl erfolgreich gesendet.", "success");
+            })
+            .catch((error) => {
+                setManualStatus(error?.message || "Startbefehl konnte nicht gesendet werden.", "error");
+            });
     });
 
-    manualCommandForm?.addEventListener("submit", (event) => {
+    manualStopButton?.addEventListener("click", () => {
+        void sendManualCommand("STOP_4")
+            .then(() => {
+                setManualStatus("Stopbefehl erfolgreich gesendet.", "success");
+            })
+            .catch((error) => {
+                setManualStatus(error?.message || "Stopbefehl konnte nicht gesendet werden.", "error");
+            });
+    });
+
+    manualSpeedForm?.addEventListener("submit", (event) => {
         event.preventDefault();
-        void sendManualCommand(manualCommandInput.value)
-            .then((result) => {
-                setManualResponse(`> ${result.commandText}\n${result.output || "OK"}`);
-                setManualStatus(`Befehl ${result.commandText} erfolgreich gesendet.`, "success");
-            })
-            .catch((error) => {
-                setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
-            });
-    });
-
-    manualRefreshButton?.addEventListener("click", () => {
+        const node = getNodeById(state.selectedNodeId);
         const target = selectedTarget();
-        if (!target) {
-            setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
-            return;
-        }
-        void refreshProtocolStatus(target).catch((error) => {
-            setManualStatus(error?.message || "Status konnte nicht gelesen werden.", "error");
-        });
-    });
+        const speed = Math.max(0, Math.round(asNumber(manualSpeedInput?.value, 0)));
 
-    manualQuickActions?.addEventListener("click", (event) => {
-        const button =
-            event.target instanceof Element
-                ? event.target.closest("button[data-manual-command], button[data-manual-action]")
-                : null;
-        if (!button) {
+        if (!node || !target || !isIkaMotorTarget(node, target)) {
+            setManualStatus("Waehle zuerst einen gueltig zugeordneten IKA-Ruehrer aus.", "error");
             return;
         }
 
-        const manualAction = String(button.dataset.manualAction || "").trim();
-        if (manualAction === "refresh-status") {
-            const target = selectedTarget();
-            if (!target) {
-                setManualStatus("Waehle zuerst einen gueltig zugeordneten Aktor aus.", "error");
-                return;
-            }
-            void refreshProtocolStatus(target).catch((error) => {
-                setManualStatus(error?.message || "Status konnte nicht gelesen werden.", "error");
-            });
-            return;
+        if (manualSpeedInput) {
+            manualSpeedInput.value = String(speed);
         }
 
-        const command = String(button.dataset.manualCommand || "").trim();
-        if (!command) {
-            return;
-        }
-        manualCommandInput.value = command;
-        void sendManualCommand(command)
+        void sendManualCommand(`OUT_SP_4 ${speed}`)
             .then((result) => {
-                setManualResponse(`> ${result.commandText}\n${result.output || "OK"}`);
-                setManualStatus(`Befehl ${result.commandText} erfolgreich gesendet.`, "success");
+                node.control = {
+                    profile_id: node.control?.profile_id || "motor_rpm",
+                    config: {
+                        ...(node.control?.config || {}),
+                        speed,
+                    },
+                };
+                setManualStatus(`Drehzahl ${speed} rpm erfolgreich gesendet.`, "success");
             })
             .catch((error) => {
-                setManualStatus(error?.message || "Befehl konnte nicht gesendet werden.", "error");
+                setManualStatus(error?.message || "Drehzahl konnte nicht gesendet werden.", "error");
             });
     });
 
