@@ -617,6 +617,33 @@ h2 {
     width: 100%;
 }
 
+.process-manual-live-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    margin: 0;
+}
+
+.process-manual-live-metrics div {
+    padding: 0.8rem 0.9rem;
+    border: 1px solid rgba(212, 198, 178, 0.78);
+    border-radius: 12px;
+    background: rgba(255, 253, 250, 0.92);
+}
+
+.process-manual-live-metrics dt {
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.process-manual-live-metrics dd {
+    margin: 0.25rem 0 0;
+    font-weight: 600;
+}
+
 .process-manual-meta {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1721,6 +1748,7 @@ kbd {
     }
 
     .process-manual-settings-form,
+    .process-manual-live-metrics,
     .process-manual-meta {
         grid-template-columns: 1fr;
     }

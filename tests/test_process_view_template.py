@@ -39,6 +39,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-manual-state-input", html)
         self.assertIn("process-manual-speed-input", html)
         self.assertIn("process-manual-submit-button", html)
+        self.assertIn("process-manual-actual-rpm", html)
+        self.assertIn("process-manual-torque-ncm", html)
 
         forbidden_strings = (
             "Status lesen",
@@ -89,6 +91,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         )
         self.assertIn('await sendManualCommand("IN_SP_4", { quiet: true })', source)
         self.assertIn('await sendManualCommand("IN_PV_4", { quiet: true })', source)
+        self.assertIn('await sendManualCommand("IN_PV_5", { quiet: true })', source)
 
 
 if __name__ == "__main__":

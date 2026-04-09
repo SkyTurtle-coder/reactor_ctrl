@@ -20,6 +20,8 @@
     const manualStateInput = document.getElementById("process-manual-state-input");
     const manualSpeedInput = document.getElementById("process-manual-speed-input");
     const manualSubmitButton = document.getElementById("process-manual-submit-button");
+    const manualActualRpm = document.getElementById("process-manual-actual-rpm");
+    const manualTorqueNcm = document.getElementById("process-manual-torque-ncm");
     const manualPort = document.getElementById("process-manual-port");
     const manualServer = document.getElementById("process-manual-server");
     const manualProtocol = document.getElementById("process-manual-protocol");
@@ -27,6 +29,7 @@
     const manualStatus = document.getElementById("process-manual-status");
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
+    const MANUAL_LIVE_POLL_MS = 3000;
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -80,6 +83,14 @@
         const [head] = text.split(/\s+/);
         const numeric = Number.parseFloat(head);
         return Number.isFinite(numeric) ? numeric : null;
+    }
+
+    function formatRoundedMetric(value, unit, digits) {
+        if (!Number.isFinite(value)) {
+            return "-";
+        }
+        const precision = Number.isInteger(digits) ? digits : 0;
+        return `${value.toFixed(precision)} ${unit}`;
     }
 
     function directionToSide(direction, xRatio, yRatio) {
@@ -512,6 +523,12 @@
         if (manualDeviceStatus) {
             manualDeviceStatus.textContent = "-";
         }
+        if (manualActualRpm) {
+            manualActualRpm.textContent = "-";
+        }
+        if (manualTorqueNcm) {
+            manualTorqueNcm.textContent = "-";
+        }
     }
 
     function selectActuator(nodeId) {
@@ -860,6 +877,19 @@
         };
     }
 
+    function updateManualLiveMetrics(telemetry) {
+        if (manualActualRpm) {
+            manualActualRpm.textContent = telemetry?.actualRpm == null
+                ? "-"
+                : formatRoundedMetric(telemetry.actualRpm, "rpm", telemetry.actualRpm >= 100 ? 0 : 2);
+        }
+        if (manualTorqueNcm) {
+            manualTorqueNcm.textContent = telemetry?.torqueNcm == null
+                ? "-"
+                : formatRoundedMetric(telemetry.torqueNcm, "Ncm", 2);
+        }
+    }
+
     function canLoadIkaSettings(node, target) {
         return Boolean(node && target && target.is_resolved && target.device_id && isIkaMotorTarget(node, target));
     }
@@ -875,13 +905,20 @@
             return null;
         }
 
+        const torqueResult = await sendManualCommand("IN_PV_5", { quiet: true });
+        if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+            return null;
+        }
+
         return {
             setpointRpm: parseIkaNumericResponse(setpointResult?.output),
             actualRpm: parseIkaNumericResponse(actualResult?.output),
+            torqueNcm: parseIkaNumericResponse(torqueResult?.output),
         };
     }
 
-    async function loadManualSettings(nodeId) {
+    async function loadManualSettings(nodeId, options) {
+        const settings = options || {};
         const node = getNodeById(nodeId);
         const target = manualTargets[nodeId] || null;
         if (!canLoadIkaSettings(node, target)) {
@@ -892,7 +929,9 @@
         state.manualRequestId = requestId;
         state.isManualBusy = true;
         syncManualControlsEnabled(true);
-        setManualStatus("Loading current device settings...", "muted");
+        if (!settings.quiet) {
+            setManualStatus("Loading current device settings...", "muted");
+        }
 
         try {
             const telemetry = await readCurrentIkaSettings(nodeId, requestId);
@@ -919,11 +958,15 @@
                 },
             };
 
+            updateManualLiveMetrics(telemetry);
             renderOperatorControls(currentNode, target);
             syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(currentNode, target));
+            if (settings.quiet) {
+                return;
+            }
             if (appearsRunning) {
                 setManualStatus(
-                    `Device state loaded. The stirrer is running at approximately ${Math.round(telemetry.actualRpm)} rpm.`,
+                    `Device state loaded. Actual speed is approximately ${Math.round(telemetry.actualRpm)} rpm.`,
                     "success",
                 );
             } else {
@@ -1212,6 +1255,7 @@
             };
 
             renderOperatorControls(node, target);
+            updateManualLiveMetrics(telemetry);
             if (nextState) {
                 const actualLabel = telemetry.actualRpm == null ? "unknown rpm" : `${Math.round(telemetry.actualRpm)} rpm`;
                 setManualStatus(
@@ -1257,6 +1301,22 @@
     processClearSelectionLink?.addEventListener("click", () => {
         clearPersistedViewState();
     });
+
+    window.setInterval(() => {
+        if (!state.manualMode || state.isManualBusy || state.isSending || document.hidden) {
+            return;
+        }
+        const nodeId = state.selectedNodeId;
+        if (!nodeId) {
+            return;
+        }
+        const node = getNodeById(nodeId);
+        const target = selectedTarget();
+        if (!canLoadIkaSettings(node, target)) {
+            return;
+        }
+        void loadManualSettings(nodeId, { quiet: true });
+    }, MANUAL_LIVE_POLL_MS);
 
     if (manualToggleButton) {
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
