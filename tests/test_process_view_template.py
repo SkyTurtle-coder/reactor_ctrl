@@ -53,6 +53,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         for text in forbidden_strings:
             self.assertNotIn(text, html)
 
+    def test_process_view_disables_html_caching(self):
+        response = self.client.get("/process")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate, max-age=0")
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+        self.assertEqual(response.headers.get("Expires"), "0")
+
     def test_process_view_script_no_longer_contains_legacy_manual_ui_labels(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
         source = script_path.read_text(encoding="utf-8")

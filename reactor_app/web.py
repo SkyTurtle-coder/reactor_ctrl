@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, render_template, request, url_for
+from flask import Blueprint, current_app, jsonify, make_response, render_template, request, url_for
 from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -402,7 +402,7 @@ def infrared_camera_home() -> str:
 
 
 @web_bp.get("/process")
-def process_view() -> str:
+def process_view():
     build_id = request.args.get("build_id", type=int)
     saved_builds: list[ReactorBuild] = []
     current_build = None
@@ -452,21 +452,27 @@ def process_view() -> str:
                 ttl_seconds=current_app.config.get("PROCESS_MANUAL_WRITE_TOKEN_TTL_SECONDS", 43200),
             )
 
-    return render_template(
-        "process.html",
-        active_page="process",
-        summary=_control_summary(),
-        saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
-        selected_build_id=None if current_build is None else current_build.reactor_build_id,
-        selected_build=_reactor_build_detail_to_dict(current_build),
-        selected_build_missing=selected_build_missing,
-        process_notice=process_notice,
-        process_storage_available=process_storage_available,
-        manual_targets=manual_targets,
-        manual_write_token=manual_write_token,
-        actuator_profiles=list_actuator_profiles(),
-        **_base_context(),
+    response = make_response(
+        render_template(
+            "process.html",
+            active_page="process",
+            summary=_control_summary(),
+            saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
+            selected_build_id=None if current_build is None else current_build.reactor_build_id,
+            selected_build=_reactor_build_detail_to_dict(current_build),
+            selected_build_missing=selected_build_missing,
+            process_notice=process_notice,
+            process_storage_available=process_storage_available,
+            manual_targets=manual_targets,
+            manual_write_token=manual_write_token,
+            actuator_profiles=list_actuator_profiles(),
+            **_base_context(),
+        )
     )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @web_bp.get("/recipes")
