@@ -173,8 +173,26 @@ pre {
     min-width: 0;
 }
 
-.process-toolbar.is-collapsed .process-toolbar-controls {
+/* panel collapse — controlled independently of manual mode toggle */
+.process-display-grid.has-manual-panel.is-panel-collapsed {
+    grid-template-columns: minmax(0, 1fr) 3rem;
+}
+
+.process-manual-card.is-panel-collapsed .process-manual-body {
     display: none;
+}
+
+.process-manual-card.is-panel-collapsed .process-manual-card-copy {
+    display: none;
+}
+
+.process-manual-card.is-panel-collapsed .process-manual-card-header {
+    justify-content: center;
+    padding: 0.75rem 0.5rem;
+}
+
+.process-manual-card.is-panel-collapsed .process-panel-collapse-btn svg {
+    transform: rotate(180deg);
 }
 
 .process-picker-row {
@@ -212,10 +230,11 @@ pre {
     border-radius: 6px;
 }
 
-.process-collapse-btn {
+.process-panel-collapse-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
     width: 2rem;
     height: 2rem;
     padding: 0;
@@ -224,17 +243,15 @@ pre {
     background: var(--bg);
     color: var(--muted);
     cursor: pointer;
-    flex-shrink: 0;
-    margin-left: auto;
     transition: color 0.15s ease;
 }
 
-.process-collapse-btn:hover {
+.process-panel-collapse-btn:hover {
     color: var(--text);
     border-color: #aaaaaa;
 }
 
-.process-collapse-btn svg {
+.process-panel-collapse-btn svg {
     transition: transform 0.2s ease;
 }
 
@@ -641,7 +658,11 @@ h2 {
 }
 
 .process-manual-card-header {
-    padding: 1.2rem 1.25rem;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 1rem 1rem 1rem 1.25rem;
     background: rgba(253, 231, 14, 0.07);
     border-bottom: 1px solid rgba(253, 231, 14, 0.3);
 }

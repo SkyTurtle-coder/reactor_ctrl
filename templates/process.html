@@ -34,12 +34,6 @@
             {% if not selected_build %}disabled{% endif %}
         >Manual</button>
     </div>
-
-    <button class="process-collapse-btn" id="process-toolbar-toggle" type="button" title="Collapse controls">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" id="process-toolbar-icon">
-            <path d="M2 4.5L6 8.5L10 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-    </button>
 </div>
 
 {% if process_notice %}
@@ -79,9 +73,14 @@
                 <h2 class="process-manual-card-title" id="process-manual-target-title">-</h2>
                 <p class="process-manual-card-text" id="process-manual-target-subtitle">-</p>
             </div>
+            <button class="process-panel-collapse-btn" id="process-panel-collapse-btn" type="button" title="Collapse panel">
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <path d="M8 2L4 6L8 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </button>
         </div>
 
-        <div class="card-body process-manual-body">
+        <div class="card-body process-manual-body" id="process-manual-body">
             <section class="process-manual-controls" id="process-manual-controls">
                 <div class="process-manual-controls-header">
                     <span class="section-label">Device Settings</span>
@@ -157,25 +156,31 @@
 <script src="{{ static_asset('js/process_view.js') }}"></script>
 <script>
 (function () {
-    var toolbar = document.getElementById('process-toolbar');
-    var toggleBtn = document.getElementById('process-toolbar-toggle');
-    var icon = document.getElementById('process-toolbar-icon');
-    var STORAGE_KEY = 'reactor_ctrl.processToolbar.collapsed';
+    var collapseBtn = document.getElementById('process-panel-collapse-btn');
+    var manualCard  = document.getElementById('process-manual-card');
+    var displayGrid = document.querySelector('.process-display-grid');
+    var STORAGE_KEY = 'reactor_ctrl.manualPanel.collapsed';
 
-    if (!toolbar || !toggleBtn) return;
+    if (!collapseBtn || !manualCard || !displayGrid) return;
 
     function setCollapsed(collapsed) {
-        toolbar.classList.toggle('is-collapsed', collapsed);
-        if (icon) icon.style.transform = collapsed ? 'rotate(-90deg)' : '';
+        manualCard.classList.toggle('is-panel-collapsed', collapsed);
+        displayGrid.classList.toggle('is-panel-collapsed', collapsed);
         try { localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0'); } catch (_) {}
     }
 
-    try {
-        if (localStorage.getItem(STORAGE_KEY) === '1') setCollapsed(true);
-    } catch (_) {}
+    // Restore state when panel becomes visible
+    var observer = new MutationObserver(function () {
+        if (!manualCard.hidden) {
+            try {
+                if (localStorage.getItem(STORAGE_KEY) === '1') setCollapsed(true);
+            } catch (_) {}
+        }
+    });
+    observer.observe(manualCard, { attributes: true, attributeFilter: ['hidden'] });
 
-    toggleBtn.addEventListener('click', function () {
-        setCollapsed(!toolbar.classList.contains('is-collapsed'));
+    collapseBtn.addEventListener('click', function () {
+        setCollapsed(!manualCard.classList.contains('is-panel-collapsed'));
     });
 })();
 </script>
