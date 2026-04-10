@@ -46,34 +46,36 @@
 <p class="process-selection-notice error-text">The requested flowsheet could not be found.</p>
 {% endif %}
 
-<details class="card process-plot-panel" id="process-plot-panel" {% if selected_build %}open{% endif %}>
-    <summary class="process-plot-summary">
+<details class="card process-plot-panel ui-collapsible-details" id="process-plot-panel" {% if selected_build %}open{% endif %}>
+    <summary class="process-plot-summary ui-collapsible-summary">
         <div class="process-plot-summary-copy">
             <span class="section-label">Process Trends</span>
-            <h2>Actual Value Plot</h2>
-            <p class="muted" id="process-plot-summary-text">
-                Select sensor and actuator values from the loaded flowsheet to plot their recent measurements.
-            </p>
         </div>
         <span class="process-plot-summary-meta" id="process-plot-selection-count">0 selected</span>
+        <span class="ui-collapsible-chevron" aria-hidden="true">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M8 2L4 6L8 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </span>
     </summary>
 
-    <div class="process-plot-body">
-        <section class="process-plot-selector-card">
-            <div class="process-plot-selector-header">
-                <span class="section-label">Available Values</span>
-                <p class="muted">Checkboxes are derived from the mapped sensors and actuators on this flowsheet.</p>
-            </div>
-            <div class="process-plot-selection" id="process-plot-selection"></div>
-            <p class="muted process-plot-selection-empty" id="process-plot-selection-empty">No plottable measurement channels are available for this flowsheet yet.</p>
-        </section>
+    <div class="ui-collapsible-panel">
+        <div class="process-plot-body ui-collapsible-panel-inner">
+            <section class="process-plot-selector-card">
+                <div class="process-plot-selector-header">
+                    <span class="section-label">Available Values</span>
+                </div>
+                <div class="process-plot-selection" id="process-plot-selection"></div>
+                <p class="muted process-plot-selection-empty" id="process-plot-selection-empty">No plottable measurement channels are available for this flowsheet yet.</p>
+            </section>
 
-        <section class="process-plot-chart-region">
-            <div class="process-plot-chart-stack" id="process-plot-chart-stack"></div>
-            <p class="process-manual-status muted process-plot-status" id="process-plot-status">
-                Select one or more values to display a live trend plot.
-            </p>
-        </section>
+            <section class="process-plot-chart-region">
+                <div class="process-plot-chart-stack" id="process-plot-chart-stack"></div>
+                <p class="process-manual-status muted process-plot-status" id="process-plot-status">
+                    Select one or more values to display a live trend plot.
+                </p>
+            </section>
+        </div>
     </div>
 </details>
 

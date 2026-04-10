@@ -55,6 +55,9 @@ class ProcessViewTemplateTests(unittest.TestCase):
             "Geraetestatus",
             "Gerätestatus",
             "Protokollhinweis",
+            "Actual Value Plot",
+            "Select sensor and actuator values from the loaded flowsheet to plot their recent measurements.",
+            "Checkboxes are derived from the mapped sensors and actuators on this flowsheet.",
         )
         for text in forbidden_strings:
             self.assertNotIn(text, html)
@@ -155,6 +158,23 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('"channel_code": "ika_actual_rpm"', source)
         self.assertIn('"channel_code": "ika_torque_ncm"', source)
         self.assertIn('"data_source": "runtime_fallback"', source)
+
+    def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        process_template = (repo_root / "templates" / "process.html").read_text(encoding="utf-8")
+        builder_template = (repo_root / "templates" / "reactor_builder.html").read_text(encoding="utf-8")
+        stylesheet = (repo_root / "static" / "css" / "app.css").read_text(encoding="utf-8")
+
+        self.assertIn("process-plot-panel ui-collapsible-details", process_template)
+        self.assertIn("process-plot-summary ui-collapsible-summary", process_template)
+        self.assertIn("ui-collapsible-chevron", process_template)
+        self.assertIn("builder-category ui-collapsible-details", builder_template)
+        self.assertIn("builder-category-summary ui-collapsible-summary", builder_template)
+        self.assertIn("ui-collapsible-chevron", builder_template)
+        self.assertIn("--collapsible-duration", stylesheet)
+        self.assertIn(".ui-collapsible-panel", stylesheet)
+        self.assertIn(".ui-collapsible-chevron svg", stylesheet)
+        self.assertIn(".process-manual-card.is-panel-collapsed .process-manual-body", stylesheet)
 
 
 if __name__ == "__main__":

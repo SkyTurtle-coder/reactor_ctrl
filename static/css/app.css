@@ -15,6 +15,8 @@
     --shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
     --radius: 12px;
     --radius-sm: 8px;
+    --collapsible-duration: 420ms;
+    --collapsible-ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 *,
@@ -39,6 +41,97 @@ body {
 a {
     color: var(--accent-strong);
     text-decoration: none;
+}
+
+.ui-collapsible-details {
+    overflow: hidden;
+}
+
+.ui-collapsible-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.75rem;
+    cursor: pointer;
+    list-style: none;
+}
+
+.ui-collapsible-summary::-webkit-details-marker {
+    display: none;
+}
+
+.ui-collapsible-summary::marker {
+    content: "";
+}
+
+.ui-collapsible-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--muted);
+    flex-shrink: 0;
+    transition:
+        color 0.18s ease,
+        border-color 0.18s ease,
+        background-color 0.18s ease,
+        box-shadow 0.18s ease;
+}
+
+.ui-collapsible-chevron svg {
+    display: block;
+    transform: rotate(180deg);
+    transition: transform var(--collapsible-duration) var(--collapsible-ease);
+}
+
+.ui-collapsible-details[open] > .ui-collapsible-summary .ui-collapsible-chevron svg {
+    transform: rotate(-90deg);
+}
+
+.ui-collapsible-summary:hover .ui-collapsible-chevron,
+.ui-collapsible-summary:focus-visible .ui-collapsible-chevron {
+    color: var(--text);
+    border-color: #aaaaaa;
+}
+
+.ui-collapsible-panel {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    visibility: hidden;
+    transform: translate3d(0, -10px, 0);
+    pointer-events: none;
+    transition:
+        grid-template-rows var(--collapsible-duration) var(--collapsible-ease),
+        opacity 260ms ease,
+        transform var(--collapsible-duration) var(--collapsible-ease),
+        visibility 0s linear var(--collapsible-duration);
+}
+
+.ui-collapsible-details:not([open]) > .ui-collapsible-panel {
+    display: grid;
+}
+
+.ui-collapsible-details[open] > .ui-collapsible-panel {
+    grid-template-rows: 1fr;
+    opacity: 1;
+    visibility: visible;
+    transform: translate3d(0, 0, 0);
+    pointer-events: auto;
+    transition:
+        grid-template-rows var(--collapsible-duration) var(--collapsible-ease),
+        opacity 260ms ease,
+        transform var(--collapsible-duration) var(--collapsible-ease),
+        visibility 0s linear 0s;
+}
+
+.ui-collapsible-panel-inner {
+    min-height: 0;
+    overflow: hidden;
 }
 
 a:hover {
@@ -174,16 +267,27 @@ pre {
 }
 
 /* panel collapse — controlled independently of manual mode toggle */
+.process-display-grid.has-manual-panel {
+    transition: grid-template-columns var(--collapsible-duration) var(--collapsible-ease);
+}
+
 .process-display-grid.has-manual-panel.is-panel-collapsed {
     grid-template-columns: minmax(0, 1fr) 3rem;
 }
 
 .process-manual-card.is-panel-collapsed .process-manual-body {
-    display: none;
+    max-height: 0;
+    opacity: 0;
+    transform: translate3d(16px, 0, 0) scale(0.985);
+    padding-top: 0;
+    padding-bottom: 0;
+    pointer-events: none;
 }
 
 .process-manual-card.is-panel-collapsed .process-manual-card-copy {
-    display: none;
+    max-height: 0;
+    opacity: 0;
+    transform: translate3d(10px, 0, 0);
 }
 
 .process-manual-card.is-panel-collapsed .process-manual-card-header {
@@ -243,7 +347,11 @@ pre {
     background: var(--bg);
     color: var(--muted);
     cursor: pointer;
-    transition: color 0.15s ease;
+    transition:
+        color 0.18s ease,
+        border-color 0.18s ease,
+        background-color 0.18s ease,
+        box-shadow 0.18s ease;
 }
 
 .process-panel-collapse-btn:hover {
@@ -252,7 +360,7 @@ pre {
 }
 
 .process-panel-collapse-btn svg {
-    transition: transform 0.2s ease;
+    transition: transform var(--collapsible-duration) var(--collapsible-ease);
 }
 
 .process-viewer-bar {
@@ -371,36 +479,10 @@ pre {
 }
 
 .process-plot-summary {
-    display: flex;
-    align-items: flex-start;
-    gap: 1rem;
     padding: 1rem 1.15rem;
-    cursor: pointer;
-    list-style: none;
     background:
         linear-gradient(135deg, rgba(253, 231, 14, 0.12), rgba(248, 242, 232, 0.92)),
         #ffffff;
-}
-
-.process-plot-summary::-webkit-details-marker {
-    display: none;
-}
-
-.process-plot-summary::marker {
-    content: "";
-}
-
-.process-plot-summary::after {
-    content: "v";
-    margin-left: auto;
-    color: var(--muted);
-    font-size: 1rem;
-    line-height: 1;
-    transition: transform 0.2s ease;
-}
-
-.process-plot-panel:not([open]) .process-plot-summary::after {
-    transform: rotate(-90deg);
 }
 
 .process-plot-panel[open] .process-plot-summary {
@@ -419,8 +501,7 @@ pre {
 .process-plot-summary-meta {
     display: inline-flex;
     align-items: center;
-    align-self: center;
-    margin-left: auto;
+    justify-self: end;
     padding: 0.35rem 0.7rem;
     border: 1px solid rgba(0, 0, 0, 0.12);
     border-radius: 999px;
@@ -607,6 +688,18 @@ pre {
 
 .process-plot-status {
     margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ui-collapsible-chevron svg,
+    .ui-collapsible-panel,
+    .process-display-grid.has-manual-panel,
+    .process-manual-body,
+    .process-manual-card-copy,
+    .process-manual-card-header,
+    .process-panel-collapse-btn svg {
+        transition: none !important;
+    }
 }
 
 .control-hero,
@@ -899,6 +992,20 @@ h2 {
 .process-manual-body {
     display: grid;
     gap: 1rem;
+    max-height: 2000px;
+    opacity: 1;
+    overflow: hidden;
+    transform: translate3d(0, 0, 0);
+    transform-origin: top right;
+    transition:
+        max-height var(--collapsible-duration) var(--collapsible-ease),
+        opacity 240ms ease,
+        transform var(--collapsible-duration) var(--collapsible-ease),
+        padding var(--collapsible-duration) var(--collapsible-ease);
+}
+
+.process-manual-card {
+    overflow: hidden;
 }
 
 .process-manual-card-header {
@@ -909,12 +1016,20 @@ h2 {
     padding: 1rem 1rem 1rem 1.25rem;
     background: rgba(253, 231, 14, 0.07);
     border-bottom: 1px solid rgba(253, 231, 14, 0.3);
+    transition: padding var(--collapsible-duration) var(--collapsible-ease);
 }
 
 .process-manual-card-copy {
     display: grid;
     gap: 0.28rem;
     margin: 0;
+    max-height: 8rem;
+    overflow: hidden;
+    transform: translate3d(0, 0, 0);
+    transition:
+        max-height var(--collapsible-duration) var(--collapsible-ease),
+        opacity 220ms ease,
+        transform var(--collapsible-duration) var(--collapsible-ease);
 }
 
 .process-manual-card-title {
@@ -1135,17 +1250,7 @@ h2 {
 }
 
 .builder-category-summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
     padding: 0.85rem 0.95rem;
-    cursor: pointer;
-    list-style: none;
-}
-
-.builder-category-summary::-webkit-details-marker {
-    display: none;
 }
 
 .builder-symbol-list {
@@ -2162,11 +2267,15 @@ kbd {
     }
 
     .process-plot-summary {
-        flex-wrap: wrap;
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .process-plot-summary-copy {
+        grid-column: 1 / -1;
     }
 
     .process-plot-summary-meta {
-        margin-left: 0;
+        justify-self: start;
     }
 
     .process-plot-selection {

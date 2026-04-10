@@ -35,36 +35,43 @@
                 {% if symbol_categories %}
                 <div class="builder-library">
                     {% for category in symbol_categories %}
-                    <details class="builder-category">
-                        <summary class="builder-category-summary">
+                    <details class="builder-category ui-collapsible-details">
+                        <summary class="builder-category-summary ui-collapsible-summary">
                             <span>{{ category.label }}</span>
                             <span class="badge badge-info">{{ category.symbols | length }}</span>
+                            <span class="ui-collapsible-chevron" aria-hidden="true">
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                                    <path d="M8 2L4 6L8 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </span>
                         </summary>
-                        <div class="builder-symbol-list">
-                            {% for symbol in category.symbols %}
-                            <article
-                                class="builder-symbol-item"
-                                draggable="true"
-                                data-symbol-id="{{ symbol.id }}"
-                                data-symbol-label="{{ symbol.label }}"
-                                data-symbol-category="{{ symbol.category }}"
-                                data-symbol-svg-url="{{ symbol.svg_url }}"
-                                data-symbol-width="{{ symbol.default_width }}"
-                                data-symbol-height="{{ symbol.default_height }}"
-                            >
-                                <div class="builder-symbol-thumb">
-                                    <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
-                                </div>
-                                <div class="builder-symbol-copy">
-                                    <strong>{{ symbol.label }}</strong>
-                                    <p><code>{{ symbol.id }}</code></p>
-                                    <p>{{ symbol.port_count }} Ports</p>
-                                </div>
-                                <div class="builder-symbol-actions">
-                                    <button class="btn builder-symbol-add" type="button" data-symbol-add="{{ symbol.id }}">+ Add</button>
-                                </div>
-                            </article>
-                            {% endfor %}
+                        <div class="ui-collapsible-panel">
+                            <div class="builder-symbol-list ui-collapsible-panel-inner">
+                                {% for symbol in category.symbols %}
+                                <article
+                                    class="builder-symbol-item"
+                                    draggable="true"
+                                    data-symbol-id="{{ symbol.id }}"
+                                    data-symbol-label="{{ symbol.label }}"
+                                    data-symbol-category="{{ symbol.category }}"
+                                    data-symbol-svg-url="{{ symbol.svg_url }}"
+                                    data-symbol-width="{{ symbol.default_width }}"
+                                    data-symbol-height="{{ symbol.default_height }}"
+                                >
+                                    <div class="builder-symbol-thumb">
+                                        <img src="{{ symbol.svg_url }}" alt="{{ symbol.label }}">
+                                    </div>
+                                    <div class="builder-symbol-copy">
+                                        <strong>{{ symbol.label }}</strong>
+                                        <p><code>{{ symbol.id }}</code></p>
+                                        <p>{{ symbol.port_count }} Ports</p>
+                                    </div>
+                                    <div class="builder-symbol-actions">
+                                        <button class="btn builder-symbol-add" type="button" data-symbol-add="{{ symbol.id }}">+ Add</button>
+                                    </div>
+                                </article>
+                                {% endfor %}
+                            </div>
                         </div>
                     </details>
                     {% endfor %}
