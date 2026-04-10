@@ -4,9 +4,9 @@
 
 {% block page_header %}
 <section class="page-header">
-    <span class="eyebrow">Sicherheit</span>
+    <span class="eyebrow">Safety</span>
     <h1>Alerts</h1>
-    <p class="page-lead">Zentrale Sicht auf alle anliegenden Fehler und Stoerungen des Control Systems.</p>
+    <p class="page-lead">Active faults and disturbances in the control system.</p>
 </section>
 {% endblock %}
 
@@ -22,7 +22,6 @@
     <article class="card">
         <div class="card-header">
             <h2>Command alerts</h2>
-            <p>Fehlgeschlagene oder abgelaufene Steuerkommandos.</p>
         </div>
         <div class="card-body">
             {% if command_alerts %}
@@ -49,7 +48,7 @@
                 </table>
             </div>
             {% else %}
-            <p class="empty-state">Aktuell liegen keine Command-Alerts an.</p>
+            <p class="empty-state">No command alerts.</p>
             {% endif %}
         </div>
     </article>
@@ -57,7 +56,6 @@
     <article class="card">
         <div class="card-header">
             <h2>Connection alerts</h2>
-            <p>Kommunikationsfehler auf Device- oder Port-Ebene.</p>
         </div>
         <div class="card-body">
             {% if connection_alerts %}
@@ -91,7 +89,7 @@
                 </table>
             </div>
             {% else %}
-            <p class="empty-state">Aktuell liegen keine Connection-Alerts an.</p>
+            <p class="empty-state">No connection alerts.</p>
             {% endif %}
         </div>
     </article>

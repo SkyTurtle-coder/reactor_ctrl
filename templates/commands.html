@@ -5,14 +5,14 @@
 {% block page_header %}
 <section class="page-header">
     <span class="eyebrow">Command Log</span>
-    <h1>Steuerbefehle</h1>
-    <p class="page-lead">Letzte API- und Laufzeit-Kommandos fuer RS-232-Geraete, inklusive Status, Benutzer und Zeitleiste.</p>
+    <h1>Commands</h1>
+    <p class="page-lead">Recent API and runtime commands for RS-232 devices.</p>
 </section>
 {% endblock %}
 
 {% block content %}
 <section class="metric-grid compact">
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Geladen</p><p class="metric-value">{{ summary.total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Loaded</p><p class="metric-value">{{ summary.total }}</p></div></article>
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Queued</p><p class="metric-value">{{ summary.queued }}</p></div></article>
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Acked</p><p class="metric-value">{{ summary.acked }}</p></div></article>
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Failed</p><p class="metric-value">{{ summary.failed }}</p></div></article>
@@ -20,8 +20,7 @@
 
 <section class="card">
     <div class="card-header">
-        <h2>Letzte 50 Commands</h2>
-        <p>Die Liste zeigt die zuletzt ausgelieferten Steuerbefehle mit Status, Ausloeser und Fehlerbild.</p>
+        <h2>Last 50 commands</h2>
     </div>
     <div class="card-body">
         {% if commands %}
@@ -29,13 +28,13 @@
             <table class="table">
                 <thead>
                     <tr>
-                        <th>Angefragt</th>
-                        <th>Geraet</th>
+                        <th>Requested</th>
+                        <th>Device</th>
                         <th>Command</th>
                         <th>Status</th>
-                        <th>Von</th>
+                        <th>By</th>
                         <th>UUID</th>
-                        <th>Fehler</th>
+                        <th>Error</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -60,7 +59,7 @@
             </table>
         </div>
         {% else %}
-        <p class="empty-state">Es sind noch keine Commands protokolliert.</p>
+        <p class="empty-state">No commands logged yet.</p>
         {% endif %}
     </div>
 </section>

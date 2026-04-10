@@ -7,10 +7,7 @@
     <div class="process-heading">
         <span class="eyebrow">Live</span>
         <h1>Process View</h1>
-        <p class="page-lead">
-            Approved flowsheets are rendered read-only here.
-            Manual mode unlocks direct actuator control when needed.
-        </p>
+        <p class="page-lead">Select a flowsheet to display the live process layout.</p>
     </div>
     {% if selected_build %}
     <div class="process-header-meta">
@@ -48,7 +45,6 @@
                 >
                     Enable
                 </button>
-                <p class="muted">After enabling manual mode, click an actuator in the flowsheet to open its settings.</p>
             </div>
 
             {% if selected_build_id %}
@@ -76,13 +72,6 @@
             <div>
                 <span class="section-label">Flowsheet</span>
                 <h2>{{ selected_build.build_name if selected_build else "No flowsheet selected" }}</h2>
-                <p>
-                    {% if selected_build %}
-                    This view is read-only. Layout changes are handled in the Reactor Builder.
-                    {% else %}
-                    Select a saved flowsheet above to load the current process layout.
-                    {% endif %}
-                </p>
             </div>
 
             {% if selected_build %}
@@ -131,7 +120,6 @@
                 <div class="process-manual-controls-header">
                     <span class="section-label">Device Settings</span>
                     <h3>IKA Stirrer</h3>
-                    <p class="muted">Set power state and RPM, then submit the change.</p>
                 </div>
 
                 <form class="process-manual-settings-form" id="process-manual-settings-form">

@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Verbindungen | reactor_ctrl{% endblock %}
+{% block title %}Connections | reactor_ctrl{% endblock %}
 
 {% block page_header %}
 <section class="page-header">
     <span class="eyebrow">Transport</span>
-    <h1>Device-Verbindungen</h1>
-    <p class="page-lead">Serielle Kanaele ueber TCP, inklusive Endpoint, serieller Parameter und Binding-Zustand.</p>
+    <h1>Device Connections</h1>
+    <p class="page-lead">Serial channels over TCP, including endpoint, serial parameters, and binding state.</p>
 </section>
 {% endblock %}
 
@@ -14,14 +14,13 @@
 <section class="metric-grid compact">
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Total</p><p class="metric-value">{{ summary.total }}</p></div></article>
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Enabled</p><p class="metric-value">{{ summary.enabled }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Gebunden</p><p class="metric-value">{{ summary.bound }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Bereits gesehen</p><p class="metric-value">{{ summary.recently_seen }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Bound</p><p class="metric-value">{{ summary.bound }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Recently seen</p><p class="metric-value">{{ summary.recently_seen }}</p></div></article>
 </section>
 
 <section class="card">
     <div class="card-header">
-        <h2>Port-Mapping</h2>
-        <p>Zuordnung von TCP-Endpoints, seriellen Parametern und aktuellen Device-Bindings je Verbindung.</p>
+        <h2>Port mapping</h2>
     </div>
     <div class="card-body">
         {% if connections %}
@@ -31,10 +30,10 @@
                     <tr>
                         <th>Connection</th>
                         <th>Endpoint</th>
-                        <th>Seriell</th>
+                        <th>Serial</th>
                         <th>Binding</th>
-                        <th>Letzter Kontakt</th>
-                        <th>Fehler</th>
+                        <th>Last contact</th>
+                        <th>Error</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -60,7 +59,7 @@
                             <div class="muted">{{ connection.current_binding.device.display_name }}</div>
                             <span class="badge {{ bool_badge_class(connection.current_binding.is_online) }}">{{ "online" if connection.current_binding.is_online else "offline" }}</span>
                             {% else %}
-                            <div class="muted">kein Geraet gebunden</div>
+                            <div class="muted">no device bound</div>
                             {% endif %}
                         </td>
                         <td>{{ format_datetime(connection.last_seen_at) }}</td>
@@ -68,7 +67,7 @@
                             {% if connection.last_error %}
                             <span class="error-text">{{ connection.last_error }}</span>
                             {% else %}
-                            <span class="muted">kein Fehler</span>
+                            <span class="muted">no error</span>
                             {% endif %}
                         </td>
                     </tr>
@@ -77,7 +76,7 @@
             </table>
         </div>
         {% else %}
-        <p class="empty-state">Noch keine Device-Verbindungen definiert.</p>
+        <p class="empty-state">No device connections defined.</p>
         {% endif %}
     </div>
 </section>

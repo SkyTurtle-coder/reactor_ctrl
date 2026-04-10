@@ -312,7 +312,7 @@ def software_portal() -> str:
             "title": "Reactor Control System",
             "href": url_for("web.index"),
             "eyebrow": "Process Control",
-            "description": "Steuerung, Monitoring, Recipes, Alerts und Reactor Builder fuer das Reaktorsystem.",
+            "description": "Process control, monitoring, recipes, alerts, and reactor builder.",
             "stats": [
                 {"label": "Area", "value": "Reactor"},
                 {"label": "Mode", "value": "Control"},
@@ -323,7 +323,7 @@ def software_portal() -> str:
             "title": "InfraredCamera",
             "href": url_for("web.infrared_camera_home"),
             "eyebrow": "Imaging",
-            "description": "Zugang zur Software fuer die Infrarotkamera und ihre Auswertung.",
+            "description": "Access the infrared camera software and thermal analysis.",
             "stats": [
                 {"label": "Area", "value": "Camera"},
                 {"label": "Mode", "value": "Thermal"},
@@ -347,7 +347,7 @@ def index() -> str:
             "title": "View Process",
             "endpoint": "web.process_view",
             "eyebrow": "Live",
-            "description": "Zeigt den laufenden Prozess, aktive Reaktoren, letzte Messwerte und aktuelle Ausfuehrungen.",
+            "description": "Live process view with active reactors and current measurements.",
             "stats": [
                 {"label": "Online", "value": summary["online_devices_total"]},
                 {"label": "Measurements", "value": summary["measurements_total"]},
@@ -356,8 +356,8 @@ def index() -> str:
         {
             "title": "Recipes",
             "endpoint": "web.recipes_view",
-            "eyebrow": "Steuerung",
-            "description": "Rezepte zentral verwalten, freigeben und fuer reproduzierbare Prozessablaeufe bereitstellen.",
+            "eyebrow": "Process",
+            "description": "Manage and approve recipes for reproducible process execution.",
             "stats": [
                 {"label": "Status", "value": "Library"},
                 {"label": "Scope", "value": "Batch"},
@@ -366,8 +366,8 @@ def index() -> str:
         {
             "title": "Alerts",
             "endpoint": "web.alerts_view",
-            "eyebrow": "Sicherheit",
-            "description": "Alle anliegenden Fehler, Kommunikationsprobleme und Command-Abweichungen zentral sichtbar machen.",
+            "eyebrow": "Safety",
+            "description": "Active faults, communication errors, and command failures.",
             "stats": [
                 {"label": "Open", "value": summary["alerts_total"]},
                 {"label": "Focus", "value": "Live"},
@@ -377,7 +377,7 @@ def index() -> str:
             "title": "Reactor Builder",
             "endpoint": "web.reactor_builder_view",
             "eyebrow": "Setup",
-            "description": "Reaktoren mit Aktoren, Sensoren, Ports und Kommunikationspfaden kontrolliert konfigurieren.",
+            "description": "Configure reactors with actuators, sensors, ports, and communication mappings.",
             "stats": [
                 {"label": "Reactors", "value": summary["reactors_total"]},
                 {"label": "Bindings", "value": summary["configured_bindings_total"]},
@@ -480,15 +480,15 @@ def recipes_view() -> str:
     recipe_sections = [
         {
             "title": "Recipe Library",
-            "text": "Zentrale Ablage fuer freigegebene Rezeptdefinitionen mit einheitlichen Namen, Parametern und Prozessphasen.",
+            "text": "Central storage for approved recipe definitions with consistent names, parameters, and process phases.",
         },
         {
             "title": "Versioning",
-            "text": "Freigabestaende und Aenderungen bleiben nachvollziehbar, damit jeder Lauf auf einen klaren Rezeptstand verweist.",
+            "text": "Approval status and changes are traceable so every run references a clearly defined recipe version.",
         },
         {
             "title": "Execution Profiles",
-            "text": "Batch-, Halte- und Regelphasen werden in einer gemeinsamen Struktur fuer Bedienung und Dokumentation zusammengefuehrt.",
+            "text": "Batch, hold, and control phases combined in a unified structure for operation and documentation.",
         },
     ]
     return render_template(
@@ -512,7 +512,7 @@ def alerts_view() -> str:
         ),
         fallback=[],
         log_label="Alerts command query",
-        notice="Alerts konnten nicht vollstaendig geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Live-Daten.",
+        notice="Alerts could not be fully loaded. The page is available but no live data is shown.",
     )
     if notice:
         page_notice = notice
@@ -530,7 +530,7 @@ def alerts_view() -> str:
         ),
         fallback=[],
         log_label="Alerts connection query",
-        notice="Alerts konnten nicht vollstaendig geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Live-Daten.",
+        notice="Alerts could not be fully loaded. The page is available but no live data is shown.",
     )
     if notice:
         page_notice = page_notice or notice
@@ -567,8 +567,8 @@ def reactor_builder_view() -> str:
         db.session.rollback()
         builder_storage_available = False
         builder_notice = (
-            "Gespeicherte Builds konnten nicht geladen werden. Die Library bleibt verfuegbar, "
-            "Speichern und Laden sind derzeit jedoch eingeschraenkt."
+            "Saved builds could not be loaded. The library remains available, "
+            "but saving and loading are currently restricted."
         )
         current_app.logger.exception("Reactor Builder database fallback activated: %s", exc)
 
@@ -631,7 +631,7 @@ def devices_overview() -> str:
         ),
         fallback=[],
         log_label="Devices overview query",
-        notice="Geraete konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Inventardaten.",
+        notice="Devices could not be loaded. The page is available but no inventory data is shown.",
     )
     summary = {
         "total": len(devices),
@@ -660,7 +660,7 @@ def device_servers_overview() -> str:
         ),
         fallback=[],
         log_label="Device servers overview query",
-        notice="Device-Server konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Infrastrukturdaten.",
+        notice="Device servers could not be loaded. The page is available but no infrastructure data is shown.",
     )
     summary = {
         "total": len(servers),
@@ -692,7 +692,7 @@ def device_connections_overview() -> str:
         ),
         fallback=[],
         log_label="Device connections overview query",
-        notice="Device-Verbindungen konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch keine Transportdaten.",
+        notice="Device connections could not be loaded. The page is available but no transport data is shown.",
     )
     summary = {
         "total": len(connections),
@@ -722,7 +722,7 @@ def commands_overview() -> str:
         ),
         fallback=[],
         log_label="Commands overview query",
-        notice="Steuerbefehle konnten nicht geladen werden. Die Seite bleibt erreichbar, zeigt derzeit jedoch kein Command-Log.",
+        notice="Commands could not be loaded. The page is available but no command log is shown.",
     )
     summary = {
         "total": len(commands),

@@ -1,27 +1,26 @@
 {% extends "base.html" %}
 
-{% block title %}Geraete | reactor_ctrl{% endblock %}
+{% block title %}Devices | reactor_ctrl{% endblock %}
 
 {% block page_header %}
 <section class="page-header">
-    <span class="eyebrow">Inventar</span>
-    <h1>Geraete</h1>
-    <p class="page-lead">Reaktorkomponenten mit Protokoll, Binding-Status und aktuellem Betriebszustand.</p>
+    <span class="eyebrow">Inventory</span>
+    <h1>Devices</h1>
+    <p class="page-lead">Reactor components with protocol, binding status, and operating state.</p>
 </section>
 {% endblock %}
 
 {% block content %}
 <section class="metric-grid compact">
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Total</p><p class="metric-value">{{ summary.total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Aktiv</p><p class="metric-value">{{ summary.active }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Gebunden</p><p class="metric-value">{{ summary.bound }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Active</p><p class="metric-value">{{ summary.active }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Bound</p><p class="metric-value">{{ summary.bound }}</p></div></article>
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Online</p><p class="metric-value">{{ summary.online }}</p></div></article>
 </section>
 
 <section class="card">
     <div class="card-header">
-        <h2>Geraeteliste</h2>
-        <p>Alle registrierten Geraete mit Protokoll, Binding-Status und aktuellem Betriebszustand.</p>
+        <h2>Device list</h2>
     </div>
     <div class="card-body">
         {% if devices %}
@@ -31,11 +30,11 @@
                     <tr>
                         <th>Asset</th>
                         <th>Name</th>
-                        <th>Typ</th>
-                        <th>Protokoll</th>
+                        <th>Type</th>
+                        <th>Protocol</th>
                         <th>Binding</th>
                         <th>Status</th>
-                        <th>Aktualisiert</th>
+                        <th>Updated</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -55,11 +54,11 @@
                             <strong>{{ device.current_binding.connection.device_server.server_code }}</strong>
                             <div class="muted">Port {{ device.current_binding.connection.port_number }}</div>
                             {% else %}
-                            <span class="muted">nicht gebunden</span>
+                            <span class="muted">unbound</span>
                             {% endif %}
                         </td>
                         <td>
-                            <span class="badge {{ bool_badge_class(device.is_active) }}">{{ "aktiv" if device.is_active else "inaktiv" }}</span>
+                            <span class="badge {{ bool_badge_class(device.is_active) }}">{{ "active" if device.is_active else "inactive" }}</span>
                             {% if device.current_binding %}
                             <span class="badge {{ bool_badge_class(device.current_binding.is_online) }}">{{ "online" if device.current_binding.is_online else "offline" }}</span>
                             {% endif %}
@@ -71,7 +70,7 @@
             </table>
         </div>
         {% else %}
-        <p class="empty-state">Noch keine Geraete in der Datenbank.</p>
+        <p class="empty-state">No devices in the database.</p>
         {% endif %}
     </div>
 </section>

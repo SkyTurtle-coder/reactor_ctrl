@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}reactor_ctrl{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     {% block vendor_css %}{% endblock %}
     <link rel="stylesheet" href="{{ static_asset('css/app.css') }}">
     {% block extra_head %}{% endblock %}
@@ -14,8 +17,8 @@
             <div class="container">
                 <div class="navbar">
                     <a class="brand" href="{{ url_for('web.index') }}">
-                        <span class="brand-kicker">reactor_ctrl</span>
-                        <strong>Reactor Control System</strong>
+                        <span class="brand-kicker">FHNW</span>
+                        <strong>Reactor Control</strong>
                     </a>
                     <nav class="nav">
                         <a class="nav-link" href="{{ url_for('web.software_portal') }}">Software Portal</a>
@@ -42,7 +45,12 @@
 
         <footer class="site-footer">
             <div class="container footer-bar">
-                <p>Control surface for reactor process view, recipe management, alerts and plant configuration.</p>
+                <span>FHNW &mdash; Reactor Control System</span>
+                <nav class="footer-links">
+                    <a href="#">Impressum</a>
+                    <a href="#">Datenschutz</a>
+                    <a href="#">Kontakt</a>
+                </nav>
             </div>
         </footer>
     </div>

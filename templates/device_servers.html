@@ -1,27 +1,26 @@
 {% extends "base.html" %}
 
-{% block title %}Device Server | reactor_ctrl{% endblock %}
+{% block title %}Device Servers | reactor_ctrl{% endblock %}
 
 {% block page_header %}
 <section class="page-header">
-    <span class="eyebrow">Infrastruktur</span>
-    <h1>Device Server</h1>
-    <p class="page-lead">Moxa-NPort-Knoten und kompatible Simulatoren als zentrale Ethernet-zu-RS-232-Schnittstellen.</p>
+    <span class="eyebrow">Infrastructure</span>
+    <h1>Device Servers</h1>
+    <p class="page-lead">Moxa NPort nodes and compatible simulators as Ethernet-to-RS-232 interfaces.</p>
 </section>
 {% endblock %}
 
 {% block content %}
 <section class="metric-grid compact">
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Total</p><p class="metric-value">{{ summary.total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Aktiv</p><p class="metric-value">{{ summary.active }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Ports konfiguriert</p><p class="metric-value">{{ summary.configured_ports }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Active</p><p class="metric-value">{{ summary.active }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Ports configured</p><p class="metric-value">{{ summary.configured_ports }}</p></div></article>
     <article class="card metric-card"><div class="card-body"><p class="metric-label">Connections</p><p class="metric-value">{{ summary.defined_connections }}</p></div></article>
 </section>
 
 <section class="card">
     <div class="card-header">
-        <h2>Serverliste</h2>
-        <p>Alle konfigurierten Device-Server mit Host, Modell, Portkapazitaet und aktuellem Aktivstatus.</p>
+        <h2>Server list</h2>
     </div>
     <div class="card-body">
         {% if servers %}
@@ -32,7 +31,7 @@
                         <th>Code</th>
                         <th>Name</th>
                         <th>Host</th>
-                        <th>Modell</th>
+                        <th>Model</th>
                         <th>Ports</th>
                         <th>Connections</th>
                         <th>Status</th>
@@ -50,14 +49,14 @@
                         <td>{{ server.model or "n/a" }}</td>
                         <td>{{ server.port_count }}</td>
                         <td>{{ server.connections|length }}</td>
-                        <td><span class="badge {{ bool_badge_class(server.is_active) }}">{{ "aktiv" if server.is_active else "inaktiv" }}</span></td>
+                        <td><span class="badge {{ bool_badge_class(server.is_active) }}">{{ "active" if server.is_active else "inactive" }}</span></td>
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
         {% else %}
-        <p class="empty-state">Noch keine Device Server vorhanden.</p>
+        <p class="empty-state">No device servers configured.</p>
         {% endif %}
     </div>
 </section>

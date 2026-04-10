@@ -6,7 +6,7 @@
 <section class="page-header">
     <span class="eyebrow">Setup</span>
     <h1>Reactor Builder</h1>
-    <p class="page-lead">Links die Symbolbibliothek, rechts die interaktive Fliessbildflaeche mit Build-Status, Kommunikationsmapping und abgesicherten Speicherfunktionen.</p>
+    <p class="page-lead">Symbol library on the left, interactive flowsheet canvas on the right.</p>
 </section>
 {% endblock %}
 
@@ -17,20 +17,19 @@
             <section class="builder-panel">
                 <div class="builder-panel-header">
                     <h2>Element Library</h2>
-                    <p>Elemente koennen per Drag-and-Drop platziert oder direkt in der Canvas-Mitte hinzugefuegt werden.</p>
                 </div>
                 <div class="builder-library-tools">
                     <label class="builder-field builder-library-search-field" for="builder-library-search-input">
-                        <span>Library filtern</span>
+                        <span>Filter library</span>
                         <div class="builder-library-search-row">
                             <input id="builder-library-search-input" type="search" placeholder="Reactor, pump, valve ...">
-                            <button id="builder-library-search-clear" class="btn builder-search-clear" type="button">Zuruecksetzen</button>
+                            <button id="builder-library-search-clear" class="btn builder-search-clear" type="button">Clear</button>
                         </div>
                     </label>
                     <div class="builder-hint-row">
                         <span class="badge badge-info">Drag</span>
-                        <span class="badge badge-muted">+ Hinzufuegen</span>
-                        <span class="badge badge-muted">Suche</span>
+                        <span class="badge badge-muted">+ Add</span>
+                        <span class="badge badge-muted">Search</span>
                     </div>
                 </div>
                 {% if symbol_categories %}
@@ -62,7 +61,7 @@
                                     <p>{{ symbol.port_count }} Ports</p>
                                 </div>
                                 <div class="builder-symbol-actions">
-                                    <button class="btn builder-symbol-add" type="button" data-symbol-add="{{ symbol.id }}">+ Hinzufuegen</button>
+                                    <button class="btn builder-symbol-add" type="button" data-symbol-add="{{ symbol.id }}">+ Add</button>
                                 </div>
                             </article>
                             {% endfor %}
@@ -70,9 +69,9 @@
                     </details>
                     {% endfor %}
                 </div>
-                <p id="builder-library-empty" class="empty-state is-hidden">Kein Bibliothekseintrag passt zum aktuellen Filter.</p>
+                <p id="builder-library-empty" class="empty-state is-hidden">No library entries match the current filter.</p>
                 {% else %}
-                <p class="empty-state">Noch keine Symbole in der Library registriert.</p>
+                <p class="empty-state">No symbols registered in the library.</p>
                 {% endif %}
             </section>
         </div>
@@ -92,9 +91,9 @@
                     </div>
                     <div class="builder-title-row">
                         <label class="builder-field builder-build-picker">
-                            <span>Gespeicherte Builds</span>
+                            <span>Saved Builds</span>
                             <select id="builder-build-select" {% if not builder_storage_available %}disabled{% endif %}>
-                                <option value="">Aktueller Draft</option>
+                                <option value="">Current Draft</option>
                                 {% for build in saved_builds %}
                                 <option value="{{ build.reactor_build_id }}"{% if current_build_id == build.reactor_build_id %} selected{% endif %}>
                                     {{ build.build_name }} | {{ build.build_date }} | {{ build.updated_by or build.created_by }}
@@ -102,17 +101,16 @@
                                 {% endfor %}
                             </select>
                         </label>
-                        <button id="builder-new-build-button" class="btn" type="button">Neuer Draft</button>
+                        <button id="builder-new-build-button" class="btn" type="button">New Draft</button>
                     </div>
-                    <p class="muted">Reaktoren, Pumpen, Ventile und Sensoren aufbauen, verschieben, verbinden und sicher als Build speichern.</p>
                 </div>
                 <div class="builder-board-meta">
                     <label class="builder-meta-field">
-                        <span>Datum</span>
+                        <span>Date</span>
                         <input id="builder-date-input" type="date" value="{{ builder_date }}">
                     </label>
                     <label class="builder-meta-field">
-                        <span>Bearbeiter</span>
+                        <span>Editor</span>
                         <input id="builder-user-input" type="text" value="{{ builder_user }}" maxlength="120">
                     </label>
                 </div>
@@ -121,30 +119,30 @@
             <div class="builder-summary-bar" aria-label="Build summary">
                 <div class="builder-summary-chip">
                     <span class="builder-summary-label">Build</span>
-                    <strong id="builder-current-build">Aktueller Draft</strong>
+                    <strong id="builder-current-build">Current Draft</strong>
                 </div>
                 <div class="builder-summary-chip">
-                    <span class="builder-summary-label">Elemente</span>
+                    <span class="builder-summary-label">Elements</span>
                     <strong id="builder-node-count">0</strong>
                 </div>
                 <div class="builder-summary-chip">
-                    <span class="builder-summary-label">Leitungen</span>
+                    <span class="builder-summary-label">Connections</span>
                     <strong id="builder-edge-count">0</strong>
                 </div>
                 <div class="builder-summary-chip">
-                    <span class="builder-summary-label">Speicherstatus</span>
-                    <strong id="builder-save-state" class="badge badge-muted">Gespeichert</strong>
+                    <span class="builder-summary-label">Save status</span>
+                    <strong id="builder-save-state" class="badge badge-muted">Saved</strong>
                 </div>
             </div>
 
             <div class="builder-toolbar">
                 <div class="builder-toolbar-actions" role="toolbar" aria-label="Builder actions">
-                    <button id="builder-select-tool" class="btn btn-primary" type="button">Auswaehlen</button>
-                    <button id="builder-anchor-tool" class="btn" type="button">Anker</button>
-                    <button id="builder-connect-tool" class="btn" type="button">Leitungen</button>
-                    <button id="builder-save-button" class="btn btn-primary" type="button">Speichern</button>
-                    <button id="builder-save-as-button" class="btn" type="button">Speichern als neu</button>
-                    <button id="builder-delete-node-button" class="btn" type="button">Auswahl loeschen</button>
+                    <button id="builder-select-tool" class="btn btn-primary" type="button">Select</button>
+                    <button id="builder-anchor-tool" class="btn" type="button">Anchor</button>
+                    <button id="builder-connect-tool" class="btn" type="button">Connect</button>
+                    <button id="builder-save-button" class="btn btn-primary" type="button">Save</button>
+                    <button id="builder-save-as-button" class="btn" type="button">Save as new</button>
+                    <button id="builder-delete-node-button" class="btn" type="button">Delete selection</button>
                 </div>
                 <div class="builder-toolbar-meta">
                     <p class="builder-toolbar-shortcuts">
@@ -155,30 +153,29 @@
                     </p>
                     <p id="builder-status" class="builder-status muted" aria-live="polite">
                         {% if current_build_id %}
-                        Build #{{ current_build_id }} geladen.
+                        Build #{{ current_build_id }} loaded.
                         {% else %}
-                        Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.
+                        New build. Drag elements from the library onto the canvas.
                         {% endif %}
                     </p>
                 </div>
             </div>
 
             <div class="builder-view-tabs">
-                <button id="builder-layout-view-tab" class="btn btn-primary" type="button">Fliessbild</button>
-                <button id="builder-communication-view-tab" class="btn" type="button">Kommunikation</button>
-                <button id="builder-control-view-tab" class="btn" type="button">Aktorik</button>
+                <button id="builder-layout-view-tab" class="btn btn-primary" type="button">Flowsheet</button>
+                <button id="builder-communication-view-tab" class="btn" type="button">Communication</button>
+                <button id="builder-control-view-tab" class="btn" type="button">Actuators</button>
             </div>
 
             <section class="builder-view" id="builder-layout-view">
                 <div class="builder-canvas" id="builder-canvas">
                     <div class="builder-canvas-empty" id="builder-canvas-empty">
                         <span class="section-label">Canvas</span>
-                        <h3>Fliessbild-Arbeitsflaeche</h3>
-                        <p>Ziehe links ein Element in diese Flaeche oder nutze + Hinzufuegen. Danach wird sofort eine eindeutige Element-ID abgefragt.</p>
+                        <h3>Flowsheet Canvas</h3>
                         <div class="builder-empty-hints">
-                            <span class="badge badge-info">1. Platzieren</span>
-                            <span class="badge badge-muted">2. Anchors setzen</span>
-                            <span class="badge badge-muted">3. Leitungen ziehen</span>
+                            <span class="badge badge-info">1. Place</span>
+                            <span class="badge badge-muted">2. Set anchors</span>
+                            <span class="badge badge-muted">3. Connect</span>
                         </div>
                     </div>
                     <svg class="builder-edge-layer" id="builder-edge-layer" aria-hidden="true"></svg>
@@ -190,7 +187,6 @@
                 <div class="card-body builder-communication-panel">
                     <div class="builder-panel-header">
                         <h2>Communication Mapping</h2>
-                        <p>Jedes Element verwendet seine eindeutige Element-ID als Grundlage fuer Moxa-, Port- und Protokollzuordnung.</p>
                     </div>
                     <div class="table-responsive">
                         <table class="table builder-communication-table">
@@ -206,7 +202,7 @@
                             </thead>
                             <tbody id="builder-communication-body">
                                 <tr>
-                                    <td colspan="6" class="muted">Noch keine Elemente im aktuellen Build.</td>
+                                    <td colspan="6" class="muted">No elements in the current build.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -217,11 +213,10 @@
             <section class="builder-view is-hidden" id="builder-control-view">
                 <div class="card-body builder-control-panel">
                     <div class="builder-panel-header">
-                        <h2>Aktor-Einstellungen</h2>
-                        <p>Aktoren erhalten profilabhaengige Sollwerte und Betriebsparameter passend zum jeweiligen Symbol.</p>
+                        <h2>Actuator Settings</h2>
                     </div>
                     <div id="builder-control-body" class="builder-control-body">
-                        <p class="empty-state">Noch keine Aktoren im aktuellen Build.</p>
+                        <p class="empty-state">No actuators in the current build.</p>
                     </div>
                 </div>
             </section>
@@ -239,17 +234,17 @@
 >
     <div class="builder-modal-dialog">
         <div class="builder-panel-header">
-            <h2 id="builder-instance-modal-title">Element ID vergeben</h2>
-            <p id="builder-instance-modal-copy">Vergib eine eindeutige ID fuer das neue Element.</p>
+            <h2 id="builder-instance-modal-title">Assign Element ID</h2>
+            <p id="builder-instance-modal-copy">Assign a unique ID to the new element.</p>
         </div>
         <label class="builder-field">
             <span>Element ID</span>
-            <input id="builder-instance-id-input" type="text" maxlength="80" placeholder="z. B. P-101">
+            <input id="builder-instance-id-input" type="text" maxlength="80" placeholder="e.g. P-101">
         </label>
-        <p class="muted">Erlaubt sind Buchstaben, Zahlen, Punkt, Unterstrich und Bindestrich. Diese ID wird im Fliessbild angezeigt und fuer Kommunikationszuordnung, Ports und Protokolle verwendet.</p>
+        <p class="muted">Letters, numbers, periods, underscores, and hyphens allowed. This ID is shown in the flowsheet and used for communication mapping.</p>
         <div class="builder-modal-actions">
-            <button id="builder-instance-cancel-button" class="btn" type="button">Abbrechen</button>
-            <button id="builder-instance-confirm-button" class="btn btn-primary" type="button">Element anlegen</button>
+            <button id="builder-instance-cancel-button" class="btn" type="button">Cancel</button>
+            <button id="builder-instance-confirm-button" class="btn btn-primary" type="button">Create element</button>
         </div>
     </div>
 </div>
