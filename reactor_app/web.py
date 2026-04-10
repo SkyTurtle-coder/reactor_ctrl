@@ -123,6 +123,33 @@ def _normalized_lookup_value(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _fallback_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list[dict[str, Any]]:
+    normalized_symbol_id = _normalized_lookup_value(symbol_id)
+    normalized_protocol = _normalized_lookup_value(protocol)
+    if normalized_symbol_id == "motor" and normalized_protocol == "ika_eurostar_60":
+        return [
+            {
+                "channel_id": None,
+                "channel_code": "ika_actual_rpm",
+                "display_name": "Actual RPM",
+                "unit": "rpm",
+                "value_type": "float",
+                "data_source": "runtime_fallback",
+                "runtime_metric": "actualRpm",
+            },
+            {
+                "channel_id": None,
+                "channel_code": "ika_torque_ncm",
+                "display_name": "Torque",
+                "unit": "Ncm",
+                "value_type": "float",
+                "data_source": "runtime_fallback",
+                "runtime_metric": "torqueNcm",
+            },
+        ]
+    return []
+
+
 def _resolve_process_device_targets(
     item: ReactorBuild | None,
     *,
@@ -262,6 +289,28 @@ def _resolve_process_device_targets(
                 str(channel.channel_code or "").strip().lower(),
             ),
         )
+        resolved_protocol = device.protocol
+        resolved_symbol_id = str(node.get("symbol_id") or "").strip()
+        channel_payload = [
+            {
+                "channel_id": channel.channel_id,
+                "channel_code": channel.channel_code,
+                "display_name": channel.display_name,
+                "unit": channel.unit,
+                "value_type": channel.value_type,
+                "data_source": "measurement",
+            }
+            for channel in channels
+        ]
+        known_channel_codes = {str(item.get("channel_code") or "").strip().lower() for item in channel_payload}
+        for fallback_channel in _fallback_plot_channels_for_target(
+            symbol_id=resolved_symbol_id,
+            protocol=resolved_protocol,
+        ):
+            fallback_code = str(fallback_channel.get("channel_code") or "").strip().lower()
+            if fallback_code and fallback_code not in known_channel_codes:
+                channel_payload.append(fallback_channel)
+                known_channel_codes.add(fallback_code)
         target.update(
             {
                 "server_code": server.server_code if server is not None else server_code,
@@ -270,7 +319,7 @@ def _resolve_process_device_targets(
                     if connection is not None
                     else connection_label
                 ),
-                "protocol": device.protocol,
+                "protocol": resolved_protocol,
                 "is_resolved": True,
                 "device_id": device.device_id,
                 "device_display_name": device.display_name,
@@ -279,16 +328,7 @@ def _resolve_process_device_targets(
                 "is_online": bool(binding.is_online) if binding is not None else False,
                 "quality_state": binding.quality_state if binding is not None and binding.quality_state else "",
                 "last_seen_at": _dt(binding.last_seen_at if binding is not None else None),
-                "channels": [
-                    {
-                        "channel_id": channel.channel_id,
-                        "channel_code": channel.channel_code,
-                        "display_name": channel.display_name,
-                        "unit": channel.unit,
-                        "value_type": channel.value_type,
-                    }
-                    for channel in channels
-                ],
+                "channels": channel_payload,
             }
         )
         targets[node_id] = target

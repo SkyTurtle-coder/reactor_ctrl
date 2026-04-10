@@ -138,6 +138,24 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("fragment.appendChild(renderPlotChartCard(unitKey, group));", source)
         self.assertIn("Selected series with the same unit are rendered together.", source)
 
+    def test_process_view_script_uses_runtime_plot_fallback_for_ika_motor(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('option.dataSource === "runtime_fallback"', source)
+        self.assertIn("function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs)", source)
+        self.assertIn("await ensureRuntimePlotSamples(runtimeOptions);", source)
+        self.assertIn("syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());", source)
+        self.assertIn("syncRuntimePlotTelemetry(node.id, telemetry, Date.now());", source)
+
+    def test_process_view_server_adds_ika_plot_fallback_channels(self):
+        source = (Path(__file__).resolve().parents[1] / "reactor_app" / "web.py").read_text(encoding="utf-8")
+
+        self.assertIn("def _fallback_plot_channels_for_target", source)
+        self.assertIn('"channel_code": "ika_actual_rpm"', source)
+        self.assertIn('"channel_code": "ika_torque_ncm"', source)
+        self.assertIn('"data_source": "runtime_fallback"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
