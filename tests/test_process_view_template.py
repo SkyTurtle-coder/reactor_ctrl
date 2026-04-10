@@ -41,6 +41,10 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-manual-submit-button", html)
         self.assertIn("process-manual-actual-rpm", html)
         self.assertIn("process-manual-torque-ncm", html)
+        self.assertIn("process-plot-panel", html)
+        self.assertIn("process-plot-selection", html)
+        self.assertIn("process-plot-chart-stack", html)
+        self.assertIn("process-plot-targets", html)
 
         forbidden_strings = (
             "Status lesen",
@@ -114,6 +118,25 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function setManualStatusFromTelemetry(telemetry, options)", source)
         self.assertIn("updateManualDeviceStatus(target, telemetry);", source)
         self.assertIn("setManualStatusFromTelemetry(telemetry, {", source)
+
+    def test_process_view_script_supports_dynamic_plot_series(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('const plotTargetData = parseJsonScript("process-plot-targets", {});', source)
+        self.assertIn("function buildPlotSeriesOptions(targets)", source)
+        self.assertIn("function renderPlotSelection()", source)
+        self.assertIn("function loadPlotMeasurements(options)", source)
+        self.assertIn("renderPlotSelection();", source)
+        self.assertIn("void loadPlotMeasurements({ quiet: true });", source)
+
+    def test_process_view_script_groups_plot_series_by_unit(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('const unitKey = asString(series.unit, "");', source)
+        self.assertIn("fragment.appendChild(renderPlotChartCard(unitKey, group));", source)
+        self.assertIn("Selected series with the same unit are rendered together.", source)
 
 
 if __name__ == "__main__":

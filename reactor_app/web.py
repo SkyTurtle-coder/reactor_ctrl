@@ -123,25 +123,35 @@ def _normalized_lookup_value(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
-def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict[str, Any]]:
+def _resolve_process_device_targets(
+    item: ReactorBuild | None,
+    *,
+    categories: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     definition = item.definition_json if item is not None and isinstance(item.definition_json, dict) else {}
     raw_nodes = definition.get("nodes", []) if isinstance(definition, dict) else []
     if not isinstance(raw_nodes, list):
         return {}
 
-    actuator_nodes = [
+    allowed_categories = {str(value).strip().lower() for value in (categories or set()) if str(value).strip()}
+    matching_nodes = [
         node
         for node in raw_nodes
-        if isinstance(node, dict) and _normalized_lookup_value(node.get("category")) == "actuators"
+        if isinstance(node, dict)
+        and (
+            not allowed_categories
+            or _normalized_lookup_value(node.get("category")) in allowed_categories
+        )
     ]
-    if not actuator_nodes:
+    if not matching_nodes:
         return {}
 
     devices = (
         Device.query.options(
             joinedload(Device.current_binding)
             .joinedload(DeviceBindingCurrent.connection)
-            .joinedload(DeviceConnection.device_server)
+            .joinedload(DeviceConnection.device_server),
+            selectinload(Device.channels),
         )
         .order_by(Device.display_name.asc(), Device.device_id.asc())
         .all()
@@ -184,7 +194,7 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
                 ambiguous_connection_keys.add(connection_key)
 
     targets: dict[str, dict[str, Any]] = {}
-    for node in actuator_nodes:
+    for node in matching_nodes:
         node_id = str(node.get("id") or "").strip()
         if not node_id:
             continue
@@ -198,7 +208,9 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
         target = {
             "node_id": node_id,
             "instance_id": str(node.get("instance_id") or "").strip(),
+            "label": str(node.get("label") or node.get("symbol_id") or "Element").strip(),
             "symbol_id": str(node.get("symbol_id") or "").strip(),
+            "category": str(node.get("category") or "").strip(),
             "server_code": server_code,
             "connection_label": connection_label,
             "protocol": protocol,
@@ -212,6 +224,7 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
             "is_online": False,
             "quality_state": "",
             "last_seen_at": None,
+            "channels": [],
         }
 
         normalized_server = _normalized_lookup_value(server_code)
@@ -229,7 +242,7 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
 
         if device is None:
             if not normalized_server or not normalized_connection:
-                target["resolution_note"] = "The communication mapping for this actuator is still incomplete."
+                target["resolution_note"] = "The communication mapping for this flowsheet element is still incomplete."
             else:
                 target["resolution_note"] = "No bound device was found for this mapping."
             targets[node_id] = target
@@ -238,6 +251,17 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
         binding = device.current_binding
         connection = binding.connection if binding is not None else None
         server = connection.device_server if connection is not None else None
+        channels = sorted(
+            (
+                channel
+                for channel in device.channels
+                if bool(channel.is_active) and str(channel.value_type or "").strip().lower() != "text"
+            ),
+            key=lambda channel: (
+                str(channel.display_name or channel.channel_code or "").strip().lower(),
+                str(channel.channel_code or "").strip().lower(),
+            ),
+        )
         target.update(
             {
                 "server_code": server.server_code if server is not None else server_code,
@@ -255,11 +279,25 @@ def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict
                 "is_online": bool(binding.is_online) if binding is not None else False,
                 "quality_state": binding.quality_state if binding is not None and binding.quality_state else "",
                 "last_seen_at": _dt(binding.last_seen_at if binding is not None else None),
+                "channels": [
+                    {
+                        "channel_id": channel.channel_id,
+                        "channel_code": channel.channel_code,
+                        "display_name": channel.display_name,
+                        "unit": channel.unit,
+                        "value_type": channel.value_type,
+                    }
+                    for channel in channels
+                ],
             }
         )
         targets[node_id] = target
 
     return targets
+
+
+def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict[str, Any]]:
+    return _resolve_process_device_targets(item, categories={"actuators"})
 
 
 def _control_summary() -> dict[str, int]:
@@ -425,19 +463,25 @@ def process_view():
         current_app.logger.exception("Process view database fallback activated: %s", exc)
 
     manual_targets: dict[str, dict[str, Any]] = {}
+    plot_targets: dict[str, dict[str, Any]] = {}
     if current_build is not None:
         try:
-            manual_targets = _resolve_process_manual_targets(current_build)
+            plot_targets = _resolve_process_device_targets(current_build, categories={"actuators", "sensors"})
+            manual_targets = {
+                node_id: target
+                for node_id, target in plot_targets.items()
+                if _normalized_lookup_value(target.get("category")) == "actuators"
+            }
         except Exception as exc:
             db.session.rollback()
             if process_notice:
                 process_notice = (
-                    f"{process_notice} The device mapping for manual control "
+                    f"{process_notice} The device mapping for manual control and plotting "
                     "could also not be loaded completely."
                 )
             else:
                 process_notice = (
-                    "The device mapping for manual control could not be loaded. "
+                    "The device mapping for manual control and plotting could not be loaded. "
                     "The flowsheet remains visible."
                 )
             current_app.logger.exception("Process view manual target fallback activated: %s", exc)
@@ -464,6 +508,7 @@ def process_view():
             process_notice=process_notice,
             process_storage_available=process_storage_available,
             manual_targets=manual_targets,
+            plot_targets=plot_targets,
             manual_write_token=manual_write_token,
             actuator_profiles=list_actuator_profiles(),
             **_base_context(),

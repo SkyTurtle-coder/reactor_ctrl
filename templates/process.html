@@ -46,6 +46,37 @@
 <p class="process-selection-notice error-text">The requested flowsheet could not be found.</p>
 {% endif %}
 
+<details class="card process-plot-panel" id="process-plot-panel" {% if selected_build %}open{% endif %}>
+    <summary class="process-plot-summary">
+        <div class="process-plot-summary-copy">
+            <span class="section-label">Process Trends</span>
+            <h2>Actual Value Plot</h2>
+            <p class="muted" id="process-plot-summary-text">
+                Select sensor and actuator values from the loaded flowsheet to plot their recent measurements.
+            </p>
+        </div>
+        <span class="process-plot-summary-meta" id="process-plot-selection-count">0 selected</span>
+    </summary>
+
+    <div class="process-plot-body">
+        <section class="process-plot-selector-card">
+            <div class="process-plot-selector-header">
+                <span class="section-label">Available Values</span>
+                <p class="muted">Checkboxes are derived from the mapped sensors and actuators on this flowsheet.</p>
+            </div>
+            <div class="process-plot-selection" id="process-plot-selection"></div>
+            <p class="muted process-plot-selection-empty" id="process-plot-selection-empty">No plottable measurement channels are available for this flowsheet yet.</p>
+        </section>
+
+        <section class="process-plot-chart-region">
+            <div class="process-plot-chart-stack" id="process-plot-chart-stack"></div>
+            <p class="process-manual-status muted process-plot-status" id="process-plot-status">
+                Select one or more values to display a live trend plot.
+            </p>
+        </section>
+    </div>
+</details>
+
 <section class="process-display-grid">
     <article class="card process-viewer-card">
         <div class="process-viewer-bar">
@@ -150,6 +181,7 @@
 {% block scripts %}
 <script id="process-build-data" type="application/json">{{ selected_build | tojson }}</script>
 <script id="process-manual-targets" type="application/json">{{ manual_targets | tojson }}</script>
+<script id="process-plot-targets" type="application/json">{{ plot_targets | tojson }}</script>
 <script id="process-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>
 <script id="process-supported-protocols" type="application/json">{{ supported_protocol_options | tojson }}</script>
 <script id="process-meta-data" type="application/json">{{ {"apiAuthRequired": api_auth_required, "manualWriteToken": manual_write_token} | tojson }}</script>

@@ -27,9 +27,27 @@
     const manualProtocol = document.getElementById("process-manual-protocol");
     const manualDeviceStatus = document.getElementById("process-manual-device-status");
     const manualStatus = document.getElementById("process-manual-status");
+    const plotPanel = document.getElementById("process-plot-panel");
+    const plotSelection = document.getElementById("process-plot-selection");
+    const plotSelectionCount = document.getElementById("process-plot-selection-count");
+    const plotSelectionEmpty = document.getElementById("process-plot-selection-empty");
+    const plotChartStack = document.getElementById("process-plot-chart-stack");
+    const plotStatus = document.getElementById("process-plot-status");
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 3000;
+    const PROCESS_PLOT_REFRESH_MS = 5000;
+    const PROCESS_PLOT_SERIES_LIMIT = 120;
+    const PROCESS_PLOT_COLORS = [
+        "#0f766e",
+        "#dc2626",
+        "#2563eb",
+        "#ca8a04",
+        "#7c3aed",
+        "#0891b2",
+        "#be123c",
+        "#4d7c0f",
+    ];
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -91,6 +109,35 @@
         }
         const precision = Number.isInteger(digits) ? digits : 0;
         return `${value.toFixed(precision)} ${unit}`;
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? "")
+            .replaceAll("&", "&amp;")
+            .replaceAll("<", "&lt;")
+            .replaceAll(">", "&gt;")
+            .replaceAll('"', "&quot;")
+            .replaceAll("'", "&#39;");
+    }
+
+    function formatPlotTimestamp(timestampMs) {
+        if (!Number.isFinite(timestampMs)) {
+            return "";
+        }
+        return new Date(timestampMs).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+        });
+    }
+
+    function formatPlotValue(value, unit) {
+        if (!Number.isFinite(value)) {
+            return "-";
+        }
+        const abs = Math.abs(value);
+        const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
+        return unit ? `${value.toFixed(digits)} ${unit}` : `${value.toFixed(digits)}`;
     }
 
     function directionToSide(direction, xRatio, yRatio) {
@@ -748,6 +795,470 @@
         throw new Error(lastError?.message || "Command could not be sent.");
     }
 
+    function setPlotStatus(message, tone) {
+        if (!plotStatus) {
+            return;
+        }
+        plotStatus.textContent = message;
+        plotStatus.classList.remove("muted", "error-text", "builder-status-success");
+        if (tone === "error") {
+            plotStatus.classList.add("error-text");
+            return;
+        }
+        if (tone === "success") {
+            plotStatus.classList.add("builder-status-success");
+            return;
+        }
+        plotStatus.classList.add("muted");
+    }
+
+    function buildPlotSeriesOptions(targets) {
+        const options = [];
+        for (const [nodeId, rawTarget] of Object.entries(targets || {})) {
+            const target = rawTarget && typeof rawTarget === "object" ? rawTarget : {};
+            const channels = Array.isArray(target.channels) ? target.channels : [];
+            for (const channel of channels) {
+                const valueType = asString(channel?.value_type, "float").toLowerCase();
+                if (valueType === "text") {
+                    continue;
+                }
+                const channelCode = asString(channel?.channel_code, "");
+                const deviceId = Number(target?.device_id);
+                if (!channelCode || !Number.isInteger(deviceId) || deviceId <= 0) {
+                    continue;
+                }
+                options.push({
+                    id: `${nodeId}::${channelCode}`,
+                    nodeId,
+                    nodeLabel: asString(target?.instance_id, asString(target?.label, nodeId)),
+                    nodeSubtitle: asString(target?.label, asString(target?.symbol_id, "Element")),
+                    category: asString(target?.category, ""),
+                    deviceId,
+                    deviceDisplayName: asString(target?.device_display_name, `Device ${deviceId}`),
+                    channelCode,
+                    channelLabel: asString(channel?.display_name, channelCode),
+                    unit: asString(channel?.unit, ""),
+                    valueType,
+                    symbolId: asString(target?.symbol_id, ""),
+                });
+            }
+        }
+
+        return options.sort((left, right) => {
+            const byCategory = left.category.localeCompare(right.category);
+            if (byCategory !== 0) {
+                return byCategory;
+            }
+            const byNode = left.nodeLabel.localeCompare(right.nodeLabel);
+            if (byNode !== 0) {
+                return byNode;
+            }
+            return left.channelLabel.localeCompare(right.channelLabel);
+        });
+    }
+
+    function buildPlotNodeGroups(targets, options) {
+        const optionLookup = new Map();
+        for (const option of options) {
+            const bucket = optionLookup.get(option.nodeId) || [];
+            bucket.push(option);
+            optionLookup.set(option.nodeId, bucket);
+        }
+
+        return Object.entries(targets || {})
+            .map(([nodeId, rawTarget]) => {
+                const target = rawTarget && typeof rawTarget === "object" ? rawTarget : {};
+                const nodeOptions = optionLookup.get(nodeId) || [];
+                return {
+                    nodeId,
+                    title: asString(target?.instance_id, asString(target?.label, nodeId)),
+                    subtitle: asString(target?.label, asString(target?.symbol_id, "Element")),
+                    category: asString(target?.category, ""),
+                    isResolved: Boolean(target?.is_resolved),
+                    resolutionNote: asString(target?.resolution_note, ""),
+                    deviceDisplayName: asString(target?.device_display_name, ""),
+                    options: nodeOptions,
+                };
+            })
+            .sort((left, right) => {
+                const byCategory = left.category.localeCompare(right.category);
+                if (byCategory !== 0) {
+                    return byCategory;
+                }
+                return left.title.localeCompare(right.title);
+            });
+    }
+
+    function syncSelectedPlotSeriesIds() {
+        const unique = Array.from(new Set(Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : []));
+        state.selectedPlotSeriesIds = unique.filter((item) => plotSeriesOptionMap.has(item));
+    }
+
+    function selectedPlotSeriesOptions() {
+        syncSelectedPlotSeriesIds();
+        return state.selectedPlotSeriesIds.map((item) => plotSeriesOptionMap.get(item)).filter(Boolean);
+    }
+
+    function updatePlotSelectionSummary() {
+        if (plotSelectionCount) {
+            const count = state.selectedPlotSeriesIds.length;
+            plotSelectionCount.textContent = `${count} selected`;
+        }
+    }
+
+    function renderPlotSelection() {
+        if (!plotSelection) {
+            return;
+        }
+
+        plotSelection.innerHTML = "";
+        updatePlotSelectionSummary();
+
+        if (!plotNodeGroups.length) {
+            if (plotSelectionEmpty) {
+                plotSelectionEmpty.hidden = false;
+                plotSelectionEmpty.textContent = activeBuildId
+                    ? "No plottable measurement channels are available for this flowsheet yet."
+                    : "Select a flowsheet to list plottable actuator and sensor values.";
+            }
+            return;
+        }
+
+        if (plotSelectionEmpty) {
+            plotSelectionEmpty.hidden = true;
+        }
+
+        const fragment = document.createDocumentFragment();
+        for (const group of plotNodeGroups) {
+            const section = document.createElement("section");
+            section.className = "process-plot-group";
+
+            const header = document.createElement("div");
+            header.className = "process-plot-group-header";
+            header.innerHTML = `
+                <strong>${escapeHtml(group.title)}</strong>
+                <p>${escapeHtml(group.subtitle)}${group.deviceDisplayName ? ` | ${escapeHtml(group.deviceDisplayName)}` : ""}</p>
+            `;
+            section.appendChild(header);
+
+            if (!group.isResolved) {
+                const note = document.createElement("p");
+                note.className = "process-plot-group-note";
+                note.textContent = group.resolutionNote || "This flowsheet element is not mapped to a live device.";
+                section.appendChild(note);
+                fragment.appendChild(section);
+                continue;
+            }
+
+            if (!group.options.length) {
+                const note = document.createElement("p");
+                note.className = "process-plot-group-note";
+                note.textContent = "No numeric measurement channels are available for this mapped device yet.";
+                section.appendChild(note);
+                fragment.appendChild(section);
+                continue;
+            }
+
+            const optionsWrap = document.createElement("div");
+            optionsWrap.className = "process-plot-group-options";
+            for (const option of group.options) {
+                const label = document.createElement("label");
+                label.className = "process-plot-checkbox";
+                label.innerHTML = `
+                    <input type="checkbox" value="${escapeHtml(option.id)}" ${state.selectedPlotSeriesIds.includes(option.id) ? "checked" : ""}>
+                    <span class="process-plot-checkbox-copy">
+                        <strong>${escapeHtml(option.channelLabel)}</strong>
+                        <span>${escapeHtml(option.channelCode)}${option.unit ? ` | ${escapeHtml(option.unit)}` : ""}</span>
+                    </span>
+                `;
+                const input = label.querySelector("input");
+                input?.addEventListener("change", () => {
+                    if (input.checked) {
+                        state.selectedPlotSeriesIds = [...state.selectedPlotSeriesIds, option.id];
+                    } else {
+                        state.selectedPlotSeriesIds = state.selectedPlotSeriesIds.filter((item) => item !== option.id);
+                    }
+                    syncSelectedPlotSeriesIds();
+                    persistViewState();
+                    updatePlotSelectionSummary();
+                    void loadPlotMeasurements();
+                });
+                optionsWrap.appendChild(label);
+            }
+
+            section.appendChild(optionsWrap);
+            fragment.appendChild(section);
+        }
+
+        plotSelection.appendChild(fragment);
+    }
+
+    function normalizePlotMeasurements(option, items) {
+        const points = (Array.isArray(items) ? items : [])
+            .map((item) => {
+                const timestamp = Date.parse(asString(item?.measured_at, ""));
+                const numericValue = asNumber(item?.numeric_value, null);
+                if (!Number.isFinite(timestamp) || !Number.isFinite(numericValue)) {
+                    return null;
+                }
+                return {
+                    x: timestamp,
+                    y: numericValue,
+                };
+            })
+            .filter(Boolean)
+            .sort((left, right) => left.x - right.x);
+
+        return {
+            ...option,
+            unit: asString((Array.isArray(items) && items[0]?.unit) || option.unit, option.unit),
+            points,
+        };
+    }
+
+    function plotColor(index) {
+        return PROCESS_PLOT_COLORS[index % PROCESS_PLOT_COLORS.length];
+    }
+
+    function buildPlotPath(series, bounds) {
+        return series.points
+            .map((point, index) => {
+                const x = bounds.left + ((point.x - bounds.minX) / (bounds.maxX - bounds.minX)) * bounds.width;
+                const y = bounds.top + (1 - (point.y - bounds.minY) / (bounds.maxY - bounds.minY)) * bounds.height;
+                return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+            })
+            .join(" ");
+    }
+
+    function renderPlotChartCard(unitKey, seriesItems) {
+        const card = document.createElement("article");
+        card.className = "process-plot-chart-card";
+        const unitLabel = unitKey || "unitless";
+        const points = seriesItems.flatMap((series) => series.points);
+
+        const header = document.createElement("div");
+        header.className = "process-plot-chart-head";
+        header.innerHTML = `
+            <div>
+                <span class="section-label">Unit</span>
+                <h3>${escapeHtml(unitLabel)}</h3>
+                <p>Selected series with the same unit are rendered together.</p>
+            </div>
+        `;
+        card.appendChild(header);
+
+        const legend = document.createElement("ul");
+        legend.className = "process-plot-legend";
+        seriesItems.forEach((series, index) => {
+            const latestPoint = series.points[series.points.length - 1] || null;
+            const item = document.createElement("li");
+            item.innerHTML = `
+                <span class="process-plot-legend-swatch" style="background:${plotColor(index)}"></span>
+                <span>${escapeHtml(series.nodeLabel)} | ${escapeHtml(series.channelLabel)}${latestPoint ? ` (${escapeHtml(formatPlotValue(latestPoint.y, series.unit))})` : " (no data)"}</span>
+            `;
+            legend.appendChild(item);
+        });
+        card.appendChild(legend);
+
+        if (!points.length) {
+            const empty = document.createElement("p");
+            empty.className = "process-plot-chart-empty";
+            empty.textContent = "No stored measurements are available for the selected series in this unit group yet.";
+            card.appendChild(empty);
+            return card;
+        }
+
+        let minX = Math.min(...points.map((point) => point.x));
+        let maxX = Math.max(...points.map((point) => point.x));
+        let minY = Math.min(...points.map((point) => point.y));
+        let maxY = Math.max(...points.map((point) => point.y));
+        if (minX === maxX) {
+            minX -= 60000;
+            maxX += 60000;
+        }
+        if (minY === maxY) {
+            const padding = Math.max(Math.abs(minY) * 0.1, 1);
+            minY -= padding;
+            maxY += padding;
+        } else {
+            const padding = (maxY - minY) * 0.08;
+            minY -= padding;
+            maxY += padding;
+        }
+
+        const viewBoxWidth = 860;
+        const viewBoxHeight = 280;
+        const bounds = {
+            left: 66,
+            top: 18,
+            width: 770,
+            height: 212,
+            minX,
+            maxX,
+            minY,
+            maxY,
+        };
+
+        const yTicks = Array.from({ length: 5 }, (_item, index) => {
+            const ratio = index / 4;
+            const value = maxY - (maxY - minY) * ratio;
+            const y = bounds.top + bounds.height * ratio;
+            return { value, y };
+        });
+        const xTicks = Array.from({ length: 5 }, (_item, index) => {
+            const ratio = index / 4;
+            const value = minX + (maxX - minX) * ratio;
+            const x = bounds.left + bounds.width * ratio;
+            return { value, x };
+        });
+
+        const gridLines = yTicks
+            .map((tick) => `<line x1="${bounds.left}" y1="${tick.y.toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="rgba(0,0,0,0.10)" stroke-width="1"/>`)
+            .join("");
+        const xLines = xTicks
+            .map((tick) => `<line x1="${tick.x.toFixed(2)}" y1="${bounds.top}" x2="${tick.x.toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="rgba(0,0,0,0.06)" stroke-width="1"/>`)
+            .join("");
+        const paths = seriesItems
+            .map((series, index) => {
+                if (!series.points.length) {
+                    return "";
+                }
+                const latestPoint = series.points[series.points.length - 1];
+                const lastX = bounds.left + ((latestPoint.x - bounds.minX) / (bounds.maxX - bounds.minX)) * bounds.width;
+                const lastY = bounds.top + (1 - (latestPoint.y - bounds.minY) / (bounds.maxY - bounds.minY)) * bounds.height;
+                const pointPath = buildPlotPath(series, bounds);
+                return `
+                    <path d="${pointPath}" fill="none" stroke="${plotColor(index)}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="4.5" fill="${plotColor(index)}" stroke="#ffffff" stroke-width="2"/>
+                `;
+            })
+            .join("");
+        const yLabels = yTicks
+            .map((tick) => `<text x="${bounds.left - 10}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" fill="rgba(0,0,0,0.66)" font-size="11">${escapeHtml(formatPlotValue(tick.value, unitKey))}</text>`)
+            .join("");
+        const xLabels = xTicks
+            .map((tick) => `<text x="${tick.x.toFixed(2)}" y="${viewBoxHeight - 12}" text-anchor="middle" fill="rgba(0,0,0,0.66)" font-size="11">${escapeHtml(formatPlotTimestamp(tick.value))}</text>`)
+            .join("");
+
+        const frame = document.createElement("div");
+        frame.className = "process-plot-chart-frame";
+        frame.innerHTML = `
+            <svg class="process-plot-chart-svg" viewBox="0 0 ${viewBoxWidth} ${viewBoxHeight}" role="img" aria-label="Trend plot for ${escapeHtml(unitLabel)} values">
+                <rect x="${bounds.left}" y="${bounds.top}" width="${bounds.width}" height="${bounds.height}" rx="12" fill="rgba(255,255,255,0.82)" stroke="rgba(0,0,0,0.08)"/>
+                ${gridLines}
+                ${xLines}
+                <line x1="${bounds.left}" y1="${(bounds.top + bounds.height).toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="rgba(0,0,0,0.2)" stroke-width="1.2"/>
+                ${paths}
+                ${yLabels}
+                ${xLabels}
+            </svg>
+        `;
+        card.appendChild(frame);
+        return card;
+    }
+
+    function renderPlotCharts(seriesItems) {
+        if (!plotChartStack) {
+            return;
+        }
+        plotChartStack.innerHTML = "";
+
+        if (!seriesItems.length) {
+            const empty = document.createElement("p");
+            empty.className = "process-plot-chart-empty";
+            empty.textContent = activeBuildId
+                ? (plotSeriesOptions.length
+                    ? "Select one or more values from the list to render a plot."
+                    : "No plottable measurement channels are available for this flowsheet yet.")
+                : "Load a flowsheet first to unlock measurement plots.";
+            plotChartStack.appendChild(empty);
+            return;
+        }
+
+        const seriesGroups = new Map();
+        for (const series of seriesItems) {
+            const unitKey = asString(series.unit, "");
+            const bucket = seriesGroups.get(unitKey) || [];
+            bucket.push(series);
+            seriesGroups.set(unitKey, bucket);
+        }
+
+        const fragment = document.createDocumentFragment();
+        for (const [unitKey, group] of seriesGroups.entries()) {
+            fragment.appendChild(renderPlotChartCard(unitKey, group));
+        }
+        plotChartStack.appendChild(fragment);
+    }
+
+    async function loadPlotMeasurements(options) {
+        const settings = options || {};
+        if (!plotChartStack || !plotStatus) {
+            return;
+        }
+        if (settings.quiet && state.isPlotBusy) {
+            return;
+        }
+
+        const selectedOptions = selectedPlotSeriesOptions();
+        if (!selectedOptions.length) {
+            state.plotSeriesData = [];
+            renderPlotCharts([]);
+            setPlotStatus(
+                activeBuildId
+                    ? (plotSeriesOptions.length
+                        ? "Select one or more values to display a live trend plot."
+                        : "No plottable measurement channels are available for this flowsheet yet.")
+                    : "Select a flowsheet with mapped sensors or actuators to display plots.",
+                "muted",
+            );
+            return;
+        }
+
+        const requestId = state.plotRequestId + 1;
+        state.plotRequestId = requestId;
+        state.isPlotBusy = true;
+        if (!settings.quiet) {
+            setPlotStatus("Loading stored measurements for the selected values...", "muted");
+        }
+
+        try {
+            const payloads = await Promise.all(
+                selectedOptions.map((option) =>
+                    fetchJson(
+                        `/api/devices/${option.deviceId}/measurements?channel_code=${encodeURIComponent(option.channelCode)}&limit=${PROCESS_PLOT_SERIES_LIMIT}`,
+                        { timeoutMs: 16000, maxRetries: 1 },
+                    ),
+                ),
+            );
+            if (requestId !== state.plotRequestId) {
+                return;
+            }
+
+            const seriesItems = selectedOptions.map((option, index) => normalizePlotMeasurements(option, payloads[index]?.items));
+            state.plotSeriesData = seriesItems;
+            renderPlotCharts(seriesItems);
+
+            const populatedSeries = seriesItems.filter((series) => series.points.length > 0).length;
+            if (populatedSeries > 0) {
+                setPlotStatus(
+                    `Plot updated from the latest ${PROCESS_PLOT_SERIES_LIMIT} stored measurements. ${populatedSeries} selected series contain data.`,
+                    settings.quiet ? "muted" : "success",
+                );
+            } else {
+                setPlotStatus("No stored measurements were found for the selected values yet.", "muted");
+            }
+        } catch (error) {
+            if (requestId !== state.plotRequestId) {
+                return;
+            }
+            setPlotStatus(error?.message || "Plot data could not be loaded.", "error");
+        } finally {
+            if (requestId === state.plotRequestId) {
+                state.isPlotBusy = false;
+            }
+        }
+    }
+
     function selectedTarget() {
         return state.selectedNodeId ? manualTargets[state.selectedNodeId] || null : null;
     }
@@ -798,6 +1309,7 @@
                     buildId,
                     manualMode: state.manualMode,
                     selectedNodeId: state.selectedNodeId || null,
+                    selectedPlotSeriesIds: Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : [],
                 }),
             );
         } catch (_error) {
@@ -1217,6 +1729,7 @@
 
     const buildData = parseJsonScript("process-build-data", null);
     const manualTargets = parseJsonScript("process-manual-targets", {});
+    const plotTargetData = parseJsonScript("process-plot-targets", {});
     const metaData = parseJsonScript("process-meta-data", {});
     const definition = buildData && typeof buildData === "object" ? buildData.definition_json || {} : {};
     const nodes = Array.isArray(definition?.nodes) ? definition.nodes.map(normalizeNode) : [];
@@ -1239,6 +1752,14 @@
     const restoredSelectedNodeId = canRestorePersistedState
         ? asString(persistedViewState?.selectedNodeId, "").trim() || null
         : null;
+    const plotSeriesOptions = buildPlotSeriesOptions(plotTargetData);
+    const plotSeriesOptionMap = new Map(plotSeriesOptions.map((option) => [option.id, option]));
+    const plotNodeGroups = buildPlotNodeGroups(plotTargetData, plotSeriesOptions);
+    const restoredPlotSeriesIds = canRestorePersistedState && Array.isArray(persistedViewState?.selectedPlotSeriesIds)
+        ? persistedViewState.selectedPlotSeriesIds
+              .map((item) => asString(item, ""))
+              .filter((item) => item && plotSeriesOptionMap.has(item))
+        : [];
 
     const state = {
         nodes,
@@ -1246,6 +1767,10 @@
         canvasSize: parseCanvasSize(definition, nodes),
         manualMode: Boolean(canRestorePersistedState && persistedViewState?.manualMode),
         selectedNodeId: restoredSelectedNodeId,
+        selectedPlotSeriesIds: restoredPlotSeriesIds,
+        plotSeriesData: [],
+        isPlotBusy: false,
+        plotRequestId: 0,
         inputsDirtyForNodeId: null,
         isSending: false,
         isManualBusy: false,
@@ -1258,6 +1783,7 @@
             state.selectedNodeId = null;
         }
     }
+    syncSelectedPlotSeriesIds();
 
     manualToggleButton?.addEventListener("click", () => {
         setManualMode(!state.manualMode);
@@ -1269,6 +1795,12 @@
 
     manualSpeedInput?.addEventListener("input", () => {
         markManualInputsDirty();
+    });
+
+    plotPanel?.addEventListener("toggle", () => {
+        if (plotPanel.open && state.selectedPlotSeriesIds.length > 0) {
+            void loadPlotMeasurements({ quiet: true });
+        }
     });
 
     manualSettingsForm?.addEventListener("submit", (event) => {
@@ -1407,12 +1939,22 @@
         void loadManualSettings(nodeId, { quiet: true });
     }, MANUAL_LIVE_POLL_MS);
 
+    window.setInterval(() => {
+        if (document.hidden || !plotPanel?.open || state.isPlotBusy || state.selectedPlotSeriesIds.length === 0) {
+            return;
+        }
+        void loadPlotMeasurements({ quiet: true });
+    }, PROCESS_PLOT_REFRESH_MS);
+
     if (manualToggleButton) {
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
         manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
     }
 
+    renderPlotSelection();
+    renderPlotCharts(state.plotSeriesData);
+    void loadPlotMeasurements({ quiet: true });
     syncManualModeToggle();
     renderAll();
     persistViewState();
