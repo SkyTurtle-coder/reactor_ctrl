@@ -2,94 +2,60 @@
 
 {% block title %}Process View | reactor_ctrl{% endblock %}
 
-{% block page_header %}
-<section class="process-header">
-    <div class="process-heading">
-        <span class="eyebrow">Live</span>
-        <h1>Process View</h1>
-        <p class="page-lead">Select a flowsheet to display the live process layout.</p>
-    </div>
-    {% if selected_build %}
-    <div class="process-header-meta">
-        <span class="badge badge-info">Build #{{ selected_build.reactor_build_id }}</span>
-        <span class="badge badge-success">{{ selected_build.node_count }} Nodes</span>
-    </div>
-    {% endif %}
-</section>
-{% endblock %}
-
 {% block content %}
-<section class="card process-control-card">
-    <div class="card-body">
-        <form class="process-picker-grid" id="process-picker-form" method="get" action="{{ url_for('web.process_view') }}">
-            <label class="process-select-field">
-                <span>Flowsheet</span>
-                <select id="process-build-select" name="build_id" {% if not process_storage_available %}disabled{% endif %}>
-                    <option value="">Select flowsheet</option>
-                    {% for build in saved_builds %}
-                    <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
-                        {{ build.build_name }}{% if build.build_date %} | {{ build.build_date }}{% endif %}{% if build.updated_by or build.created_by %} | {{ build.updated_by or build.created_by }}{% endif %}
-                    </option>
-                    {% endfor %}
-                </select>
-            </label>
+<div class="process-toolbar" id="process-toolbar">
+    <div class="process-toolbar-brand">
+        <span class="eyebrow">Live</span>
+        <span class="process-toolbar-title" id="process-toolbar-title">
+            {{ selected_build.build_name if selected_build else "Process View" }}
+        </span>
+    </div>
 
-            <div class="process-manual-toggle-field">
-                <span>Manual Mode</span>
-                <button
-                    id="process-manual-mode-toggle"
-                    class="btn"
-                    type="button"
-                    aria-pressed="false"
-                    {% if not selected_build %}disabled{% endif %}
-                >
-                    Enable
-                </button>
-            </div>
-
+    <div class="process-toolbar-controls" id="process-toolbar-controls">
+        <form id="process-picker-form" method="get" action="{{ url_for('web.process_view') }}" class="process-picker-row">
+            <select id="process-build-select" name="build_id" {% if not process_storage_available %}disabled{% endif %}>
+                <option value="">Select flowsheet …</option>
+                {% for build in saved_builds %}
+                <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
+                    {{ build.build_name }}{% if build.build_date %} — {{ build.build_date }}{% endif %}
+                </option>
+                {% endfor %}
+            </select>
             {% if selected_build_id %}
-            <div class="process-picker-actions">
-                <a class="btn" id="process-clear-selection" href="{{ url_for('web.process_view') }}">Clear Selection</a>
-            </div>
+            <a class="btn process-toolbar-btn" id="process-clear-selection" href="{{ url_for('web.process_view') }}" title="Clear selection">✕</a>
             {% endif %}
         </form>
 
-        {% if process_notice %}
-        <p class="process-selection-notice{% if process_storage_available %} muted{% else %} error-text{% endif %}">
-            {{ process_notice }}
-        </p>
-        {% endif %}
-
-        {% if selected_build_missing %}
-        <p class="process-selection-notice error-text">The requested flowsheet could not be found.</p>
-        {% endif %}
+        <button
+            id="process-manual-mode-toggle"
+            class="btn process-toolbar-btn"
+            type="button"
+            aria-pressed="false"
+            {% if not selected_build %}disabled{% endif %}
+        >Manual</button>
     </div>
-</section>
+
+    <button class="process-collapse-btn" id="process-toolbar-toggle" type="button" title="Collapse controls">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true" id="process-toolbar-icon">
+            <path d="M2 4.5L6 8.5L10 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+    </button>
+</div>
+
+{% if process_notice %}
+<p class="process-selection-notice{% if process_storage_available %} muted{% else %} error-text{% endif %}">
+    {{ process_notice }}
+</p>
+{% endif %}
+
+{% if selected_build_missing %}
+<p class="process-selection-notice error-text">The requested flowsheet could not be found.</p>
+{% endif %}
 
 <section class="process-display-grid">
     <article class="card process-viewer-card">
-        <div class="card-header process-viewer-header">
-            <div>
-                <span class="section-label">Flowsheet</span>
-                <h2>{{ selected_build.build_name if selected_build else "No flowsheet selected" }}</h2>
-            </div>
-
-            {% if selected_build %}
-            <div class="process-viewer-meta">
-                <div class="process-viewer-meta-item">
-                    <span class="process-viewer-meta-label">Version</span>
-                    <strong>{{ selected_build.build_date or "n/a" }}</strong>
-                </div>
-                <div class="process-viewer-meta-item">
-                    <span class="process-viewer-meta-label">Updated By</span>
-                    <strong>{{ selected_build.updated_by or selected_build.created_by or "n/a" }}</strong>
-                </div>
-                <div class="process-viewer-meta-item">
-                    <span class="process-viewer-meta-label">Connections</span>
-                    <strong>{{ selected_build.definition_json.edges|length if selected_build.definition_json and selected_build.definition_json.edges is iterable else 0 }}</strong>
-                </div>
-            </div>
-            {% endif %}
+        <div class="process-viewer-bar">
+            <span class="process-viewer-name">{{ selected_build.build_name if selected_build else "No flowsheet selected" }}</span>
         </div>
 
         <div class="process-stage">
@@ -97,7 +63,7 @@
                 <div class="process-flowsheet-surface" id="process-flowsheet-surface">
                     <div class="builder-canvas-empty{% if selected_build %} is-hidden{% endif %}" id="process-flowsheet-empty">
                         <h3>No Flowsheet Loaded</h3>
-                        <p>The approved process layout will appear here once a flowsheet has been selected.</p>
+                        <p class="muted">Select a flowsheet above to load the process layout.</p>
                     </div>
                     <svg class="builder-edge-layer process-edge-layer" id="process-edge-layer" aria-hidden="true"></svg>
                     <div class="builder-node-layer process-node-layer" id="process-node-layer"></div>
@@ -189,4 +155,28 @@
 <script id="process-supported-protocols" type="application/json">{{ supported_protocol_options | tojson }}</script>
 <script id="process-meta-data" type="application/json">{{ {"apiAuthRequired": api_auth_required, "manualWriteToken": manual_write_token} | tojson }}</script>
 <script src="{{ static_asset('js/process_view.js') }}"></script>
+<script>
+(function () {
+    var toolbar = document.getElementById('process-toolbar');
+    var toggleBtn = document.getElementById('process-toolbar-toggle');
+    var icon = document.getElementById('process-toolbar-icon');
+    var STORAGE_KEY = 'reactor_ctrl.processToolbar.collapsed';
+
+    if (!toolbar || !toggleBtn) return;
+
+    function setCollapsed(collapsed) {
+        toolbar.classList.toggle('is-collapsed', collapsed);
+        if (icon) icon.style.transform = collapsed ? 'rotate(-90deg)' : '';
+        try { localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0'); } catch (_) {}
+    }
+
+    try {
+        if (localStorage.getItem(STORAGE_KEY) === '1') setCollapsed(true);
+    } catch (_) {}
+
+    toggleBtn.addEventListener('click', function () {
+        setCollapsed(!toolbar.classList.contains('is-collapsed'));
+    });
+})();
+</script>
 {% endblock %}
