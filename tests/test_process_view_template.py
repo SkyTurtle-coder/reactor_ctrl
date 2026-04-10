@@ -93,6 +93,28 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('await sendManualCommand("IN_PV_4", { quiet: true })', source)
         self.assertIn('await sendManualCommand("IN_PV_5", { quiet: true })', source)
 
+    def test_process_view_script_preserves_dirty_manual_inputs_during_refresh(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("inputsDirtyForNodeId", source)
+        self.assertIn('manualStateInput?.addEventListener("change", () => {', source)
+        self.assertIn('manualSpeedInput?.addEventListener("input", () => {', source)
+        self.assertIn(
+            'renderOperatorControls(currentNode, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });',
+            source,
+        )
+        self.assertIn("clearManualInputsDirty(node.id);", source)
+
+    def test_process_view_script_updates_device_status_from_telemetry(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("function updateManualDeviceStatus(target, telemetry)", source)
+        self.assertIn("function setManualStatusFromTelemetry(telemetry, options)", source)
+        self.assertIn("updateManualDeviceStatus(target, telemetry);", source)
+        self.assertIn("setManualStatusFromTelemetry(telemetry, {", source)
+
 
 if __name__ == "__main__":
     unittest.main()

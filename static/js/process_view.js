@@ -543,6 +543,9 @@
         if (!node || !isActuator(node)) {
             return;
         }
+        if (state.selectedNodeId !== nodeId) {
+            clearManualInputsDirty();
+        }
         state.selectedNodeId = nodeId;
         persistViewState();
         renderNodes();
@@ -807,6 +810,61 @@
         return target.quality_state ? `${onlineText} | ${target.quality_state}` : onlineText;
     }
 
+    function formatRuntimeStatus(telemetry) {
+        if (!telemetry) {
+            return "";
+        }
+
+        const actualRpm = telemetry.actualRpm == null ? null : Math.max(0, Math.round(telemetry.actualRpm));
+        const setpointRpm = telemetry.setpointRpm == null ? null : Math.max(0, Math.round(telemetry.setpointRpm));
+        if (actualRpm != null && actualRpm > 0) {
+            if (setpointRpm != null && setpointRpm !== actualRpm) {
+                return `running @ ${actualRpm} rpm (setpoint ${setpointRpm} rpm)`;
+            }
+            return `running @ ${actualRpm} rpm`;
+        }
+        if (setpointRpm != null && setpointRpm > 0) {
+            return `idle @ setpoint ${setpointRpm} rpm`;
+        }
+        if (setpointRpm != null) {
+            return "idle";
+        }
+        return "";
+    }
+
+    function updateManualDeviceStatus(target, telemetry) {
+        if (!manualDeviceStatus) {
+            return;
+        }
+        if (!target) {
+            manualDeviceStatus.textContent = formatRuntimeStatus(telemetry) || "-";
+            return;
+        }
+
+        const runtimeStatus = formatRuntimeStatus(telemetry);
+        const baseStatus = formatDeviceStatus(target);
+        manualDeviceStatus.textContent = runtimeStatus ? `${baseStatus} | ${runtimeStatus}` : baseStatus;
+    }
+
+    function setManualStatusFromTelemetry(telemetry, options) {
+        const settings = options || {};
+        const tone = settings.tone || "muted";
+        const prefix = asString(settings.prefix, "Status refreshed.");
+        const actualRpm = telemetry?.actualRpm == null ? null : Math.max(0, Math.round(telemetry.actualRpm));
+        const setpointRpm = telemetry?.setpointRpm == null ? null : Math.max(0, Math.round(telemetry.setpointRpm));
+        if (actualRpm != null && actualRpm > 0) {
+            const runningDetails =
+                setpointRpm != null && setpointRpm !== actualRpm
+                    ? `Measured speed is approximately ${actualRpm} rpm with a ${setpointRpm} rpm setpoint.`
+                    : `Measured speed is approximately ${actualRpm} rpm.`;
+            setManualStatus(`${prefix} ${runningDetails}`, tone);
+            return;
+        }
+
+        const idleSetpoint = setpointRpm == null ? 0 : setpointRpm;
+        setManualStatus(`${prefix} Stirrer is idle with a ${idleSetpoint} rpm setpoint.`, tone);
+    }
+
     function isIkaMotorTarget(node, target) {
         const protocol = normalizedProtocolName(target?.protocol);
         const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
@@ -827,20 +885,44 @@
         syncManualModeToggle();
     }
 
-    function renderOperatorControls(node, target) {
+    function shouldPreserveManualInputs(nodeId) {
+        return Boolean(nodeId) && state.inputsDirtyForNodeId === nodeId;
+    }
+
+    function markManualInputsDirty() {
+        if (!state.manualMode || !state.selectedNodeId) {
+            return;
+        }
+        state.inputsDirtyForNodeId = state.selectedNodeId;
+    }
+
+    function clearManualInputsDirty(nodeId) {
+        if (!nodeId) {
+            state.inputsDirtyForNodeId = null;
+            return;
+        }
+        if (state.inputsDirtyForNodeId === nodeId) {
+            state.inputsDirtyForNodeId = null;
+        }
+    }
+
+    function renderOperatorControls(node, target, options) {
+        const opts = options || {};
         const enabled = isIkaMotorTarget(node, target);
         manualControls?.classList.toggle("is-hidden", !enabled);
         if (!enabled) {
             return;
         }
 
-        const speed = Math.max(0, Math.round(asNumber(node?.control?.config?.speed, 0)));
-        if (manualSpeedInput) {
-            manualSpeedInput.value = String(speed);
-        }
-        if (manualStateInput) {
-            const isOn = Boolean(node?.control?.config?.is_on);
-            manualStateInput.value = isOn ? "on" : "off";
+        if (!opts.preserveInputs) {
+            const speed = Math.max(0, Math.round(asNumber(node?.control?.config?.speed, 0)));
+            if (manualSpeedInput) {
+                manualSpeedInput.value = String(speed);
+            }
+            if (manualStateInput) {
+                const isOn = Boolean(node?.control?.config?.is_on);
+                manualStateInput.value = isOn ? "on" : "off";
+            }
         }
     }
 
@@ -959,22 +1041,13 @@
             };
 
             updateManualLiveMetrics(telemetry);
-            renderOperatorControls(currentNode, target);
+            updateManualDeviceStatus(target, telemetry);
+            renderOperatorControls(currentNode, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
             syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(currentNode, target));
-            if (settings.quiet) {
-                return;
-            }
-            if (appearsRunning) {
-                setManualStatus(
-                    `Device state loaded. Actual speed is approximately ${Math.round(telemetry.actualRpm)} rpm.`,
-                    "success",
-                );
-            } else {
-                setManualStatus(
-                    `Device state loaded. Current setpoint is ${nextSpeed} rpm and the drive is idle.`,
-                    "success",
-                );
-            }
+            setManualStatusFromTelemetry(telemetry, {
+                prefix: settings.quiet ? "Status refreshed." : "Device state loaded.",
+                tone: settings.quiet ? "muted" : "success",
+            });
         } catch (error) {
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
@@ -991,6 +1064,7 @@
 
     function updateManualPanel() {
         if (state.nodes.length === 0) {
+            clearManualInputsDirty();
             hideManualCard();
             resetManualSummary();
             syncManualControlsEnabled(false);
@@ -999,6 +1073,7 @@
         }
 
         if (!state.manualMode) {
+            clearManualInputsDirty();
             hideManualCard();
             resetManualSummary();
             syncManualControlsEnabled(false);
@@ -1008,6 +1083,7 @@
 
         const node = getNodeById(state.selectedNodeId);
         if (!node) {
+            clearManualInputsDirty();
             hideManualCard();
             resetManualSummary();
             syncManualControlsEnabled(false);
@@ -1022,7 +1098,7 @@
         manualPort.textContent = target?.connection_label || "-";
         manualServer.textContent = target?.server_code || "-";
         manualProtocol.textContent = protocolLabel(target?.protocol);
-        manualDeviceStatus.textContent = target ? formatDeviceStatus(target) : "-";
+        updateManualDeviceStatus(target);
 
         if (!target || !target.is_resolved) {
             syncManualControlsEnabled(false);
@@ -1032,7 +1108,7 @@
             return;
         }
 
-        renderOperatorControls(node, target);
+        renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(node.id) });
         syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(node, target));
         if (isIkaMotorTarget(node, target)) {
             setManualStatus("Set On/Off and RPM, then submit the change.", "muted");
@@ -1061,9 +1137,11 @@
         state.manualMode = Boolean(enabled);
         if (!state.manualMode) {
             state.selectedNodeId = null;
+            clearManualInputsDirty();
         }
         if (state.manualMode && !getNodeById(state.selectedNodeId)) {
             state.selectedNodeId = null;
+            clearManualInputsDirty();
         }
 
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
@@ -1168,6 +1246,7 @@
         canvasSize: parseCanvasSize(definition, nodes),
         manualMode: Boolean(canRestorePersistedState && persistedViewState?.manualMode),
         selectedNodeId: restoredSelectedNodeId,
+        inputsDirtyForNodeId: null,
         isSending: false,
         isManualBusy: false,
         manualRequestId: 0,
@@ -1182,6 +1261,14 @@
 
     manualToggleButton?.addEventListener("click", () => {
         setManualMode(!state.manualMode);
+    });
+
+    manualStateInput?.addEventListener("change", () => {
+        markManualInputsDirty();
+    });
+
+    manualSpeedInput?.addEventListener("input", () => {
+        markManualInputsDirty();
     });
 
     manualSettingsForm?.addEventListener("submit", (event) => {
@@ -1254,8 +1341,10 @@
                 },
             };
 
+            clearManualInputsDirty(node.id);
             renderOperatorControls(node, target);
             updateManualLiveMetrics(telemetry);
+            updateManualDeviceStatus(target, telemetry);
             if (nextState) {
                 const actualLabel = telemetry.actualRpm == null ? "unknown rpm" : `${Math.round(telemetry.actualRpm)} rpm`;
                 setManualStatus(
