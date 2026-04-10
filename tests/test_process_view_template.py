@@ -69,6 +69,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertEqual(response.headers.get("Pragma"), "no-cache")
         self.assertEqual(response.headers.get("Expires"), "0")
 
+    def test_process_view_template_starts_plot_panel_collapsed(self):
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "process.html"
+        source = template_path.read_text(encoding="utf-8")
+
+        self.assertIn('<details class="card process-plot-panel ui-collapsible-details" id="process-plot-panel">', source)
+        self.assertNotIn('id="process-plot-panel" {% if selected_build %}open{% endif %}', source)
+
     def test_process_view_script_no_longer_contains_legacy_manual_ui_labels(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
         source = script_path.read_text(encoding="utf-8")
@@ -112,6 +119,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
             source,
         )
         self.assertIn("clearManualInputsDirty(node.id);", source)
+        self.assertIn('manualToggleButton.textContent = "Manual";', source)
+        self.assertNotIn('manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";', source)
 
     def test_process_view_script_updates_device_status_from_telemetry(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"

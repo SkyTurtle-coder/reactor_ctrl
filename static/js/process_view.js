@@ -1769,7 +1769,7 @@
 
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
-        manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
+        manualToggleButton.textContent = "Manual";
         persistViewState();
         renderAll();
     }
@@ -2063,7 +2063,7 @@
     if (manualToggleButton) {
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
-        manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";
+        manualToggleButton.textContent = "Manual";
     }
 
     renderPlotSelection();
