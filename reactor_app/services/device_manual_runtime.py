@@ -102,8 +102,12 @@ def _parse_ika_numeric_response(text: str | None) -> float | None:
     raw = str(text).strip()
     if not raw:
         return None
+    # IKA EUROSTAR responses include a channel suffix after the value
+    # (e.g. "IN_SP_4" → "100.0 4", "IN_PV_5" → "2.3 5").
+    # Take only the first whitespace-delimited token as the numeric value.
+    token = raw.split()[0]
     try:
-        return float(raw)
+        return float(token)
     except ValueError:
         return None
 

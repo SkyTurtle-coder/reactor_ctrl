@@ -155,6 +155,17 @@ class ParseIkaNumericResponseTests(unittest.TestCase):
     def test_float_with_whitespace(self):
         self.assertAlmostEqual(self._call(" 150.5 "), 150.5)
 
+    def test_ika_channel_suffix_setpoint(self):
+        # IKA EUROSTAR appends the channel number: "IN_SP_4" → "100.0 4"
+        self.assertAlmostEqual(self._call("100.0 4"), 100.0)
+
+    def test_ika_channel_suffix_pv(self):
+        # "IN_PV_5" → "2.3 5"
+        self.assertAlmostEqual(self._call("2.3 5"), 2.3)
+
+    def test_ika_channel_suffix_zero(self):
+        self.assertAlmostEqual(self._call("0.0 4"), 0.0)
+
 
 class ReadIkaStatusAllNoneTests(unittest.TestCase):
     """_read_ika_status must raise RuntimeError when every channel returns None."""
