@@ -1798,6 +1798,11 @@ h2 {
     cursor: pointer;
 }
 
+.builder-edge:hover:not(.is-selected):not(.is-pending) {
+    stroke: var(--accent);
+    opacity: 0.55;
+}
+
 .builder-edge.is-selected {
     stroke: var(--accent);
     stroke-width: 4;
@@ -1820,6 +1825,11 @@ h2 {
 
 .builder-edge-segment-hit.is-vertical {
     cursor: col-resize;
+}
+
+.builder-edge-segment-hit:hover:not(.is-active) {
+    stroke: var(--accent);
+    stroke-opacity: 0.25;
 }
 
 .builder-edge-segment-hit.is-active {

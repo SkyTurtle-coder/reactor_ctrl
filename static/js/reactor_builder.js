@@ -355,6 +355,7 @@
         undoStack: [],
         modalReturnFocus: null,
         canvasSize: { ...fallbackCanvasSize },
+        savedCanvasSize: buildCanvasData && asNumber(buildCanvasData.width, 0) >= 200 ? { width: asNumber(buildCanvasData.width, fallbackCanvasSize.width), height: asNumber(buildCanvasData.height, fallbackCanvasSize.height) } : null,
     };
 
     function measureVisibleCanvasSize() {
@@ -378,7 +379,11 @@
     }
 
     function buildDefinitionPayload() {
-        const canvasSize = syncCanvasMetrics();
+        const viewport = syncCanvasMetrics();
+        const saved = state.savedCanvasSize;
+        const canvasSize = saved
+            ? { width: Math.max(viewport.width, saved.width), height: Math.max(viewport.height, saved.height) }
+            : viewport;
         return {
             canvas: {
                 width: canvasSize.width,
@@ -740,6 +745,10 @@
         state.pendingAnchor = null;
         state.anchorMove = null;
         state.edgeSegmentMove = null;
+        const savedCanvas = definition?.canvas;
+        const savedW = asNumber(savedCanvas?.width, 0);
+        const savedH = asNumber(savedCanvas?.height, 0);
+        state.savedCanvasSize = savedW >= 200 && savedH >= 200 ? { width: savedW, height: savedH } : null;
     }
 
     function updateHistory(buildId) {
@@ -815,6 +824,7 @@
         state.anchorMove = null;
         state.edgeSegmentMove = null;
         state.undoStack = [];
+        state.savedCanvasSize = null;
         nameInput.value = "Untitled Reactor Build";
         if (!dateInput.value) {
             dateInput.value = new Date().toISOString().slice(0, 10);
@@ -1331,10 +1341,11 @@
                 state.selectedEdgeId = edge.id;
                 state.selectedNodeId = null;
                 renderAll();
+                setStatus("Verbindung ausgewaehlt – Segmente ziehen zum Umleiten, R = Auto-Routing, Del = Loeschen.", "muted");
             });
             edgeLayer.appendChild(path);
 
-            if (state.mode === "connect" && state.selectedEdgeId === edge.id) {
+            if (state.selectedEdgeId === edge.id) {
                 for (let segmentIndex = 1; segmentIndex < polylinePoints.length - 2; segmentIndex += 1) {
                     const segmentStart = polylinePoints[segmentIndex];
                     const segmentEnd = polylinePoints[segmentIndex + 1];
@@ -1572,7 +1583,7 @@
     }
 
     function startEdgeSegmentMove(edgeId, segmentIndex, event) {
-        if (state.mode !== "connect" || event.button !== 0) {
+        if (event.button !== 0) {
             return;
         }
 
@@ -2474,6 +2485,17 @@
             if (event.key === "3") {
                 event.preventDefault();
                 setMode("connect");
+                return;
+            }
+            if (event.key.toLowerCase() === "r" && state.selectedEdgeId) {
+                event.preventDefault();
+                const edge = state.edges.find((e) => e.id === state.selectedEdgeId);
+                if (edge) {
+                    pushUndoSnapshot();
+                    edge.route_points = [];
+                    renderAll();
+                    setStatus("Auto-Routing wiederhergestellt.", "muted");
+                }
                 return;
             }
         }
