@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class ControlCommandEvent(db.Model):
     __tablename__ = "control_command_event"
 
-    command_event_id = db.Column(db.BigInteger, primary_key=True)
+    command_event_id = db.Column(unsigned_bigint(), primary_key=True)
     command_id = db.Column(
-        db.BigInteger,
+        unsigned_bigint(),
         db.ForeignKey("control_command.command_id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
         index=True,

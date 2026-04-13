@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class Device(db.Model):
     __tablename__ = "device"
 
-    device_id = db.Column(db.BigInteger, primary_key=True)
+    device_id = db.Column(unsigned_bigint(), primary_key=True)
     asset_serial = db.Column(db.String(64), nullable=False, unique=True)
     manufacturer_serial = db.Column(db.String(128))
     display_name = db.Column(db.String(120), nullable=False)

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class DeviceConnection(db.Model):
     __tablename__ = "device_connection"
 
-    connection_id = db.Column(db.BigInteger, primary_key=True)
+    connection_id = db.Column(unsigned_bigint(), primary_key=True)
     device_server_id = db.Column(
-        db.BigInteger,
+        unsigned_bigint(),
         db.ForeignKey("device_server.device_server_id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )

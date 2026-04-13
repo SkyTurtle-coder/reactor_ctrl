@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class ReactorBuild(db.Model):
     __tablename__ = "reactor_build"
 
-    reactor_build_id = db.Column(db.BigInteger, primary_key=True)
+    reactor_build_id = db.Column(unsigned_bigint(), primary_key=True)
     build_name = db.Column(db.String(120), nullable=False, index=True)
     build_date = db.Column(db.Date, nullable=False)
     created_by = db.Column(db.String(120), nullable=False)

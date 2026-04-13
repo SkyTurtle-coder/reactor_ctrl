@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class DeviceManualState(db.Model):
     __tablename__ = "device_manual_state"
 
     device_id = db.Column(
-        db.BigInteger,
+        unsigned_bigint(),
         db.ForeignKey("device.device_id", onupdate="CASCADE", ondelete="CASCADE"),
         primary_key=True,
     )

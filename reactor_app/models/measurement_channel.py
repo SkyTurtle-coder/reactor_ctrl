@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class MeasurementChannel(db.Model):
     __tablename__ = "measurement_channel"
 
-    channel_id = db.Column(db.BigInteger, primary_key=True)
+    channel_id = db.Column(unsigned_bigint(), primary_key=True)
     device_id = db.Column(
-        db.BigInteger,
+        unsigned_bigint(),
         db.ForeignKey("device.device_id", onupdate="CASCADE", ondelete="CASCADE"),
         nullable=False,
     )

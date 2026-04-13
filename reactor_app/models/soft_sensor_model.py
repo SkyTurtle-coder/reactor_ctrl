@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class SoftSensorModel(db.Model):
     __tablename__ = "soft_sensor_model"
 
-    soft_sensor_model_id = db.Column(db.BigInteger, primary_key=True)
+    soft_sensor_model_id = db.Column(unsigned_bigint(), primary_key=True)
     model_code = db.Column(db.String(64), nullable=False)
     model_version = db.Column(db.String(32), nullable=False)
     description = db.Column(db.Text)

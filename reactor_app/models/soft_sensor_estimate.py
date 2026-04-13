@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class SoftSensorEstimate(db.Model):
     __tablename__ = "soft_sensor_estimate"
 
-    soft_sensor_estimate_id = db.Column(db.BigInteger, primary_key=True)
+    soft_sensor_estimate_id = db.Column(unsigned_bigint(), primary_key=True)
     soft_sensor_model_id = db.Column(
-        db.BigInteger,
+        unsigned_bigint(),
         db.ForeignKey("soft_sensor_model.soft_sensor_model_id", onupdate="CASCADE", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
     device_id = db.Column(
-        db.BigInteger,
+        unsigned_bigint(),
         db.ForeignKey("device.device_id", onupdate="CASCADE", ondelete="SET NULL"),
         index=True,
     )

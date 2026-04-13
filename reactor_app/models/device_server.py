@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from ..extensions import db
+from ._types import unsigned_bigint
 
 
 class DeviceServer(db.Model):
     __tablename__ = "device_server"
 
-    device_server_id = db.Column(db.BigInteger, primary_key=True)
+    device_server_id = db.Column(unsigned_bigint(), primary_key=True)
     server_code = db.Column(db.String(64), nullable=False, unique=True)
     display_name = db.Column(db.String(120), nullable=False)
     vendor = db.Column(db.String(64), nullable=False, server_default=db.text("'Moxa'"))
