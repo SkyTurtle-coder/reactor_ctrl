@@ -267,14 +267,6 @@ pre {
 }
 
 /* panel collapse — controlled independently of manual mode toggle */
-.process-display-grid.has-manual-panel {
-    transition: grid-template-columns var(--collapsible-duration) var(--collapsible-ease);
-}
-
-.process-display-grid.has-manual-panel.is-panel-collapsed {
-    grid-template-columns: minmax(0, 1fr) 3rem;
-}
-
 .process-manual-card.is-panel-collapsed .process-manual-body {
     max-height: 0;
     opacity: 0;
@@ -693,7 +685,6 @@ pre {
 @media (prefers-reduced-motion: reduce) {
     .ui-collapsible-chevron svg,
     .ui-collapsible-panel,
-    .process-display-grid.has-manual-panel,
     .process-manual-body,
     .process-manual-card-copy,
     .process-manual-card-header,
@@ -852,8 +843,10 @@ h2 {
     align-items: start;
 }
 
-.process-display-grid.has-manual-panel {
-    grid-template-columns: minmax(0, 1.7fr) minmax(300px, 360px);
+.process-plot-panel + .process-manual-card,
+.process-plot-panel + .process-display-grid,
+.process-manual-card + .process-display-grid {
+    margin-top: 1rem;
 }
 
 .process-viewer-header {
@@ -950,7 +943,7 @@ h2 {
 
 .process-flowsheet-surface {
     position: relative;
-    min-width: 100%;
+    min-width: 0;
     min-height: 680px;
 }
 

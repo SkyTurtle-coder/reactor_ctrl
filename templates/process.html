@@ -79,6 +79,85 @@
     </div>
 </details>
 
+<aside class="card process-manual-card" id="process-manual-card" hidden>
+    <div class="card-header process-manual-card-header">
+        <div class="process-manual-card-copy">
+            <span class="section-label">Selected Actuator</span>
+            <h2 class="process-manual-card-title" id="process-manual-target-title">-</h2>
+            <p class="process-manual-card-text" id="process-manual-target-subtitle">-</p>
+        </div>
+        <button class="process-panel-collapse-btn" id="process-panel-collapse-btn" type="button" title="Collapse panel">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M8 2L4 6L8 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+        </button>
+    </div>
+
+    <div class="card-body process-manual-body" id="process-manual-body">
+        <section class="process-manual-controls" id="process-manual-controls">
+            <div class="process-manual-controls-header">
+                <span class="section-label">Device Settings</span>
+                <h3>IKA Stirrer</h3>
+            </div>
+
+            <form class="process-manual-settings-form" id="process-manual-settings-form">
+                <label class="process-select-field process-manual-state-field">
+                    <span>State</span>
+                    <select id="process-manual-state-input">
+                        <option value="off">Off</option>
+                        <option value="on">On</option>
+                    </select>
+                </label>
+
+                <label class="process-select-field process-manual-speed-field">
+                    <span>RPM</span>
+                    <input
+                        id="process-manual-speed-input"
+                        type="number"
+                        min="0"
+                        max="10000"
+                        step="10"
+                        inputmode="numeric"
+                    >
+                </label>
+                <button class="btn btn-primary" id="process-manual-submit-button" type="submit">Submit</button>
+            </form>
+
+            <dl class="process-manual-live-metrics" id="process-manual-live-metrics">
+                <div>
+                    <dt>Actual RPM</dt>
+                    <dd id="process-manual-actual-rpm">-</dd>
+                </div>
+                <div>
+                    <dt>Torque (Ncm)</dt>
+                    <dd id="process-manual-torque-ncm">-</dd>
+                </div>
+            </dl>
+        </section>
+
+        <dl class="process-manual-meta">
+            <div>
+                <dt>Port</dt>
+                <dd id="process-manual-port">-</dd>
+            </div>
+            <div>
+                <dt>Moxa</dt>
+                <dd id="process-manual-server">-</dd>
+            </div>
+            <div>
+                <dt>Protocol</dt>
+                <dd id="process-manual-protocol">-</dd>
+            </div>
+            <div>
+                <dt>Status</dt>
+                <dd id="process-manual-device-status">-</dd>
+            </div>
+        </dl>
+
+        <p class="process-manual-status muted" id="process-manual-status">Select an actuator to configure it.</p>
+    </div>
+</aside>
+
 <section class="process-display-grid">
     <article class="card process-viewer-card">
         <div class="process-viewer-bar">
@@ -98,85 +177,6 @@
             </div>
         </div>
     </article>
-
-    <aside class="card process-manual-card" id="process-manual-card" hidden>
-        <div class="card-header process-manual-card-header">
-            <div class="process-manual-card-copy">
-                <span class="section-label">Selected Actuator</span>
-                <h2 class="process-manual-card-title" id="process-manual-target-title">-</h2>
-                <p class="process-manual-card-text" id="process-manual-target-subtitle">-</p>
-            </div>
-            <button class="process-panel-collapse-btn" id="process-panel-collapse-btn" type="button" title="Collapse panel">
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-                    <path d="M8 2L4 6L8 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </button>
-        </div>
-
-        <div class="card-body process-manual-body" id="process-manual-body">
-            <section class="process-manual-controls" id="process-manual-controls">
-                <div class="process-manual-controls-header">
-                    <span class="section-label">Device Settings</span>
-                    <h3>IKA Stirrer</h3>
-                </div>
-
-                <form class="process-manual-settings-form" id="process-manual-settings-form">
-                    <label class="process-select-field process-manual-state-field">
-                        <span>State</span>
-                        <select id="process-manual-state-input">
-                            <option value="off">Off</option>
-                            <option value="on">On</option>
-                        </select>
-                    </label>
-
-                    <label class="process-select-field process-manual-speed-field">
-                        <span>RPM</span>
-                        <input
-                            id="process-manual-speed-input"
-                            type="number"
-                            min="0"
-                            max="10000"
-                            step="10"
-                            inputmode="numeric"
-                        >
-                    </label>
-                    <button class="btn btn-primary" id="process-manual-submit-button" type="submit">Submit</button>
-                </form>
-
-                <dl class="process-manual-live-metrics" id="process-manual-live-metrics">
-                    <div>
-                        <dt>Actual RPM</dt>
-                        <dd id="process-manual-actual-rpm">-</dd>
-                    </div>
-                    <div>
-                        <dt>Torque (Ncm)</dt>
-                        <dd id="process-manual-torque-ncm">-</dd>
-                    </div>
-                </dl>
-            </section>
-
-            <dl class="process-manual-meta">
-                <div>
-                    <dt>Port</dt>
-                    <dd id="process-manual-port">-</dd>
-                </div>
-                <div>
-                    <dt>Moxa</dt>
-                    <dd id="process-manual-server">-</dd>
-                </div>
-                <div>
-                    <dt>Protocol</dt>
-                    <dd id="process-manual-protocol">-</dd>
-                </div>
-                <div>
-                    <dt>Status</dt>
-                    <dd id="process-manual-device-status">-</dd>
-                </div>
-            </dl>
-
-            <p class="process-manual-status muted" id="process-manual-status">Select an actuator to configure it.</p>
-        </div>
-    </aside>
 </section>
 {% endblock %}
 
@@ -192,14 +192,12 @@
 (function () {
     var collapseBtn = document.getElementById('process-panel-collapse-btn');
     var manualCard  = document.getElementById('process-manual-card');
-    var displayGrid = document.querySelector('.process-display-grid');
     var STORAGE_KEY = 'reactor_ctrl.manualPanel.collapsed';
 
-    if (!collapseBtn || !manualCard || !displayGrid) return;
+    if (!collapseBtn || !manualCard) return;
 
     function setCollapsed(collapsed) {
         manualCard.classList.toggle('is-panel-collapsed', collapsed);
-        displayGrid.classList.toggle('is-panel-collapsed', collapsed);
         try { localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0'); } catch (_) {}
     }
 

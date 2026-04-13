@@ -7,7 +7,6 @@
     const edgeLayer = document.getElementById("process-edge-layer");
     const nodeLayer = document.getElementById("process-node-layer");
     const emptyState = document.getElementById("process-flowsheet-empty");
-    const processDisplayGrid = document.querySelector(".process-display-grid");
     const processPickerForm = document.getElementById("process-picker-form");
     const processBuildSelect = document.getElementById("process-build-select");
     const processClearSelectionLink = document.getElementById("process-clear-selection");
@@ -676,10 +675,7 @@
         while (edgeLayer.firstChild) {
             edgeLayer.removeChild(edgeLayer.firstChild);
         }
-        // Use actual rendered surface size for viewBox to prevent SVG coordinate scaling
-        const svgW = surface.offsetWidth || state.canvasSize.width;
-        const svgH = surface.offsetHeight || state.canvasSize.height;
-        edgeLayer.setAttribute("viewBox", `0 0 ${svgW} ${svgH}`);
+        edgeLayer.setAttribute("viewBox", `0 0 ${state.canvasSize.width} ${state.canvasSize.height}`);
 
         // First pass: compute all polylines for bridge detection
         const edgePolylines = state.edges.map((edge) => {
@@ -720,14 +716,12 @@
     }
 
     function hideManualCard() {
-        processDisplayGrid?.classList.remove("has-manual-panel");
         if (manualCard) {
             manualCard.hidden = true;
         }
     }
 
     function showManualCard() {
-        processDisplayGrid?.classList.add("has-manual-panel");
         if (manualCard) {
             manualCard.hidden = false;
         }
@@ -1886,18 +1880,18 @@
             return;
         }
 
+        showManualCard();
         const node = getNodeById(state.selectedNodeId);
         if (!node) {
             clearManualInputsDirty();
-            hideManualCard();
             resetManualSummary();
+            manualControls?.classList.add("is-hidden");
             syncManualControlsEnabled(false);
             setManualStatus("Click an actuator in the flowsheet to open its settings.", "muted");
             return;
         }
 
         const target = selectedTarget();
-        showManualCard();
         manualTargetTitle.textContent = node.instance_id || node.label;
         manualTargetSubtitle.textContent = target?.device_display_name || node.symbol_id || "Actuator";
         manualPort.textContent = target?.connection_label || "-";
