@@ -266,31 +266,6 @@ pre {
     min-width: 0;
 }
 
-/* panel collapse — controlled independently of manual mode toggle */
-.process-manual-card.is-panel-collapsed .process-manual-body {
-    max-height: 0;
-    opacity: 0;
-    transform: translate3d(16px, 0, 0) scale(0.985);
-    padding-top: 0;
-    padding-bottom: 0;
-    pointer-events: none;
-}
-
-.process-manual-card.is-panel-collapsed .process-manual-card-copy {
-    max-height: 0;
-    opacity: 0;
-    transform: translate3d(10px, 0, 0);
-}
-
-.process-manual-card.is-panel-collapsed .process-manual-card-header {
-    justify-content: center;
-    padding: 0.75rem 0.5rem;
-}
-
-.process-manual-card.is-panel-collapsed .process-panel-collapse-btn svg {
-    transform: rotate(180deg);
-}
-
 .process-picker-row {
     display: flex;
     align-items: center;
@@ -324,35 +299,6 @@ pre {
     font-size: 0.85rem;
     white-space: nowrap;
     border-radius: 6px;
-}
-
-.process-panel-collapse-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 2rem;
-    height: 2rem;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg);
-    color: var(--muted);
-    cursor: pointer;
-    transition:
-        color 0.18s ease,
-        border-color 0.18s ease,
-        background-color 0.18s ease,
-        box-shadow 0.18s ease;
-}
-
-.process-panel-collapse-btn:hover {
-    color: var(--text);
-    border-color: #aaaaaa;
-}
-
-.process-panel-collapse-btn svg {
-    transition: transform var(--collapsible-duration) var(--collapsible-ease);
 }
 
 .process-viewer-bar {
@@ -687,8 +633,7 @@ pre {
     .ui-collapsible-panel,
     .process-manual-body,
     .process-manual-card-copy,
-    .process-manual-card-header,
-    .process-panel-collapse-btn svg {
+    .process-manual-card-header {
         transition: none !important;
     }
 }
@@ -1004,7 +949,7 @@ h2 {
 .process-manual-card-header {
     display: flex;
     align-items: flex-start;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 0.5rem;
     padding: 1rem 1rem 1rem 1.25rem;
     background: rgba(253, 231, 14, 0.07);
