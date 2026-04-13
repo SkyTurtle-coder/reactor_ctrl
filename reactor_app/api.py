@@ -19,6 +19,7 @@ from .models import (
     DeviceBindingCurrent,
     DeviceBindingHistory,
     DeviceConnection,
+    DeviceManualState,
     DeviceServer,
     Measurement,
     ReactorBuild,
@@ -26,10 +27,13 @@ from .models import (
 from .services import (
     DeviceCommandError,
     TcpSocketConfig,
+    ensure_manual_state_snapshot,
     execute_device_command,
     list_supported_protocol_options,
     list_supported_protocols,
+    manual_state_to_dict,
     probe_tcp_socket,
+    queue_manual_state_update,
 )
 
 
@@ -122,7 +126,7 @@ def _is_process_manual_request() -> bool:
     if request.method != "POST":
         return False
     path = request.path.rstrip("/")
-    return re.fullmatch(r"/api/devices/\d+/commands", path) is not None
+    return re.fullmatch(r"/api/devices/\d+/(commands|manual-state)", path) is not None
 
 
 @api_bp.before_request
@@ -218,6 +222,12 @@ def _parse_bool(value: Any, *, field_name: str) -> bool:
         if normalized in {"false", "0", "no", "n", "off"}:
             return False
     raise ValueError(f"Field '{field_name}' must be a boolean.")
+
+
+def _parse_query_bool(name: str, *, default: bool) -> bool:
+    if name not in request.args:
+        return default
+    return _parse_bool(request.args.get(name), field_name=name)
 
 
 def _parse_int(value: Any, *, field_name: str, min_value: int | None = None, max_value: int | None = None) -> int:
@@ -564,6 +574,10 @@ def _control_command_to_dict(item: ControlCommand, *, include_events: bool = Fal
             for event in sorted(item.events, key=lambda current_event: current_event.command_event_id)
         ]
     return payload
+
+
+def _device_manual_state_to_dict(item: DeviceManualState | None) -> dict[str, Any] | None:
+    return manual_state_to_dict(item)
 
 
 def _measurement_to_dict(item: Measurement) -> dict[str, Any]:
@@ -1370,6 +1384,63 @@ def list_device_commands(device_id: int):
         .all()
     )
     return jsonify({"items": [_control_command_to_dict(item, include_events=include_events) for item in items]})
+
+
+@api_bp.get("/devices/<int:device_id>/manual-state")
+def get_manual_state_for_device(device_id: int):
+    device, error_response = _get_or_404(Device, device_id, "Device")
+    if error_response:
+        return error_response
+
+    try:
+        watch = _parse_query_bool("watch", default=False)
+        refresh = _parse_query_bool("refresh", default=False)
+        requested_by = _normalize_requested_by(request.args.get("requested_by"), default="process_view")
+        state = ensure_manual_state_snapshot(
+            current_app,
+            device,
+            requested_by=requested_by,
+            watch=watch,
+            refresh=refresh,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify({"state": _device_manual_state_to_dict(state)})
+
+
+@api_bp.post("/devices/<int:device_id>/manual-state")
+def queue_manual_state_for_device(device_id: int):
+    device, error_response = _get_or_404(Device, device_id, "Device")
+    if error_response:
+        return error_response
+
+    try:
+        body = _load_json_payload()
+        requested_by = _normalize_requested_by(body.get("requested_by"), default="api")
+        if _extract_process_manual_token() is not None:
+            requested_by = "process_manual"
+        desired_is_on = _parse_bool(body.get("is_on"), field_name="is_on")
+        desired_speed = _parse_int(body.get("speed"), field_name="speed", min_value=0, max_value=10000)
+        if desired_is_on and desired_speed <= 0:
+            raise ValueError("Field 'speed' must be greater than 0 when 'is_on' is true.")
+        state = queue_manual_state_update(
+            current_app,
+            device,
+            desired_is_on=desired_is_on,
+            desired_speed=desired_speed,
+            requested_by=requested_by,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify({"state": _device_manual_state_to_dict(state)}), 202
 
 
 @api_bp.post("/devices/<int:device_id>/commands")

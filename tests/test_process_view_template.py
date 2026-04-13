@@ -93,19 +93,20 @@ class ProcessViewTemplateTests(unittest.TestCase):
         for text in forbidden_strings:
             self.assertNotIn(text, source)
 
-    def test_process_view_script_keeps_verified_ika_workflow_order(self):
+    def test_process_view_script_uses_manual_state_snapshot_and_queue_endpoints(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
         source = script_path.read_text(encoding="utf-8")
 
-        self.assertIn('await sendManualCommand("START_4", { quiet: true })', source)
-        self.assertIn('await sendManualCommand(`OUT_SP_4 ${speed}`, { quiet: true })', source)
-        self.assertLess(
-            source.index('await sendManualCommand("START_4", { quiet: true })'),
-            source.index('await sendManualCommand(`OUT_SP_4 ${speed}`, { quiet: true })'),
-        )
-        self.assertIn('await sendManualCommand("IN_SP_4", { quiet: true })', source)
-        self.assertIn('await sendManualCommand("IN_PV_4", { quiet: true })', source)
-        self.assertIn('await sendManualCommand("IN_PV_5", { quiet: true })', source)
+        self.assertIn('fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`', source)
+        self.assertIn('fetchJson(`/api/devices/${target.device_id}/manual-state`, {', source)
+        self.assertIn('requested_by: "process_manual"', source)
+        self.assertIn('params.set("watch", settings.watch === false ? "0" : "1");', source)
+        self.assertIn('params.set("refresh", "1");', source)
+        self.assertNotIn('sendManualCommand("START_4"', source)
+        self.assertNotIn('sendManualCommand(`OUT_SP_4 ${speed}`', source)
+        self.assertNotIn('sendManualCommand("IN_SP_4"', source)
+        self.assertNotIn('sendManualCommand("IN_PV_4"', source)
+        self.assertNotIn('sendManualCommand("IN_PV_5"', source)
 
     def test_process_view_script_preserves_dirty_manual_inputs_during_refresh(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
@@ -118,6 +119,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
             'renderOperatorControls(currentNode, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });',
             source,
         )
+        self.assertIn("function applyManualStateSnapshot(nodeId, target, snapshot, options)", source)
         self.assertIn("clearManualInputsDirty(node.id);", source)
         self.assertIn('manualToggleButton.textContent = "Manual";', source)
         self.assertNotIn('manualToggleButton.textContent = state.manualMode ? "Disable" : "Enable";', source)
@@ -158,7 +160,14 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs)", source)
         self.assertIn("await ensureRuntimePlotSamples(runtimeOptions);", source)
         self.assertIn("syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());", source)
-        self.assertIn("syncRuntimePlotTelemetry(node.id, telemetry, Date.now());", source)
+        self.assertIn("await loadManualStateSnapshot(nodeId, { quiet: true });", source)
+
+    def test_process_view_api_supports_manual_state_endpoints(self):
+        source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")
+
+        self.assertIn('@api_bp.get("/devices/<int:device_id>/manual-state")', source)
+        self.assertIn('@api_bp.post("/devices/<int:device_id>/manual-state")', source)
+        self.assertIn('return re.fullmatch(r"/api/devices/\\d+/(commands|manual-state)", path) is not None', source)
 
     def test_process_view_server_adds_ika_plot_fallback_channels(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "web.py").read_text(encoding="utf-8")
@@ -183,7 +192,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("--collapsible-duration", stylesheet)
         self.assertIn(".ui-collapsible-panel", stylesheet)
         self.assertIn(".ui-collapsible-chevron svg", stylesheet)
-        self.assertIn(".process-manual-card.is-panel-collapsed .process-manual-body", stylesheet)
+        self.assertIn(".ui-collapsible-details[open] > .ui-collapsible-panel", stylesheet)
 
 
 if __name__ == "__main__":

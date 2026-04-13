@@ -31,4 +31,5 @@ class Device(db.Model):
     channels = db.relationship("MeasurementChannel", back_populates="device")
     measurements = db.relationship("Measurement", back_populates="device")
     commands = db.relationship("ControlCommand", back_populates="device")
+    manual_state = db.relationship("DeviceManualState", back_populates="device", uselist=False)
     soft_sensor_estimates = db.relationship("SoftSensorEstimate", back_populates="device")

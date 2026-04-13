@@ -214,6 +214,38 @@ CREATE TABLE IF NOT EXISTS control_command_event (
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS device_manual_state (
+  device_id BIGINT UNSIGNED NOT NULL,
+  desired_is_on TINYINT(1) NULL,
+  desired_speed INT NULL,
+  desired_version INT UNSIGNED NOT NULL DEFAULT 0,
+  applied_version INT UNSIGNED NOT NULL DEFAULT 0,
+  requested_by VARCHAR(100) NOT NULL DEFAULT 'system',
+  last_desired_at DATETIME(3) NULL,
+  reported_is_on TINYINT(1) NULL,
+  reported_setpoint_rpm INT NULL,
+  actual_rpm DOUBLE NULL,
+  torque_ncm DOUBLE NULL,
+  last_reported_at DATETIME(3) NULL,
+  queue_status VARCHAR(16) NOT NULL DEFAULT 'idle',
+  last_error VARCHAR(500) NULL,
+  next_poll_at DATETIME(3) NULL,
+  watch_expires_at DATETIME(3) NULL,
+  lease_owner VARCHAR(64) NULL,
+  lease_expires_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (device_id),
+  KEY idx_device_manual_state_status (queue_status),
+  KEY idx_device_manual_state_next_poll (next_poll_at),
+  KEY idx_device_manual_state_watch (watch_expires_at),
+  KEY idx_device_manual_state_lease (lease_expires_at),
+  CONSTRAINT fk_device_manual_state_device
+    FOREIGN KEY (device_id) REFERENCES device (device_id)
+    ON UPDATE CASCADE
+    ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS soft_sensor_model (
   soft_sensor_model_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   model_code VARCHAR(64) NOT NULL,
