@@ -1,0 +1,11 @@
+neue Geräte
+Thermostat Huber
+USB-Hub (Lan_USB)
+Webcam (USB, RS232?)
+Pumpen(schlauch für Susp)
+Waagen (metler)
+Vakuumpumpe (RS232?)
+ventil (pneumatisch) (Festo)
+
+Not-Aus
+
