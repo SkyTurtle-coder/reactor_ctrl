@@ -93,15 +93,15 @@
         );
     }
 
-    function makeTextInput(value, rowIndex, isEmpty) {
+    function makeTextInput(value, fieldName, rowIndex, isEmpty, placeholder) {
         var val = value || "";
         return (
             '<input type="text" maxlength="255"' +
-            ' data-field="task"' +
+            ' data-field="' + fieldName + '"' +
             ' data-row="' + rowIndex + '"' +
             ' class="recipe-text-input' + (isEmpty ? " recipe-input-empty" : "") + '"' +
             ' value="' + escapeHtml(val) + '"' +
-            (isEmpty ? ' placeholder="Click to add step…"' : "") +
+            (isEmpty && placeholder ? ' placeholder="' + escapeHtml(placeholder) + '"' : "") +
             '>'
         );
     }
@@ -116,7 +116,8 @@
             var num = i + 1;
             html += '<tr data-row="' + i + '">';
             html += '<td class="recipe-num-cell">' + num + '</td>';
-            html += '<td>' + makeTextInput(step.task, i, false) + '</td>';
+            html += '<td>' + makeTextInput(step.actor, "actor", i, false) + '</td>';
+            html += '<td>' + makeTextInput(step.task, "task", i, false) + '</td>';
             html += '<td>' + makeNumericInput(step.delta_time, "delta_time", i, false) + '</td>';
             html += '<td>' + makeNumericInput(step.temp, "temp", i, false) + '</td>';
             html += '<td>' + makeNumericInput(step.pressure, "pressure", i, false) + '</td>';
@@ -129,7 +130,8 @@
         var emptyIdx = rows.length;
         html += '<tr class="recipe-empty-row" data-row="' + emptyIdx + '">';
         html += '<td class="recipe-num-cell recipe-num-cell-empty"></td>';
-        html += '<td>' + makeTextInput("", emptyIdx, true) + '</td>';
+        html += '<td>' + makeTextInput("", "actor", emptyIdx, true, "Actor…") + '</td>';
+        html += '<td>' + makeTextInput("", "task", emptyIdx, true, "Click to add step…") + '</td>';
         html += '<td>' + makeNumericInput("", "delta_time", emptyIdx, true) + '</td>';
         html += '<td>' + makeNumericInput("", "temp", emptyIdx, true) + '</td>';
         html += '<td>' + makeNumericInput("", "pressure", emptyIdx, true) + '</td>';
@@ -179,10 +181,10 @@
         var isEmptyRow = rowIdx === _state.steps.length;
         if (!isEmptyRow) return;
 
-        // Copy numeric values from previous row (if any), leave task empty
+        // Copy numeric values from previous row (if any), leave actor and task empty
         if (_state.steps.length > 0) {
             var prev = _state.steps[_state.steps.length - 1];
-            var newStep = { task: "" };
+            var newStep = { actor: "", task: "" };
             for (var k = 0; k < NUMERIC_FIELDS.length; k++) {
                 newStep[NUMERIC_FIELDS[k]] = prev[NUMERIC_FIELDS[k]];
             }
@@ -211,8 +213,8 @@
         if (rowIdx >= _state.steps.length) return;
 
         var step = _state.steps[rowIdx];
-        if (field === "task") {
-            step.task = input.value;
+        if (field === "task" || field === "actor") {
+            step[field] = input.value;
         } else {
             var raw = input.value.trim();
             step[field] = raw === "" ? null : parseFloat(raw);
@@ -230,7 +232,7 @@
     // -------------------------------------------------------------------------
 
     function emptyStep() {
-        return { task: "", delta_time: null, temp: null, pressure: null, rpm: null };
+        return { actor: "", task: "", delta_time: null, temp: null, pressure: null, rpm: null };
     }
 
     function loadRecipe(data) {
@@ -277,6 +279,8 @@
         for (var i = 0; i < _state.steps.length; i++) {
             var step = Object.assign({}, _state.steps[i]);
             // Re-read from DOM in case of stale state
+            var actorEl = dom.tbody.querySelector('input[data-row="' + i + '"][data-field="actor"]');
+            if (actorEl) step.actor = actorEl.value;
             var taskEl = dom.tbody.querySelector('input[data-row="' + i + '"][data-field="task"]');
             if (taskEl) step.task = taskEl.value;
             for (var k = 0; k < NUMERIC_FIELDS.length; k++) {
@@ -289,7 +293,7 @@
             }
             // Skip fully empty steps
             var allNull = NUMERIC_FIELDS.every(function (f) { return step[f] === null || step[f] === undefined || isNaN(step[f]); });
-            if (!step.task && allNull) continue;
+            if (!step.actor && !step.task && allNull) continue;
             steps.push(step);
         }
 

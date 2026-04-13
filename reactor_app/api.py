@@ -1742,9 +1742,10 @@ def _parse_recipe_step(raw: Any, index: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Step {index} must be an object.")
 
+    actor = _clean_string(raw.get("actor"), field_name=f"steps[{index}].actor") or ""
     task = _clean_string(raw.get("task"), field_name=f"steps[{index}].task") or ""
 
-    normalized: dict[str, Any] = {"task": task}
+    normalized: dict[str, Any] = {"actor": actor, "task": task}
     for field in _RECIPE_STEP_NUMERIC_FIELDS:
         raw_val = raw.get(field)
         if raw_val in (None, ""):
@@ -1769,7 +1770,7 @@ def _validate_recipe_steps(raw_steps: Any) -> list[dict[str, Any]]:
     for index, raw in enumerate(raw_steps, start=1):
         step = _parse_recipe_step(raw, index)
         # Skip fully empty trailing rows
-        if not step["task"] and all(step[f] is None for f in _RECIPE_STEP_NUMERIC_FIELDS):
+        if not step["actor"] and not step["task"] and all(step[f] is None for f in _RECIPE_STEP_NUMERIC_FIELDS):
             continue
         result.append(step)
     return result
