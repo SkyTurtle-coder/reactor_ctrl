@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from flask import Flask
 from sqlalchemy import and_, case, or_
+from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import Device, DeviceManualState
@@ -19,6 +20,34 @@ _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _datetime_isoformat(value: datetime | None) -> str | None:
+    normalized = _as_utc_datetime(value)
+    return normalized.isoformat() if normalized is not None else None
+
+
+def _mysql_error_code(exc: OperationalError) -> int | None:
+    original = getattr(exc, "orig", None)
+    args = getattr(original, "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_mysql_record_changed_error(exc: OperationalError) -> bool:
+    return _mysql_error_code(exc) == 1020
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -105,7 +134,7 @@ def _telemetry_to_snapshot(state: DeviceManualState) -> dict[str, Any]:
         "setpoint_rpm": state.reported_setpoint_rpm,
         "actual_rpm": state.actual_rpm,
         "torque_ncm": state.torque_ncm,
-        "updated_at": state.last_reported_at.isoformat() if state.last_reported_at else None,
+        "updated_at": _datetime_isoformat(state.last_reported_at),
     }
 
 
@@ -122,12 +151,12 @@ def manual_state_to_dict(state: DeviceManualState | None) -> dict[str, Any] | No
             "is_on": bool(state.desired_is_on) if state.desired_is_on is not None else None,
             "speed": state.desired_speed,
             "requested_by": state.requested_by,
-            "updated_at": state.last_desired_at.isoformat() if state.last_desired_at else None,
+            "updated_at": _datetime_isoformat(state.last_desired_at),
         },
         "reported_state": _telemetry_to_snapshot(state),
         "last_error": state.last_error,
-        "next_poll_at": state.next_poll_at.isoformat() if state.next_poll_at else None,
-        "watch_expires_at": state.watch_expires_at.isoformat() if state.watch_expires_at else None,
+        "next_poll_at": _datetime_isoformat(state.next_poll_at),
+        "watch_expires_at": _datetime_isoformat(state.watch_expires_at),
     }
 
 
@@ -247,9 +276,11 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
 
     now = _now_utc()
     device = db.session.get(Device, device_id)
-    watch_active = bool(state.watch_expires_at and state.watch_expires_at > now)
+    watch_expires_at = _as_utc_datetime(state.watch_expires_at)
+    next_poll_at = _as_utc_datetime(state.next_poll_at)
+    watch_active = bool(watch_expires_at and watch_expires_at > now)
     desired_pending = int(state.desired_version or 0) > int(state.applied_version or 0)
-    poll_due = watch_active and (state.next_poll_at is None or state.next_poll_at <= now)
+    poll_due = watch_active and (next_poll_at is None or next_poll_at <= now)
 
     if device is None or not _supports_manual_runtime(device):
         state.last_error = "Manual runtime is not supported for this device."
@@ -319,22 +350,28 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
 
     lease_until = now + _manual_lease_duration(app)
     for (device_id,) in candidates:
-        claimed = (
-            db.session.query(DeviceManualState)
-            .filter(
-                DeviceManualState.device_id == device_id,
-                or_(DeviceManualState.lease_expires_at.is_(None), DeviceManualState.lease_expires_at < now),
+        try:
+            claimed = (
+                db.session.query(DeviceManualState)
+                .filter(
+                    DeviceManualState.device_id == device_id,
+                    or_(DeviceManualState.lease_expires_at.is_(None), DeviceManualState.lease_expires_at < now),
+                )
+                .update(
+                    {
+                        DeviceManualState.lease_owner: worker_id,
+                        DeviceManualState.lease_expires_at: lease_until,
+                        DeviceManualState.queue_status: "running",
+                    },
+                    synchronize_session=False,
+                )
             )
-            .update(
-                {
-                    DeviceManualState.lease_owner: worker_id,
-                    DeviceManualState.lease_expires_at: lease_until,
-                    DeviceManualState.queue_status: "running",
-                },
-                synchronize_session=False,
-            )
-        )
-        db.session.commit()
+            db.session.commit()
+        except OperationalError as exc:
+            db.session.rollback()
+            if _is_mysql_record_changed_error(exc):
+                continue
+            raise
         if claimed:
             return int(device_id)
 
