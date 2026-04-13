@@ -2252,3 +2252,222 @@ kbd {
         grid-template-columns: 1fr;
     }
 }
+
+/* ==========================================================================
+   Recipe editor
+   ========================================================================== */
+
+.recipe-shell {
+    display: grid;
+    gap: 1rem;
+}
+
+/* Toolbar */
+.recipe-toolbar-card {
+    padding: 0;
+}
+
+.recipe-toolbar-inner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem;
+    padding: 0.9rem 1rem;
+}
+
+.recipe-picker-field {
+    flex: 1 1 260px;
+}
+
+.recipe-toolbar-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-shrink: 0;
+}
+
+/* Header card */
+.recipe-header-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 1rem;
+    align-items: start;
+}
+
+.recipe-meta-chips {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    justify-content: flex-end;
+    padding-bottom: 0.1rem;
+}
+
+.recipe-meta-chip {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+}
+
+.recipe-meta-label {
+    color: var(--muted);
+    min-width: 5.5rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* Recipe fields (label + input stacked) */
+.recipe-field {
+    display: grid;
+    gap: 0.3rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.recipe-field input,
+.recipe-field select {
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.95rem;
+    font-family: inherit;
+    font-weight: 400;
+    letter-spacing: normal;
+    text-transform: none;
+    width: 100%;
+    min-width: 0;
+}
+
+.recipe-field input:focus,
+.recipe-field select:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: transparent;
+}
+
+/* Steps table */
+.recipe-steps-card {
+    overflow: hidden;
+}
+
+.recipe-table {
+    min-width: 680px;
+}
+
+.recipe-col-num {
+    width: 2.5rem;
+    text-align: center;
+}
+
+.recipe-col-task {
+    min-width: 180px;
+}
+
+.recipe-col-num-val {
+    width: 7rem;
+    white-space: nowrap;
+}
+
+.recipe-col-del {
+    width: 2.5rem;
+}
+
+.recipe-num-cell {
+    text-align: center;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem;
+}
+
+.recipe-num-cell-empty {
+    color: transparent;
+}
+
+.recipe-text-input,
+.recipe-num-input {
+    width: 100%;
+    padding: 0.35rem 0.5rem;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font-size: 0.9rem;
+    font-family: inherit;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.recipe-text-input:hover,
+.recipe-num-input:hover {
+    border-color: var(--border);
+    background: var(--surface-alt);
+}
+
+.recipe-text-input:focus,
+.recipe-num-input:focus {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: transparent;
+    background: var(--surface);
+}
+
+.recipe-input-empty {
+    color: var(--muted);
+}
+
+.recipe-empty-row td {
+    border-bottom: none;
+}
+
+.recipe-del-btn {
+    padding: 0.2rem 0.5rem;
+    font-size: 0.75rem;
+    color: var(--muted);
+    border-color: transparent;
+    background: transparent;
+}
+
+.recipe-del-btn:hover {
+    color: var(--danger);
+    border-color: var(--danger);
+    background: rgba(154, 47, 36, 0.07);
+}
+
+/* Status bar */
+.recipe-status-bar {
+    padding: 0.1rem 0;
+    min-height: 1.6rem;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    .recipe-header-body {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .recipe-meta-chips {
+        grid-column: 1 / -1;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+}
+
+@media (max-width: 640px) {
+    .recipe-header-body {
+        grid-template-columns: 1fr;
+    }
+
+    .recipe-toolbar-inner {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .recipe-toolbar-actions {
+        flex-direction: column;
+    }
+}

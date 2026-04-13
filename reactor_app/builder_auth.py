@@ -9,6 +9,7 @@ import time
 
 REACTOR_BUILDER_WRITE_SCOPE = "reactor_builder:write"
 PROCESS_MANUAL_WRITE_SCOPE = "process_manual:write"
+RECIPE_WRITE_SCOPE = "recipe:write"
 
 
 def _b64url_encode(value: bytes) -> str:

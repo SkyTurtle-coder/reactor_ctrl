@@ -8,7 +8,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, verify_scoped_token
+from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, verify_scoped_token
 from .actuator_profiles import normalize_control_definition
 from .extensions import db
 from .flowsheet_library import build_symbol_index, load_flowsheet_library
@@ -23,6 +23,7 @@ from .models import (
     DeviceServer,
     Measurement,
     ReactorBuild,
+    Recipe,
 )
 from .services import (
     DeviceCommandError,
@@ -115,6 +116,14 @@ def _extract_process_manual_token() -> str | None:
     return token or None
 
 
+def _extract_recipe_write_token() -> str | None:
+    token = request.headers.get("X-Recipe-Token")
+    if token is None:
+        return None
+    token = token.strip()
+    return token or None
+
+
 def _is_builder_write_request() -> bool:
     if request.method not in {"POST", "PATCH"}:
         return False
@@ -129,6 +138,13 @@ def _is_process_manual_request() -> bool:
     return re.fullmatch(r"/api/devices/\d+/(commands|manual-state)", path) is not None
 
 
+def _is_recipe_write_request() -> bool:
+    if request.method not in {"POST", "PATCH", "DELETE"}:
+        return False
+    path = request.path.rstrip("/")
+    return path == "/api/recipes" or path.startswith("/api/recipes/")
+
+
 @api_bp.before_request
 def require_api_token_for_writes():
     if request.method in _SAFE_METHODS:
@@ -139,6 +155,7 @@ def require_api_token_for_writes():
 
     builder_token = _extract_builder_write_token() if _is_builder_write_request() else None
     manual_token = _extract_process_manual_token() if _is_process_manual_request() else None
+    recipe_token = _extract_recipe_write_token() if _is_recipe_write_request() else None
     secret_key = current_app.config.get("SECRET_KEY")
     if builder_token and secret_key:
         if verify_scoped_token(
@@ -154,6 +171,13 @@ def require_api_token_for_writes():
             expected_scope=PROCESS_MANUAL_WRITE_SCOPE,
         ):
             return None
+    if recipe_token and secret_key:
+        if verify_scoped_token(
+            recipe_token,
+            secret_key=secret_key,
+            expected_scope=RECIPE_WRITE_SCOPE,
+        ):
+            return None
 
     expected_token = current_app.config.get("API_AUTH_TOKEN")
     if not expected_token:
@@ -165,6 +189,11 @@ def require_api_token_for_writes():
         if manual_token is not None:
             return _json_auth_error(
                 "Invalid or expired Process Manual token. Reload the process page and try again.",
+                401,
+            )
+        if recipe_token is not None:
+            return _json_auth_error(
+                "Invalid or expired Recipe token. Reload the recipes page and try again.",
                 401,
             )
         return _json_auth_error(
@@ -180,6 +209,8 @@ def require_api_token_for_writes():
         return _json_auth_error("Invalid or expired Reactor Builder token. Reload the builder page and try again.", 401)
     if manual_token is not None:
         return _json_auth_error("Invalid or expired Process Manual token. Reload the process page and try again.", 401)
+    if recipe_token is not None:
+        return _json_auth_error("Invalid or expired Recipe token. Reload the recipes page and try again.", 401)
 
     if provided_token is None:
         return _json_auth_error("Missing API authentication token.", 401)
@@ -1670,6 +1701,161 @@ def update_device_connection(connection_id: int):
 @api_bp.delete("/device-connections/<int:connection_id>")
 def delete_device_connection(connection_id: int):
     item, error_response = _get_or_404(DeviceConnection, connection_id, "DeviceConnection")
+    if error_response:
+        return error_response
+
+    db.session.delete(item)
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return "", 204
+
+
+# ---------------------------------------------------------------------------
+# Recipe helpers
+# ---------------------------------------------------------------------------
+
+_RECIPE_ALLOWED_STATUSES = {"draft", "approved", "archived"}
+_RECIPE_MAX_STEPS = 500
+_RECIPE_STEP_NUMERIC_FIELDS = ("delta_time", "temp", "pressure", "rpm")
+
+
+def _recipe_to_dict(item: Recipe, *, include_steps: bool = True) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "recipe_id": item.recipe_id,
+        "title": item.title,
+        "operator_name": item.operator_name,
+        "version": item.version,
+        "status": item.status,
+        "created_by": item.created_by,
+        "updated_by": item.updated_by,
+        "is_active": item.is_active,
+        "created_at": _dt(item.created_at),
+        "updated_at": _dt(item.updated_at),
+    }
+    if include_steps:
+        payload["steps"] = item.steps_json if isinstance(item.steps_json, list) else []
+    return payload
+
+
+def _parse_recipe_step(raw: Any, index: int) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Step {index} must be an object.")
+
+    task = _clean_string(raw.get("task"), field_name=f"steps[{index}].task") or ""
+
+    normalized: dict[str, Any] = {"task": task}
+    for field in _RECIPE_STEP_NUMERIC_FIELDS:
+        raw_val = raw.get(field)
+        if raw_val in (None, ""):
+            normalized[field] = None
+        else:
+            parsed = _parse_float(raw_val, field_name=f"steps[{index}].{field}")
+            if parsed < 0:
+                raise ValueError(f"Field 'steps[{index}].{field}' must be >= 0.")
+            normalized[field] = round(parsed, 2)
+    return normalized
+
+
+def _validate_recipe_steps(raw_steps: Any) -> list[dict[str, Any]]:
+    if raw_steps in (None, ""):
+        return []
+    if not isinstance(raw_steps, list):
+        raise ValueError("Field 'steps' must be a list.")
+    if len(raw_steps) > _RECIPE_MAX_STEPS:
+        raise ValueError(f"Field 'steps' must not contain more than {_RECIPE_MAX_STEPS} items.")
+
+    result: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_steps, start=1):
+        step = _parse_recipe_step(raw, index)
+        # Skip fully empty trailing rows
+        if not step["task"] and all(step[f] is None for f in _RECIPE_STEP_NUMERIC_FIELDS):
+            continue
+        result.append(step)
+    return result
+
+
+def _apply_recipe_payload(item: Recipe, payload: dict[str, Any], *, partial: bool) -> None:
+    if not partial or "title" in payload:
+        item.title = _clean_string(payload.get("title"), field_name="title", required=True)
+    if not partial or "operator_name" in payload:
+        item.operator_name = _clean_string(payload.get("operator_name"), field_name="operator_name", required=True)
+    if not partial:
+        item.created_by = _clean_string(payload.get("created_by"), field_name="created_by", required=True)
+    if "updated_by" in payload:
+        item.updated_by = _clean_string(payload.get("updated_by"), field_name="updated_by")
+    elif not partial:
+        item.updated_by = item.created_by
+    if not partial or "steps" in payload:
+        item.steps_json = _validate_recipe_steps(payload.get("steps"))
+    if "status" in payload:
+        item.status = _validate_choice(
+            payload.get("status"),
+            field_name="status",
+            allowed=_RECIPE_ALLOWED_STATUSES,
+            required=True,
+        )
+    if "is_active" in payload:
+        item.is_active = _parse_bool(payload.get("is_active"), field_name="is_active")
+    if item.updated_by is None and not partial:
+        item.updated_by = item.created_by
+
+
+# ---------------------------------------------------------------------------
+# Recipe endpoints
+# ---------------------------------------------------------------------------
+
+@api_bp.get("/recipes")
+def list_recipes():
+    items = Recipe.query.order_by(Recipe.updated_at.desc(), Recipe.recipe_id.desc()).all()
+    return jsonify({"items": [_recipe_to_dict(item, include_steps=False) for item in items]})
+
+
+@api_bp.post("/recipes")
+def create_recipe():
+    try:
+        payload = _load_json_payload()
+        item = Recipe()
+        _apply_recipe_payload(item, payload, partial=False)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    db.session.add(item)
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify(_recipe_to_dict(item, include_steps=True)), 201
+
+
+@api_bp.get("/recipes/<int:recipe_id>")
+def get_recipe(recipe_id: int):
+    item, error_response = _get_or_404(Recipe, recipe_id, "Recipe")
+    if error_response:
+        return error_response
+    return jsonify(_recipe_to_dict(item, include_steps=True))
+
+
+@api_bp.patch("/recipes/<int:recipe_id>")
+def update_recipe(recipe_id: int):
+    item, error_response = _get_or_404(Recipe, recipe_id, "Recipe")
+    if error_response:
+        return error_response
+
+    try:
+        payload = _load_json_payload()
+        _apply_recipe_payload(item, payload, partial=True)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify(_recipe_to_dict(item, include_steps=True))
+
+
+@api_bp.delete("/recipes/<int:recipe_id>")
+def delete_recipe(recipe_id: int):
+    item, error_response = _get_or_404(Recipe, recipe_id, "Recipe")
     if error_response:
         return error_response
 

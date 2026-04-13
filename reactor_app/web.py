@@ -9,10 +9,10 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
 from .actuator_profiles import list_actuator_profiles
-from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, create_scoped_token
+from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, create_scoped_token
 from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
-from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild
+from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild, Recipe
 from .services.drivers import list_supported_protocol_options, list_supported_protocols, protocol_label
 
 
@@ -561,27 +561,80 @@ def process_view():
 
 
 @web_bp.get("/recipes")
-def recipes_view() -> str:
-    recipe_sections = [
-        {
-            "title": "Recipe Library",
-            "text": "Central storage for approved recipe definitions with consistent names, parameters, and process phases.",
-        },
-        {
-            "title": "Versioning",
-            "text": "Approval status and changes are traceable so every run references a clearly defined recipe version.",
-        },
-        {
-            "title": "Execution Profiles",
-            "text": "Batch, hold, and control phases combined in a unified structure for operation and documentation.",
-        },
-    ]
-    return render_template(
-        "recipes.html",
-        active_page="recipes",
-        recipe_sections=recipe_sections,
-        **_base_context(),
+def recipes_view():
+    recipe_id = request.args.get("recipe_id", type=int)
+    saved_recipes: list[dict[str, Any]] = []
+    current_recipe = None
+    selected_recipe_missing = False
+    recipe_storage_available = True
+    recipe_notice = None
+
+    try:
+        items = Recipe.query.order_by(Recipe.updated_at.desc(), Recipe.recipe_id.desc()).all()
+        saved_recipes = [
+            {
+                "recipe_id": r.recipe_id,
+                "title": r.title,
+                "operator_name": r.operator_name,
+                "version": r.version,
+                "status": r.status,
+                "updated_by": r.updated_by,
+                "created_by": r.created_by,
+                "updated_at": _dt(r.updated_at),
+            }
+            for r in items
+        ]
+        if recipe_id is not None:
+            raw = db.session.get(Recipe, recipe_id)
+            selected_recipe_missing = raw is None
+            if raw is not None:
+                current_recipe = {
+                    "recipe_id": raw.recipe_id,
+                    "title": raw.title,
+                    "operator_name": raw.operator_name,
+                    "version": raw.version,
+                    "status": raw.status,
+                    "steps": raw.steps_json if isinstance(raw.steps_json, list) else [],
+                    "created_by": raw.created_by,
+                    "updated_by": raw.updated_by,
+                    "updated_at": _dt(raw.updated_at),
+                }
+    except Exception as exc:
+        db.session.rollback()
+        recipe_storage_available = False
+        recipe_notice = (
+            "Recipes could not be loaded. The database may be unavailable."
+        )
+        current_app.logger.exception("Recipes view database fallback activated: %s", exc)
+
+    recipe_write_token = None
+    if current_app.config.get("API_AUTH_REQUIRED", True):
+        secret_key = current_app.config.get("SECRET_KEY")
+        if secret_key:
+            recipe_write_token = create_scoped_token(
+                secret_key,
+                scope=RECIPE_WRITE_SCOPE,
+                ttl_seconds=current_app.config.get("RECIPE_WRITE_TOKEN_TTL_SECONDS", 43200),
+            )
+
+    response = make_response(
+        render_template(
+            "recipes.html",
+            active_page="recipes",
+            saved_recipes=saved_recipes,
+            current_recipe=current_recipe,
+            selected_recipe_id=recipe_id if current_recipe is not None else None,
+            selected_recipe_missing=selected_recipe_missing,
+            recipe_notice=recipe_notice,
+            recipe_storage_available=recipe_storage_available,
+            recipe_write_token=recipe_write_token,
+            **_base_context(),
+        )
     )
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @web_bp.get("/alerts")

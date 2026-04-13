@@ -9,6 +9,7 @@ from .device_server import DeviceServer
 from .measurement import Measurement
 from .measurement_channel import MeasurementChannel
 from .reactor_build import ReactorBuild
+from .recipe import Recipe
 from .soft_sensor_estimate import SoftSensorEstimate
 from .soft_sensor_model import SoftSensorModel
 
@@ -25,6 +26,7 @@ __all__ = [
     "Measurement",
     "MeasurementChannel",
     "ReactorBuild",
+    "Recipe",
     "SoftSensorEstimate",
     "SoftSensorModel",
 ]

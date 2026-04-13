@@ -6,27 +6,114 @@
 <section class="page-header">
     <span class="eyebrow">Process</span>
     <h1>Recipes</h1>
-    <p class="page-lead">Recipe library, approval status, and assigned process phases.</p>
+    <p class="page-lead">Create and edit process recipes with step-by-step setpoints.</p>
 </section>
 {% endblock %}
 
 {% block content %}
-<section class="tile-grid tile-grid-compact">
-    {% for section in recipe_sections %}
-    <article class="feature-tile feature-tile-static">
-        <h2>{{ section.title }}</h2>
-        <p>{{ section.text }}</p>
-        <span class="tile-link">Recipe scope</span>
-    </article>
-    {% endfor %}
+{% if recipe_notice %}
+<section class="card">
+    <div class="card-body">
+        <p class="error-text">{{ recipe_notice }}</p>
+    </div>
+</section>
+{% endif %}
+
+<section class="recipe-shell">
+
+    <!-- Toolbar -->
+    <div class="card recipe-toolbar-card">
+        <div class="recipe-toolbar-inner">
+            <label class="recipe-field recipe-picker-field">
+                <span>Saved Recipes</span>
+                <select id="recipe-select" {% if not recipe_storage_available %}disabled{% endif %}>
+                    <option value="">New Recipe</option>
+                    {% for r in saved_recipes %}
+                    <option value="{{ r.recipe_id }}"{% if selected_recipe_id == r.recipe_id %} selected{% endif %}>
+                        {{ r.title }} | {{ r.status }} | {{ r.updated_by or r.created_by }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div class="recipe-toolbar-actions">
+                <button id="recipe-new-btn" class="btn" type="button">New Recipe</button>
+                <button id="recipe-save-btn" class="btn btn-primary" type="button" {% if not recipe_storage_available %}disabled{% endif %}>Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Header fields -->
+    <div class="card recipe-header-card">
+        <div class="card-body recipe-header-body">
+            <label class="recipe-field">
+                <span>Recipe Title</span>
+                <input id="recipe-title" type="text" maxlength="120" placeholder="e.g. Batch A – Synthesis run">
+            </label>
+            <label class="recipe-field">
+                <span>Operator</span>
+                <input id="recipe-operator" type="text" maxlength="120" placeholder="Name or initials">
+            </label>
+            <div class="recipe-meta-chips">
+                <div class="recipe-meta-chip">
+                    <span class="recipe-meta-label">Status</span>
+                    <span id="recipe-status-badge" class="badge badge-muted">draft</span>
+                </div>
+                <div class="recipe-meta-chip">
+                    <span class="recipe-meta-label">Save status</span>
+                    <span id="recipe-save-state" class="badge badge-muted">Saved</span>
+                </div>
+                <div class="recipe-meta-chip">
+                    <span class="recipe-meta-label">Steps</span>
+                    <strong id="recipe-step-count">0</strong>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Steps table -->
+    <div class="card recipe-steps-card">
+        <div class="card-header">
+            <h2>Process Steps</h2>
+        </div>
+        <div class="table-responsive">
+            <table class="table recipe-table" id="recipe-table">
+                <thead>
+                    <tr>
+                        <th class="recipe-col-num">#</th>
+                        <th class="recipe-col-task">Task</th>
+                        <th class="recipe-col-num-val">Delta Time [min]</th>
+                        <th class="recipe-col-num-val">Temp [&deg;C]</th>
+                        <th class="recipe-col-num-val">Pressure [mbar(a)]</th>
+                        <th class="recipe-col-num-val">RPM</th>
+                        <th class="recipe-col-del"></th>
+                    </tr>
+                </thead>
+                <tbody id="recipe-tbody">
+                    <tr>
+                        <td colspan="7" class="muted">Loading&hellip;</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Status bar -->
+    <div class="recipe-status-bar" aria-live="polite">
+        <p id="recipe-status-msg" class="muted"></p>
+    </div>
+
 </section>
 
-<section class="card">
-    <div class="card-header">
-        <h2>Recipe Management</h2>
-    </div>
-    <div class="card-body">
-        <p class="empty-state">No approved recipes on file.</p>
-    </div>
-</section>
+<script id="recipe-saved-list" type="application/json">{{ saved_recipes | tojson }}</script>
+<script id="recipe-current-data" type="application/json">{{ current_recipe | tojson }}</script>
+<script id="recipe-meta" type="application/json">{{ {
+    "selectedRecipeId": selected_recipe_id,
+    "apiAuthRequired": api_auth_required,
+    "recipeWriteToken": recipe_write_token,
+    "storageAvailable": recipe_storage_available
+} | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_asset('js/recipes.js') }}"></script>
 {% endblock %}
