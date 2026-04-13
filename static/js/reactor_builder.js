@@ -1699,8 +1699,6 @@
         nodeLayer.innerHTML = "";
 
         for (const node of state.nodes) {
-            clampNode(node);
-
             const element = document.createElement("article");
             element.className = "builder-node";
             if (state.selectedNodeId === node.id) {
@@ -1880,7 +1878,6 @@
 
     function renderAll() {
         syncCanvasMetrics();
-        state.nodes.forEach(clampNode);
         renderEdges();
         renderNodes();
         updateEmptyState();
