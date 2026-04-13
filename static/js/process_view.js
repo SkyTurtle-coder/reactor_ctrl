@@ -1289,9 +1289,36 @@
         }
     }
 
+    async function loadRuntimePlotSnapshot(nodeId, options) {
+        const settings = options || {};
+        const node = getNodeById(nodeId);
+        const target = manualTargets[nodeId] || null;
+        if (!canLoadIkaSettings(node, target)) {
+            return null;
+        }
+
+        const params = new URLSearchParams();
+        params.set("watch", settings.watch === false ? "0" : "1");
+        if (settings.refresh !== false) {
+            params.set("refresh", "1");
+        }
+        params.set("requested_by", "process_view_plot");
+
+        const payload = await fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`, {
+            timeoutMs: 12000,
+            maxRetries: 1,
+        });
+        const snapshot = payload?.state || null;
+        const telemetry = snapshotTelemetry(snapshot);
+        if (telemetry.setpointRpm != null || telemetry.actualRpm != null || telemetry.torqueNcm != null) {
+            syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());
+        }
+        return snapshot;
+    }
+
     async function ensureRuntimePlotSamples(options) {
         const runtimeOptions = (Array.isArray(options) ? options : []).filter(
-            (option) => option.dataSource === "runtime_fallback" && runtimePlotPointsForSeries(option).length === 0,
+            (option) => option.dataSource === "runtime_fallback",
         );
         if (!runtimeOptions.length) {
             return;
@@ -1300,17 +1327,20 @@
         const uniqueNodeIds = Array.from(new Set(runtimeOptions.map((option) => option.nodeId))).filter(Boolean);
         for (const nodeId of uniqueNodeIds) {
             const cachedTelemetry = state.latestPlotTelemetryByNodeId[nodeId];
-            if (cachedTelemetry?.telemetry && Number.isFinite(cachedTelemetry.timestampMs)) {
-                syncRuntimePlotTelemetry(nodeId, cachedTelemetry.telemetry, cachedTelemetry.timestampMs);
-                continue;
-            }
-            if (!state.manualMode || state.selectedNodeId !== nodeId || state.isManualBusy || state.isSending) {
-                continue;
-            }
             try {
-                await loadManualStateSnapshot(nodeId, { quiet: true });
+                const hasFreshCache =
+                    cachedTelemetry?.telemetry &&
+                    Number.isFinite(cachedTelemetry.timestampMs) &&
+                    (Date.now() - cachedTelemetry.timestampMs) < PROCESS_PLOT_REFRESH_MS;
+                await loadRuntimePlotSnapshot(nodeId, {
+                    quiet: true,
+                    refresh: !hasFreshCache,
+                    watch: true,
+                });
             } catch (_error) {
-                // Plot rendering falls back to the next successful live poll.
+                if (cachedTelemetry?.telemetry && Number.isFinite(cachedTelemetry.timestampMs)) {
+                    syncRuntimePlotTelemetry(nodeId, cachedTelemetry.telemetry, cachedTelemetry.timestampMs);
+                }
             }
         }
     }
@@ -1364,7 +1394,7 @@
             const empty = document.createElement("p");
             empty.className = "process-plot-chart-empty";
             empty.textContent = hasRuntimeFallback
-                ? "No live samples are available for this unit group yet. Select the actuator in manual mode and let the device refresh run."
+                ? "No live samples are available for this unit group yet. The plot requests device telemetry automatically while the checkbox stays active."
                 : "No stored measurements are available for the selected series in this unit group yet.";
             card.appendChild(empty);
             return card;
@@ -1575,7 +1605,7 @@
             } else {
                 setPlotStatus(
                     runtimeOptions.length > 0
-                        ? "No plot data is available yet. Live fallback values appear once the selected actuator is polled."
+                        ? "No plot data is available yet. Waiting for the first live device sample from the selected checkbox."
                         : "No plot data is available for the selected values yet.",
                     "muted",
                 );

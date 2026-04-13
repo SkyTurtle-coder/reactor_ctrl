@@ -177,9 +177,11 @@ class ProcessViewTemplateTests(unittest.TestCase):
 
         self.assertIn('option.dataSource === "runtime_fallback"', source)
         self.assertIn("function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs)", source)
+        self.assertIn("function loadRuntimePlotSnapshot(nodeId, options)", source)
         self.assertIn("await ensureRuntimePlotSamples(runtimeOptions);", source)
         self.assertIn("syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());", source)
-        self.assertIn("await loadManualStateSnapshot(nodeId, { quiet: true });", source)
+        self.assertIn("await loadRuntimePlotSnapshot(nodeId, {", source)
+        self.assertIn('params.set("requested_by", "process_view_plot");', source)
 
     def test_process_view_api_supports_manual_state_endpoints(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")
