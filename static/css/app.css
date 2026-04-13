@@ -1836,6 +1836,24 @@ h2 {
     stroke: rgba(253, 231, 14, 0.5);
 }
 
+.builder-edge-corner-handle {
+    fill: #ffffff;
+    stroke: var(--accent);
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+    pointer-events: auto;
+    cursor: move;
+}
+
+.builder-edge-corner-handle:hover:not(.is-active) {
+    fill: rgba(253, 231, 14, 0.2);
+}
+
+.builder-edge-corner-handle.is-active {
+    fill: rgba(253, 231, 14, 0.55);
+    stroke: var(--accent-strong);
+}
+
 kbd {
     display: inline-flex;
     align-items: center;

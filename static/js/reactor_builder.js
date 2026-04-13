@@ -352,6 +352,7 @@
         dragMove: null,
         anchorMove: null,
         edgeSegmentMove: null,
+        cornerMove: null,
         undoStack: [],
         modalReturnFocus: null,
         canvasSize: { ...fallbackCanvasSize },
@@ -541,6 +542,7 @@
         state.pendingAnchor = null;
         state.anchorMove = null;
         state.edgeSegmentMove = null;
+        state.cornerMove = null;
         renderAll();
         setStatus("Undo ausgefuehrt.", "muted");
     }
@@ -745,6 +747,7 @@
         state.pendingAnchor = null;
         state.anchorMove = null;
         state.edgeSegmentMove = null;
+        state.cornerMove = null;
         const savedCanvas = definition?.canvas;
         const savedW = asNumber(savedCanvas?.width, 0);
         const savedH = asNumber(savedCanvas?.height, 0);
@@ -823,6 +826,7 @@
         state.pendingAnchor = null;
         state.anchorMove = null;
         state.edgeSegmentMove = null;
+        state.cornerMove = null;
         state.undoStack = [];
         state.savedCanvasSize = null;
         nameInput.value = "Untitled Reactor Build";
@@ -933,8 +937,9 @@
         return compressed;
     }
 
-    function buildAutoEdgePoints(sourcePoint, sourceSide, targetPoint, targetSide) {
+    function buildAutoEdgePoints(sourcePoint, sourceSide, targetPoint, targetSide, obstacles) {
         const stubDistance = 28;
+        const obs = Array.isArray(obstacles) ? obstacles : [];
         const sourceStub = offsetPoint(sourcePoint, sourceSide, stubDistance);
         const targetStub = offsetPoint(targetPoint, targetSide, stubDistance);
         const sourceHorizontal = sourceSide === "west" || sourceSide === "east";
@@ -942,17 +947,42 @@
         const points = [sourcePoint, sourceStub];
 
         if (sourceHorizontal && targetHorizontal) {
-            const middleX = Math.round(((sourceStub.x + targetStub.x) / 2) * 100) / 100;
+            let middleX = Math.round(((sourceStub.x + targetStub.x) / 2) * 100) / 100;
+            if (obs.length > 0) middleX = findClearX(middleX, sourceStub.y, targetStub.y, obs);
             points.push({ x: middleX, y: sourceStub.y });
             points.push({ x: middleX, y: targetStub.y });
         } else if (!sourceHorizontal && !targetHorizontal) {
-            const middleY = Math.round(((sourceStub.y + targetStub.y) / 2) * 100) / 100;
+            let middleY = Math.round(((sourceStub.y + targetStub.y) / 2) * 100) / 100;
+            if (obs.length > 0) middleY = findClearY(middleY, sourceStub.x, targetStub.x, obs);
             points.push({ x: sourceStub.x, y: middleY });
             points.push({ x: targetStub.x, y: middleY });
         } else if (sourceHorizontal) {
-            points.push({ x: targetStub.x, y: sourceStub.y });
+            let cx = targetStub.x;
+            let cy = sourceStub.y;
+            if (obs.length > 0) {
+                // Try default corner; if blocked try alternate (flip the L)
+                const blocked =
+                    obs.some((ob) => hSegHitsBox(cy, sourceStub.x, cx, ob)) ||
+                    obs.some((ob) => vSegHitsBox(cx, cy, targetStub.y, ob));
+                if (blocked) {
+                    cx = sourceStub.x;
+                    cy = targetStub.y;
+                }
+            }
+            points.push({ x: cx, y: cy });
         } else {
-            points.push({ x: sourceStub.x, y: targetStub.y });
+            let cx = sourceStub.x;
+            let cy = targetStub.y;
+            if (obs.length > 0) {
+                const blocked =
+                    obs.some((ob) => vSegHitsBox(cx, sourceStub.y, cy, ob)) ||
+                    obs.some((ob) => hSegHitsBox(cy, cx, targetStub.x, ob));
+                if (blocked) {
+                    cx = targetStub.x;
+                    cy = sourceStub.y;
+                }
+            }
+            points.push({ x: cx, y: cy });
         }
 
         points.push(targetStub);
@@ -969,7 +999,11 @@
             }));
         }
 
-        const autoPoints = buildAutoEdgePoints(sourcePoint, sourceSide, targetPoint, targetSide);
+        const excludeIds = [edge.source_node_id, edge.target_node_id].filter(Boolean);
+        const obstacles = state.nodes
+            .filter((n) => !excludeIds.includes(n.id))
+            .map((n) => nodeHitBox(n, 18));
+        const autoPoints = buildAutoEdgePoints(sourcePoint, sourceSide, targetPoint, targetSide, obstacles);
         return autoPoints.slice(1, -1);
     }
 
@@ -983,6 +1017,131 @@
             .join(" ");
     }
 
+    // --- Bridge / crossing helpers ---
+
+    function segmentIntersect(p1, p2, p3, p4) {
+        const h12 = Math.abs(p1.y - p2.y) < 0.5;
+        const h34 = Math.abs(p3.y - p4.y) < 0.5;
+        if (h12 === h34) return null;
+        const hP = h12 ? [p1, p2] : [p3, p4];
+        const vP = h12 ? [p3, p4] : [p1, p2];
+        const hY = hP[0].y;
+        const hX1 = Math.min(hP[0].x, hP[1].x);
+        const hX2 = Math.max(hP[0].x, hP[1].x);
+        const vX = vP[0].x;
+        const vY1 = Math.min(vP[0].y, vP[1].y);
+        const vY2 = Math.max(vP[0].y, vP[1].y);
+        const eps = 4;
+        if (vX > hX1 + eps && vX < hX2 - eps && hY > vY1 + eps && hY < vY2 - eps) {
+            return { x: vX, y: hY, onHoriz: h12 };
+        }
+        return null;
+    }
+
+    function collectBridgePoints(edgePolylines) {
+        const BRIDGE_R = 8;
+        const bridgeMap = new Map();
+        for (let i = 0; i < edgePolylines.length; i++) {
+            for (let j = i + 1; j < edgePolylines.length; j++) {
+                const polyA = edgePolylines[i];
+                const polyB = edgePolylines[j];
+                if (!polyA || !polyB) continue;
+                for (let a = 0; a < polyA.length - 1; a++) {
+                    for (let b = 0; b < polyB.length - 1; b++) {
+                        const cross = segmentIntersect(polyA[a], polyA[a + 1], polyB[b], polyB[b + 1]);
+                        if (!cross) continue;
+                        if (cross.onHoriz) {
+                            const hX1 = Math.min(polyA[a].x, polyA[a + 1].x);
+                            const hX2 = Math.max(polyA[a].x, polyA[a + 1].x);
+                            if (cross.x - BRIDGE_R > hX1 && cross.x + BRIDGE_R < hX2) {
+                                if (!bridgeMap.has(i)) bridgeMap.set(i, []);
+                                bridgeMap.get(i).push({ point: cross, segIndex: a });
+                            }
+                        } else {
+                            const hX1 = Math.min(polyB[b].x, polyB[b + 1].x);
+                            const hX2 = Math.max(polyB[b].x, polyB[b + 1].x);
+                            if (cross.x - BRIDGE_R > hX1 && cross.x + BRIDGE_R < hX2) {
+                                if (!bridgeMap.has(j)) bridgeMap.set(j, []);
+                                bridgeMap.get(j).push({ point: cross, segIndex: b });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return bridgeMap;
+    }
+
+    function edgePathWithBridges(polylinePoints, bridges) {
+        const BRIDGE_R = 8;
+        if (!bridges || bridges.length === 0) return edgePathFromPoints(polylinePoints);
+        const sorted = bridges.slice().sort((a, b) => {
+            if (a.segIndex !== b.segIndex) return a.segIndex - b.segIndex;
+            const p = polylinePoints[a.segIndex];
+            return (Math.abs(a.point.x - p.x) + Math.abs(a.point.y - p.y)) -
+                   (Math.abs(b.point.x - p.x) + Math.abs(b.point.y - p.y));
+        });
+        let d = "";
+        for (let seg = 0; seg < polylinePoints.length - 1; seg++) {
+            const sp = polylinePoints[seg];
+            const ep = polylinePoints[seg + 1];
+            if (seg === 0) d += `M ${sp.x} ${sp.y}`;
+            const segBridges = sorted.filter((br) => br.segIndex === seg);
+            if (segBridges.length === 0) {
+                d += ` L ${ep.x} ${ep.y}`;
+                continue;
+            }
+            const r = BRIDGE_R;
+            const goingRight = ep.x >= sp.x;
+            for (const br of segBridges) {
+                const bx = br.point.x;
+                const by = br.point.y;
+                const x1 = goingRight ? bx - r : bx + r;
+                const x2 = goingRight ? bx + r : bx - r;
+                const sweep = goingRight ? 0 : 1;
+                d += ` L ${x1} ${by} A ${r} ${r} 0 0 ${sweep} ${x2} ${by}`;
+            }
+            d += ` L ${ep.x} ${ep.y}`;
+        }
+        return d;
+    }
+
+    // --- Obstacle avoidance helpers ---
+
+    function nodeHitBox(node, margin) {
+        return { x: node.x - margin, y: node.y - margin, w: node.width + 2 * margin, h: node.height + 2 * margin };
+    }
+
+    function hSegHitsBox(y, x1, x2, box) {
+        const a = Math.min(x1, x2);
+        const b = Math.max(x1, x2);
+        return y > box.y && y < box.y + box.h && b > box.x && a < box.x + box.w;
+    }
+
+    function vSegHitsBox(x, y1, y2, box) {
+        const a = Math.min(y1, y2);
+        const b = Math.max(y1, y2);
+        return x > box.x && x < box.x + box.w && b > box.y && a < box.y + box.h;
+    }
+
+    function findClearX(preferred, y1, y2, obstacles) {
+        if (!obstacles.some((ob) => vSegHitsBox(preferred, y1, y2, ob))) return preferred;
+        for (let d = 28; d <= 280; d += 28) {
+            if (!obstacles.some((ob) => vSegHitsBox(preferred - d, y1, y2, ob))) return preferred - d;
+            if (!obstacles.some((ob) => vSegHitsBox(preferred + d, y1, y2, ob))) return preferred + d;
+        }
+        return preferred;
+    }
+
+    function findClearY(preferred, x1, x2, obstacles) {
+        if (!obstacles.some((ob) => hSegHitsBox(preferred, x1, x2, ob))) return preferred;
+        for (let d = 28; d <= 280; d += 28) {
+            if (!obstacles.some((ob) => hSegHitsBox(preferred - d, x1, x2, ob))) return preferred - d;
+            if (!obstacles.some((ob) => hSegHitsBox(preferred + d, x1, x2, ob))) return preferred + d;
+        }
+        return preferred;
+    }
+
     function edgeRoutePointsFromPolyline(points) {
         return compressOrthogonalPoints(points)
             .slice(1, -1)
@@ -990,6 +1149,20 @@
                 x: roundCanvasValue(point.x),
                 y: roundCanvasValue(point.y),
             }));
+    }
+
+    function isOrthogonalCornerPoint(points, pointIndex) {
+        if (pointIndex <= 0 || pointIndex >= points.length - 1) {
+            return false;
+        }
+        const previous = points[pointIndex - 1];
+        const point = points[pointIndex];
+        const next = points[pointIndex + 1];
+        const incomingHorizontal = Math.abs(previous.y - point.y) < 0.5;
+        const incomingVertical = Math.abs(previous.x - point.x) < 0.5;
+        const outgoingHorizontal = Math.abs(point.y - next.y) < 0.5;
+        const outgoingVertical = Math.abs(point.x - next.x) < 0.5;
+        return (incomingHorizontal && outgoingVertical) || (incomingVertical && outgoingHorizontal);
     }
 
     function edgeExists(connection) {
@@ -1320,20 +1493,32 @@
         const canvasSize = syncCanvasMetrics();
         edgeLayer.setAttribute("viewBox", `0 0 ${canvasSize.width} ${canvasSize.height}`);
 
-        for (const edge of state.edges) {
+        const edgePolylines = state.edges.map((edge) => {
             const sourceNode = getNodeById(edge.source_node_id);
             const targetNode = getNodeById(edge.target_node_id);
             if (!sourceNode || !targetNode) {
-                continue;
+                return null;
             }
 
-            const sourcePoint = anchorPoint(sourceNode, edge.source_anchor_id);
-            const sourceSide = anchorSide(sourceNode, edge.source_anchor_id);
-            const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
-            const targetSide = anchorSide(targetNode, edge.target_anchor_id);
-            const polylinePoints = edgePolylinePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide);
+            return edgePolylinePoints(
+                edge,
+                anchorPoint(sourceNode, edge.source_anchor_id),
+                anchorSide(sourceNode, edge.source_anchor_id),
+                anchorPoint(targetNode, edge.target_anchor_id),
+                anchorSide(targetNode, edge.target_anchor_id),
+            );
+        });
+        const bridgeMap = collectBridgePoints(edgePolylines);
+
+        state.edges.forEach((edge, edgeIndex) => {
+            const polylinePoints = edgePolylines[edgeIndex];
+            if (!polylinePoints) {
+                return;
+            }
+
+            const bridges = bridgeMap.get(edgeIndex) || [];
             const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-            path.setAttribute("d", edgePathFromPoints(polylinePoints));
+            path.setAttribute("d", bridges.length > 0 ? edgePathWithBridges(polylinePoints, bridges) : edgePathFromPoints(polylinePoints));
             path.setAttribute("class", `builder-edge${state.selectedEdgeId === edge.id ? " is-selected" : ""}`);
             path.dataset.edgeId = edge.id;
             path.addEventListener("click", (event) => {
@@ -1341,35 +1526,56 @@
                 state.selectedEdgeId = edge.id;
                 state.selectedNodeId = null;
                 renderAll();
-                setStatus("Verbindung ausgewaehlt – Segmente ziehen zum Umleiten, R = Auto-Routing, Del = Loeschen.", "muted");
+                setStatus("Verbindung ausgewaehlt. Segmente oder Ecken ziehen, R = Auto-Routing, Del = Loeschen.", "muted");
             });
             edgeLayer.appendChild(path);
 
-            if (state.selectedEdgeId === edge.id) {
-                for (let segmentIndex = 1; segmentIndex < polylinePoints.length - 2; segmentIndex += 1) {
-                    const segmentStart = polylinePoints[segmentIndex];
-                    const segmentEnd = polylinePoints[segmentIndex + 1];
-                    const segment = document.createElementNS("http://www.w3.org/2000/svg", "line");
-                    const isVertical = Math.abs(segmentStart.x - segmentEnd.x) < 0.01;
-                    const active =
-                        state.edgeSegmentMove?.edgeId === edge.id && state.edgeSegmentMove?.segmentIndex === segmentIndex;
-                    segment.setAttribute("x1", String(segmentStart.x));
-                    segment.setAttribute("y1", String(segmentStart.y));
-                    segment.setAttribute("x2", String(segmentEnd.x));
-                    segment.setAttribute("y2", String(segmentEnd.y));
-                    segment.setAttribute(
-                        "class",
-                        `builder-edge-segment-hit${active ? " is-active" : ""}${isVertical ? " is-vertical" : " is-horizontal"}`,
-                    );
-                    segment.dataset.edgeId = edge.id;
-                    segment.dataset.segmentIndex = String(segmentIndex);
-                    segment.addEventListener("pointerdown", (event) => {
-                        startEdgeSegmentMove(edge.id, segmentIndex, event);
-                    });
-                    edgeLayer.appendChild(segment);
-                }
+            if (state.selectedEdgeId !== edge.id) {
+                return;
             }
-        }
+
+            for (let segmentIndex = 1; segmentIndex < polylinePoints.length - 2; segmentIndex += 1) {
+                const segmentStart = polylinePoints[segmentIndex];
+                const segmentEnd = polylinePoints[segmentIndex + 1];
+                const segment = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                const isVertical = Math.abs(segmentStart.x - segmentEnd.x) < 0.01;
+                const active =
+                    state.edgeSegmentMove?.edgeId === edge.id && state.edgeSegmentMove?.segmentIndex === segmentIndex;
+                segment.setAttribute("x1", String(segmentStart.x));
+                segment.setAttribute("y1", String(segmentStart.y));
+                segment.setAttribute("x2", String(segmentEnd.x));
+                segment.setAttribute("y2", String(segmentEnd.y));
+                segment.setAttribute(
+                    "class",
+                    `builder-edge-segment-hit${active ? " is-active" : ""}${isVertical ? " is-vertical" : " is-horizontal"}`,
+                );
+                segment.dataset.edgeId = edge.id;
+                segment.dataset.segmentIndex = String(segmentIndex);
+                segment.addEventListener("pointerdown", (event) => {
+                    startEdgeSegmentMove(edge.id, segmentIndex, event);
+                });
+                edgeLayer.appendChild(segment);
+            }
+
+            for (let pointIndex = 1; pointIndex < polylinePoints.length - 1; pointIndex += 1) {
+                if (!isOrthogonalCornerPoint(polylinePoints, pointIndex)) {
+                    continue;
+                }
+                const point = polylinePoints[pointIndex];
+                const handle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                const active = state.cornerMove?.edgeId === edge.id && state.cornerMove?.ptIndex === pointIndex;
+                handle.setAttribute("cx", String(point.x));
+                handle.setAttribute("cy", String(point.y));
+                handle.setAttribute("r", "6");
+                handle.setAttribute("class", `builder-edge-corner-handle${active ? " is-active" : ""}`);
+                handle.dataset.edgeId = edge.id;
+                handle.dataset.pointIndex = String(pointIndex);
+                handle.addEventListener("pointerdown", (event) => {
+                    startCornerMove(edge.id, pointIndex, event);
+                });
+                edgeLayer.appendChild(handle);
+            }
+        });
 
         if (state.pendingAnchor) {
             const sourceNode = getNodeById(state.pendingAnchor.nodeId);
@@ -1540,6 +1746,88 @@
         renderAll();
         if (didMove) {
             setStatus("Leitungsverlauf aktualisiert. Build noch nicht gespeichert.", "success");
+        }
+    }
+
+    function startCornerMove(edgeId, ptIndex, event) {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+
+        const edge = ensureEdgeRoutePoints(edgeId);
+        if (!edge) return;
+
+        const sourceNode = getNodeById(edge.source_node_id);
+        const targetNode = getNodeById(edge.target_node_id);
+        if (!sourceNode || !targetNode) return;
+
+        const sourcePoint = anchorPoint(sourceNode, edge.source_anchor_id);
+        const sourceSide = anchorSide(sourceNode, edge.source_anchor_id);
+        const targetPoint = anchorPoint(targetNode, edge.target_anchor_id);
+        const targetSide = anchorSide(targetNode, edge.target_anchor_id);
+        const polylinePoints = edgePolylinePoints(edge, sourcePoint, sourceSide, targetPoint, targetSide);
+
+        if (!isOrthogonalCornerPoint(polylinePoints, ptIndex)) return;
+
+        const pointer = pointerToCanvas(event);
+        const incomingIsH = Math.abs(polylinePoints[ptIndex - 1].y - polylinePoints[ptIndex].y) < 0.5;
+
+        state.selectedEdgeId = edgeId;
+        state.selectedNodeId = null;
+        state.cornerMove = {
+            edgeId,
+            ptIndex,
+            basePolylinePoints: polylinePoints.map((p) => ({ x: p.x, y: p.y })),
+            incomingIsH,
+            startPointer: pointer,
+            moved: false,
+            snapshotTaken: false,
+        };
+        renderEdges();
+        window.addEventListener("pointermove", handleCornerMove);
+        window.addEventListener("pointerup", stopCornerMove);
+        window.addEventListener("pointercancel", stopCornerMove);
+    }
+
+    function handleCornerMove(event) {
+        const activeMove = state.cornerMove;
+        if (!activeMove) return;
+
+        const edge = state.edges.find((e) => e.id === activeMove.edgeId);
+        if (!edge) return;
+
+        if (!activeMove.snapshotTaken) {
+            pushUndoSnapshot();
+            activeMove.snapshotTaken = true;
+        }
+
+        const pointer = pointerToCanvas(event);
+        const cx = activeMove.basePolylinePoints[activeMove.ptIndex].x;
+        const cy = activeMove.basePolylinePoints[activeMove.ptIndex].y;
+        const nx = roundCanvasValue(cx + pointer.x - activeMove.startPointer.x);
+        const ny = roundCanvasValue(cy + pointer.y - activeMove.startPointer.y);
+
+        const pts = activeMove.basePolylinePoints.map((p) => ({ x: p.x, y: p.y }));
+        const i = activeMove.ptIndex;
+        // Replace the elbow with a short jog so the neighbouring segments stay orthogonal.
+        const replacement = activeMove.incomingIsH
+            ? [{ x: nx, y: cy }, { x: nx, y: ny }, { x: cx, y: ny }]
+            : [{ x: cx, y: ny }, { x: nx, y: ny }, { x: nx, y: cy }];
+        pts.splice(i, 1, ...replacement);
+        edge.route_points = edgeRoutePointsFromPolyline(pts);
+        activeMove.moved = true;
+        renderEdges();
+    }
+
+    function stopCornerMove() {
+        window.removeEventListener("pointermove", handleCornerMove);
+        window.removeEventListener("pointerup", stopCornerMove);
+        window.removeEventListener("pointercancel", stopCornerMove);
+        const didMove = state.cornerMove?.moved;
+        state.cornerMove = null;
+        renderAll();
+        if (didMove) {
+            setStatus("Ecke verschoben. Build noch nicht gespeichert.", "muted");
         }
     }
 
@@ -1967,6 +2255,9 @@
         }
         if (state.mode !== "connect" && state.edgeSegmentMove) {
             stopEdgeSegmentMove();
+        }
+        if (state.mode !== "connect" && state.cornerMove) {
+            stopCornerMove();
         }
         selectToolButton.classList.toggle("is-active", state.mode === "select");
         anchorToolButton.classList.toggle("is-active", state.mode === "anchor");
