@@ -45,6 +45,12 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-plot-selection", html)
         self.assertIn("process-plot-chart-stack", html)
         self.assertIn("process-plot-targets", html)
+        self.assertIn("process-source-build-btn", html)
+        self.assertIn("process-source-recipe-btn", html)
+        self.assertIn("process-recipe-select", html)
+        self.assertIn("process-program-card", html)
+        self.assertIn("process-program-start-button", html)
+        self.assertIn("process-program-stop-button", html)
 
         forbidden_strings = (
             "Status lesen",
@@ -108,6 +114,19 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertNotIn('sendManualCommand("IN_PV_4"', source)
         self.assertNotIn('sendManualCommand("IN_PV_5"', source)
 
+    def test_process_view_script_supports_recipe_program_selection_and_runtime(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn('document.getElementById("process-recipe-select")', source)
+        self.assertIn('document.getElementById("process-program-start-button")', source)
+        self.assertIn('document.getElementById("process-program-stop-button")', source)
+        self.assertIn('fetchJson("/api/process-program"', source)
+        self.assertIn('fetchJson("/api/process-program/start"', source)
+        self.assertIn('fetchJson("/api/process-program/stop"', source)
+        self.assertIn('navigateToProcessSelection("recipe", recipeId);', source)
+        self.assertIn('navigateToProcessSelection("build", buildId);', source)
+
     def test_process_view_script_preserves_dirty_manual_inputs_during_refresh(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
         source = script_path.read_text(encoding="utf-8")
@@ -167,7 +186,10 @@ class ProcessViewTemplateTests(unittest.TestCase):
 
         self.assertIn('@api_bp.get("/devices/<int:device_id>/manual-state")', source)
         self.assertIn('@api_bp.post("/devices/<int:device_id>/manual-state")', source)
-        self.assertIn('return re.fullmatch(r"/api/devices/\\d+/(commands|manual-state)", path) is not None', source)
+        self.assertIn('process-program/(start|stop)', source)
+        self.assertIn('@api_bp.get("/process-program")', source)
+        self.assertIn('@api_bp.post("/process-program/start")', source)
+        self.assertIn('@api_bp.post("/process-program/stop")', source)
 
     def test_process_view_server_adds_ika_plot_fallback_channels(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "web.py").read_text(encoding="utf-8")

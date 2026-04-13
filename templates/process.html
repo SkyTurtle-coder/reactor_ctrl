@@ -7,22 +7,63 @@
     <div class="process-toolbar-brand">
         <span class="eyebrow">Live</span>
         <span class="process-toolbar-title" id="process-toolbar-title">
-            {{ selected_build.build_name if selected_build else "Process View" }}
+            {% if process_selection_mode == "recipe" and selected_recipe %}
+            {{ selected_recipe.title }}
+            {% elif selected_build %}
+            {{ selected_build.build_name }}
+            {% else %}
+            Process View
+            {% endif %}
         </span>
     </div>
 
     <div class="process-toolbar-controls" id="process-toolbar-controls">
         <form id="process-picker-form" method="get" action="{{ url_for('web.process_view') }}" class="process-picker-row">
-            <select id="process-build-select" name="build_id" {% if not process_storage_available %}disabled{% endif %}>
-                <option value="">Select flowsheet …</option>
-                {% for build in saved_builds %}
-                <option value="{{ build.reactor_build_id }}" {% if selected_build_id == build.reactor_build_id %}selected{% endif %}>
-                    {{ build.build_name }}{% if build.build_date %} — {{ build.build_date }}{% endif %}
-                </option>
-                {% endfor %}
-            </select>
-            {% if selected_build_id %}
-            <a class="btn process-toolbar-btn" id="process-clear-selection" href="{{ url_for('web.process_view') }}" title="Clear selection">✕</a>
+            <input id="process-selection-mode-input" type="hidden" name="mode" value="{{ process_selection_mode }}">
+
+            <div class="process-source-toggle" id="process-source-toggle" role="tablist" aria-label="Process source">
+                <button
+                    class="process-source-toggle-btn{% if process_selection_mode == 'build' %} is-active{% endif %}"
+                    id="process-source-build-btn"
+                    data-mode="build"
+                    type="button"
+                    aria-pressed="{{ 'true' if process_selection_mode == 'build' else 'false' }}"
+                >Flowsheet</button>
+                <button
+                    class="process-source-toggle-btn{% if process_selection_mode == 'recipe' %} is-active{% endif %}"
+                    id="process-source-recipe-btn"
+                    data-mode="recipe"
+                    type="button"
+                    aria-pressed="{{ 'true' if process_selection_mode == 'recipe' else 'false' }}"
+                >Recipe</button>
+            </div>
+
+            <label class="process-toolbar-field{% if process_selection_mode == 'recipe' %} is-hidden{% endif %}" id="process-build-field">
+                <span>Flowsheet</span>
+                <select id="process-build-select" name="build_id" {% if not process_storage_available %}disabled{% endif %}>
+                    <option value="">Select flowsheet ...</option>
+                    {% for build in saved_builds %}
+                    <option value="{{ build.reactor_build_id }}" {% if process_selection_mode == 'build' and selected_build_id == build.reactor_build_id %}selected{% endif %}>
+                        {{ build.build_name }}{% if build.build_date %} | {{ build.build_date }}{% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            <label class="process-toolbar-field{% if process_selection_mode != 'recipe' %} is-hidden{% endif %}" id="process-recipe-field">
+                <span>Recipe</span>
+                <select id="process-recipe-select" name="recipe_id" {% if not recipe_selection_available %}disabled{% endif %}>
+                    <option value="">Select recipe ...</option>
+                    {% for recipe in saved_recipes %}
+                    <option value="{{ recipe.recipe_id }}" {% if process_selection_mode == 'recipe' and selected_recipe_id == recipe.recipe_id %}selected{% endif %}>
+                        {{ recipe.title }} | {{ recipe.status }} | {{ recipe.updated_by or recipe.created_by }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </label>
+
+            {% if selected_build_id or selected_recipe_id %}
+            <a class="btn process-toolbar-btn" id="process-clear-selection" href="{{ url_for('web.process_view') }}" title="Clear selection">X</a>
             {% endif %}
         </form>
 
@@ -31,7 +72,7 @@
             class="btn process-toolbar-btn"
             type="button"
             aria-pressed="false"
-            {% if not selected_build %}disabled{% endif %}
+            {% if not selected_build or process_selection_mode == 'recipe' %}disabled{% endif %}
         >Manual</button>
     </div>
 </div>
@@ -45,6 +86,85 @@
 {% if selected_build_missing %}
 <p class="process-selection-notice error-text">The requested flowsheet could not be found.</p>
 {% endif %}
+
+{% if selected_recipe_missing %}
+<p class="process-selection-notice error-text">The requested recipe could not be found.</p>
+{% endif %}
+
+<section class="card process-program-card" id="process-program-card" {% if process_selection_mode != 'recipe' %}hidden{% endif %}>
+    <div class="card-header process-program-card-header">
+        <div class="process-program-card-copy">
+            <span class="section-label">Recipe Program</span>
+            <h2 class="process-program-card-title" id="process-program-title">
+                {{ selected_recipe.title if selected_recipe else "No recipe selected" }}
+            </h2>
+            <p class="process-program-card-text" id="process-program-subtitle">
+                {% if selected_build %}
+                Flowsheet: {{ selected_build.build_name }}
+                {% else %}
+                Select a recipe to load its flowsheet and start the program.
+                {% endif %}
+            </p>
+        </div>
+        <div class="process-program-toolbar">
+            <span class="badge badge-muted" id="process-program-status-badge">idle</span>
+            <button
+                class="btn btn-primary"
+                id="process-program-start-button"
+                type="button"
+                {% if not selected_recipe or not selected_build %}disabled{% endif %}
+            >Start Program</button>
+            <button class="btn" id="process-program-stop-button" type="button" disabled>Stop Program</button>
+        </div>
+    </div>
+
+    <div class="card-body process-program-body">
+        <div class="process-program-grid">
+            <div class="process-program-meta-item">
+                <span class="process-program-meta-label">Recipe</span>
+                <strong id="process-program-recipe-name">{{ selected_recipe.title if selected_recipe else "-" }}</strong>
+            </div>
+            <div class="process-program-meta-item">
+                <span class="process-program-meta-label">Flowsheet</span>
+                <strong id="process-program-build-name">{{ selected_build.build_name if selected_build else "-" }}</strong>
+            </div>
+            <div class="process-program-meta-item">
+                <span class="process-program-meta-label">Current Step</span>
+                <strong id="process-program-step-label">-</strong>
+            </div>
+            <div class="process-program-meta-item">
+                <span class="process-program-meta-label">Remaining</span>
+                <strong id="process-program-time-label">-</strong>
+            </div>
+        </div>
+
+        <div class="process-program-progress-block">
+            <div class="process-program-progress-bar" aria-hidden="true">
+                <span class="process-program-progress-fill" id="process-program-progress-fill"></span>
+            </div>
+            <div class="process-program-progress-meta">
+                <span id="process-program-progress-label">Ready to start.</span>
+            </div>
+        </div>
+
+        <section class="process-program-targets">
+            <div class="process-program-targets-header">
+                <span class="section-label">Current Targets</span>
+            </div>
+            <div class="process-program-target-list" id="process-program-target-list">
+                <p class="muted">No active targets.</p>
+            </div>
+        </section>
+
+        <p class="process-manual-status muted" id="process-program-status">
+            {% if selected_recipe %}
+            Start the recipe program to run the stored step sequence on the selected flowsheet.
+            {% else %}
+            Select a recipe to enable start and stop.
+            {% endif %}
+        </p>
+    </div>
+</section>
 
 <details class="card process-plot-panel ui-collapsible-details" id="process-plot-panel">
     <summary class="process-plot-summary ui-collapsible-summary">
@@ -177,6 +297,13 @@
 
 {% block scripts %}
 <script id="process-build-data" type="application/json">{{ selected_build | tojson }}</script>
+<script id="process-recipes-data" type="application/json">{{ saved_recipes | tojson }}</script>
+<script id="process-selected-recipe" type="application/json">{{ selected_recipe | tojson }}</script>
+<script id="process-selection-data" type="application/json">{{ {
+    "mode": process_selection_mode,
+    "selectedBuildId": selected_build_id,
+    "selectedRecipeId": selected_recipe_id
+} | tojson }}</script>
 <script id="process-manual-targets" type="application/json">{{ manual_targets | tojson }}</script>
 <script id="process-plot-targets" type="application/json">{{ plot_targets | tojson }}</script>
 <script id="process-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>

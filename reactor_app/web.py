@@ -383,6 +383,17 @@ def _run_web_query(loader, *, fallback, log_label: str, notice: str):
         return fallback, notice
 
 
+def _append_notice(existing: str | None, addition: str | None) -> str | None:
+    text = str(addition or "").strip()
+    if not text:
+        return existing
+    if not existing:
+        return text
+    if text in existing:
+        return existing
+    return f"{existing} {text}"
+
+
 @web_bp.get("/")
 def software_portal() -> str:
     software_tiles = [
@@ -482,17 +493,25 @@ def infrared_camera_home() -> str:
 @web_bp.get("/process")
 def process_view():
     build_id = request.args.get("build_id", type=int)
+    recipe_id = request.args.get("recipe_id", type=int)
+    requested_mode = str(request.args.get("mode") or "").strip().lower()
     saved_builds: list[ReactorBuild] = []
+    saved_recipes: list[dict[str, Any]] = []
     current_build = None
+    current_recipe = None
     selected_build_missing = False
+    selected_recipe_missing = False
     process_notice = None
     process_storage_available = True
+    recipe_selection_available = True
+    selection_mode = "recipe" if requested_mode == "recipe" or recipe_id else "build"
     try:
         saved_builds = (
             ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
         )
-        current_build = db.session.get(ReactorBuild, build_id) if build_id else None
-        selected_build_missing = build_id is not None and current_build is None
+        if selection_mode == "build":
+            current_build = db.session.get(ReactorBuild, build_id) if build_id else None
+            selected_build_missing = build_id is not None and current_build is None
     except Exception as exc:
         db.session.rollback()
         process_storage_available = False
@@ -501,6 +520,43 @@ def process_view():
             "but selection and manual control are currently limited."
         )
         current_app.logger.exception("Process view database fallback activated: %s", exc)
+
+    try:
+        recipe_items = Recipe.query.order_by(Recipe.updated_at.desc(), Recipe.recipe_id.desc()).all()
+        saved_recipes = [
+            {
+                "recipe_id": item.recipe_id,
+                "title": item.title,
+                "operator_name": item.operator_name,
+                "reactor_build_id": item.reactor_build_id,
+                "status": item.status,
+                "updated_by": item.updated_by,
+                "created_by": item.created_by,
+                "updated_at": _dt(item.updated_at),
+            }
+            for item in recipe_items
+        ]
+        if recipe_id is not None:
+            current_recipe = db.session.get(Recipe, recipe_id)
+            selected_recipe_missing = current_recipe is None
+            if current_recipe is not None and current_recipe.reactor_build_id is not None:
+                current_build = db.session.get(ReactorBuild, current_recipe.reactor_build_id)
+                if current_build is None:
+                    process_notice = _append_notice(
+                        process_notice,
+                        "The selected recipe is linked to a flowsheet that could not be loaded.",
+                    )
+    except Exception as exc:
+        db.session.rollback()
+        recipe_selection_available = False
+        if selection_mode == "recipe":
+            current_recipe = None
+            current_build = None
+        process_notice = _append_notice(
+            process_notice,
+            "Recipes could not be loaded. Build mode remains available.",
+        )
+        current_app.logger.exception("Process view recipe fallback activated: %s", exc)
 
     manual_targets: dict[str, dict[str, Any]] = {}
     plot_targets: dict[str, dict[str, Any]] = {}
@@ -545,8 +601,24 @@ def process_view():
             selected_build_id=None if current_build is None else current_build.reactor_build_id,
             selected_build=_reactor_build_detail_to_dict(current_build),
             selected_build_missing=selected_build_missing,
+            saved_recipes=saved_recipes,
+            selected_recipe_id=None if current_recipe is None else current_recipe.recipe_id,
+            selected_recipe=None
+            if current_recipe is None
+            else {
+                "recipe_id": current_recipe.recipe_id,
+                "title": current_recipe.title,
+                "operator_name": current_recipe.operator_name,
+                "status": current_recipe.status,
+                "reactor_build_id": current_recipe.reactor_build_id,
+                "steps": current_recipe.steps_json if isinstance(current_recipe.steps_json, list) else [],
+                "updated_at": _dt(current_recipe.updated_at),
+            },
+            selected_recipe_missing=selected_recipe_missing,
+            process_selection_mode=selection_mode,
             process_notice=process_notice,
             process_storage_available=process_storage_available,
+            recipe_selection_available=recipe_selection_available,
             manual_targets=manual_targets,
             plot_targets=plot_targets,
             manual_write_token=manual_write_token,

@@ -8,9 +8,30 @@
     const nodeLayer = document.getElementById("process-node-layer");
     const emptyState = document.getElementById("process-flowsheet-empty");
     const processPickerForm = document.getElementById("process-picker-form");
+    const processSelectionModeInput = document.getElementById("process-selection-mode-input");
+    const processSourceToggle = document.getElementById("process-source-toggle");
+    const processSourceBuildButton = document.getElementById("process-source-build-btn");
+    const processSourceRecipeButton = document.getElementById("process-source-recipe-btn");
+    const processBuildField = document.getElementById("process-build-field");
     const processBuildSelect = document.getElementById("process-build-select");
+    const processRecipeField = document.getElementById("process-recipe-field");
+    const processRecipeSelect = document.getElementById("process-recipe-select");
     const processClearSelectionLink = document.getElementById("process-clear-selection");
     const manualToggleButton = document.getElementById("process-manual-mode-toggle");
+    const programCard = document.getElementById("process-program-card");
+    const programTitle = document.getElementById("process-program-title");
+    const programSubtitle = document.getElementById("process-program-subtitle");
+    const programStatusBadge = document.getElementById("process-program-status-badge");
+    const programStartButton = document.getElementById("process-program-start-button");
+    const programStopButton = document.getElementById("process-program-stop-button");
+    const programRecipeName = document.getElementById("process-program-recipe-name");
+    const programBuildName = document.getElementById("process-program-build-name");
+    const programStepLabel = document.getElementById("process-program-step-label");
+    const programTimeLabel = document.getElementById("process-program-time-label");
+    const programProgressFill = document.getElementById("process-program-progress-fill");
+    const programProgressLabel = document.getElementById("process-program-progress-label");
+    const programTargetList = document.getElementById("process-program-target-list");
+    const programStatus = document.getElementById("process-program-status");
     const manualCard = document.getElementById("process-manual-card");
     const manualTargetTitle = document.getElementById("process-manual-target-title");
     const manualTargetSubtitle = document.getElementById("process-manual-target-subtitle");
@@ -35,6 +56,7 @@
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
+    const PROCESS_PROGRAM_POLL_MS = 1200;
     const PROCESS_PLOT_REFRESH_MS = 5000;
     const PROCESS_PLOT_SERIES_LIMIT = 120;
     const PROCESS_PLOT_COLORS = [
@@ -127,6 +149,20 @@
         const abs = Math.abs(value);
         const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
         return unit ? `${value.toFixed(digits)} ${unit}` : `${value.toFixed(digits)}`;
+    }
+
+    function formatDurationLabel(totalSeconds) {
+        if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+            return "-";
+        }
+        const rounded = Math.max(0, Math.round(totalSeconds));
+        const hours = Math.floor(rounded / 3600);
+        const minutes = Math.floor((rounded % 3600) / 60);
+        const seconds = rounded % 60;
+        if (hours > 0) {
+            return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+        }
+        return `${minutes}:${String(seconds).padStart(2, "0")}`;
     }
 
     function directionToSide(direction, xRatio, yRatio) {
@@ -745,6 +781,14 @@
     }
 
     function selectActuator(nodeId) {
+        if (isRecipeMode()) {
+            setManualStatus("Manual control is disabled while recipe mode is selected.", "muted");
+            return;
+        }
+        if (runningProgram()) {
+            setManualStatus("Manual control is locked while a recipe program is running.", "muted");
+            return;
+        }
         if (!state.manualMode) {
             return;
         }
@@ -768,12 +812,17 @@
 
     function renderNodes() {
         nodeLayer.innerHTML = "";
+        const activeProgramActor = asString(state.programData?.active_step?.actor, "");
 
         for (const node of state.nodes) {
             const element = document.createElement("article");
             element.className = "builder-node process-node";
             if (state.selectedNodeId === node.id) {
                 element.classList.add("is-selected");
+            }
+            if (activeProgramActor && node.instance_id === activeProgramActor) {
+                element.classList.add("is-program-active");
+                element.title = `${node.instance_id || node.label}: current recipe step`;
             }
             if (state.manualMode && isActuator(node)) {
                 element.classList.add("is-manual");
@@ -858,7 +907,15 @@
         if (!manualToggleButton) {
             return;
         }
-        manualToggleButton.disabled = manualToggleInitiallyDisabled || state.isSending;
+        manualToggleButton.disabled =
+            manualToggleInitiallyDisabled ||
+            state.isSending ||
+            isRecipeMode() ||
+            Boolean(runningProgram()) ||
+            !activeBuildId;
+        manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
+        manualToggleButton.classList.toggle("btn-primary", state.manualMode);
+        manualToggleButton.textContent = "Manual";
     }
 
     function waitFor(ms) {
@@ -1539,6 +1596,341 @@
         return state.selectedNodeId ? manualTargets[state.selectedNodeId] || null : null;
     }
 
+    function isRecipeMode() {
+        return state.selectionMode === "recipe";
+    }
+
+    function runningProgram() {
+        return state.programData && asString(state.programData.status, "idle") === "running" ? state.programData : null;
+    }
+
+    function programStatusBadgeClass(status) {
+        const normalized = asString(status, "idle").toLowerCase();
+        if (normalized === "running") {
+            return "badge-warning";
+        }
+        if (normalized === "completed") {
+            return "badge-success";
+        }
+        if (normalized === "error") {
+            return "badge-danger";
+        }
+        return "badge-muted";
+    }
+
+    function setProgramStatus(message, tone) {
+        if (!programStatus) {
+            return;
+        }
+        programStatus.textContent = message || "";
+        programStatus.classList.remove("muted", "error-text", "builder-status-success");
+        if (tone === "error") {
+            programStatus.classList.add("error-text");
+            return;
+        }
+        if (tone === "success") {
+            programStatus.classList.add("builder-status-success");
+            return;
+        }
+        programStatus.classList.add("muted");
+    }
+
+    function formatProgramTarget(target) {
+        const parts = [];
+        if (target.rpm != null) {
+            parts.push(`${Math.round(asNumber(target.rpm, 0))} rpm`);
+        }
+        if (target.temp != null) {
+            parts.push(`${asNumber(target.temp, 0).toFixed(2)} C`);
+        }
+        if (target.pressure != null) {
+            parts.push(`${asNumber(target.pressure, 0).toFixed(2)} mBar(A)`);
+        }
+        return parts.join(" | ") || "No numeric target";
+    }
+
+    function renderProgramTargets(program) {
+        if (!programTargetList) {
+            return;
+        }
+        const targets = Array.isArray(program?.current_targets) ? program.current_targets : [];
+        if (!targets.length) {
+            programTargetList.innerHTML = '<p class="muted">No active targets.</p>';
+            return;
+        }
+        programTargetList.innerHTML = targets
+            .map((target) => `
+                <article class="process-program-target-chip">
+                    <strong>${escapeHtml(asString(target.actor, "Actor"))}</strong>
+                    <span>${escapeHtml(formatProgramTarget(target))}</span>
+                </article>
+            `)
+            .join("");
+    }
+
+    function navigateToProcessSelection(mode, selectedId) {
+        const normalizedMode = mode === "recipe" ? "recipe" : "build";
+        const params = new URLSearchParams();
+        params.set("mode", normalizedMode);
+        if (normalizedMode === "recipe" && Number.isInteger(selectedId) && selectedId > 0) {
+            params.set("recipe_id", String(selectedId));
+        }
+        if (normalizedMode === "build" && Number.isInteger(selectedId) && selectedId > 0) {
+            params.set("build_id", String(selectedId));
+        }
+        const query = params.toString();
+        window.location.assign(query ? `${window.location.pathname}?${query}` : window.location.pathname);
+    }
+
+    function syncProcessSelectionUi() {
+        const recipeMode = isRecipeMode();
+        processBuildField?.classList.toggle("is-hidden", recipeMode);
+        processRecipeField?.classList.toggle("is-hidden", !recipeMode);
+        processSourceBuildButton?.classList.toggle("is-active", !recipeMode);
+        processSourceRecipeButton?.classList.toggle("is-active", recipeMode);
+        processSourceBuildButton?.setAttribute("aria-pressed", String(!recipeMode));
+        processSourceRecipeButton?.setAttribute("aria-pressed", String(recipeMode));
+        if (processSelectionModeInput) {
+            processSelectionModeInput.value = recipeMode ? "recipe" : "build";
+        }
+        if (programCard) {
+            programCard.hidden = !recipeMode;
+        }
+        if (recipeMode && state.manualMode) {
+            state.manualMode = false;
+            state.selectedNodeId = null;
+            state.manualRequestId += 1;
+            clearManualInputsDirty();
+        }
+        if (recipeMode) {
+            hideManualCard();
+        }
+        syncManualModeToggle();
+    }
+
+    function setSelectionMode(mode) {
+        state.selectionMode = mode === "recipe" ? "recipe" : "build";
+        syncProcessSelectionUi();
+        renderAll();
+        updateProgramCard();
+        persistViewState();
+    }
+
+    function updateProgramCard() {
+        if (!programCard) {
+            return;
+        }
+
+        const summary = selectedRecipeSummary();
+        const program = state.programData || null;
+        const selectedBuildName = asString(buildData?.build_name, "");
+        const programStatusValue = asString(program?.status, "idle");
+        const isProgramRunning = programStatusValue === "running";
+        const sameRecipeRunning = isProgramRunning && Number(program?.recipe_id) === state.selectedRecipeId;
+        const otherRecipeRunning = isProgramRunning && Number(program?.recipe_id) !== state.selectedRecipeId;
+
+        if (programTitle) {
+            programTitle.textContent = summary?.title || "No recipe selected";
+        }
+        if (programSubtitle) {
+            if (summary && selectedBuildName) {
+                programSubtitle.textContent = `Flowsheet: ${selectedBuildName}`;
+            } else if (summary) {
+                programSubtitle.textContent = "The selected recipe is not linked to a valid flowsheet.";
+            } else {
+                programSubtitle.textContent = "Select a recipe to load its flowsheet and start the program.";
+            }
+        }
+        if (programRecipeName) {
+            programRecipeName.textContent = summary?.title || "-";
+        }
+        if (programBuildName) {
+            programBuildName.textContent = selectedBuildName || "-";
+        }
+        if (programStatusBadge) {
+            programStatusBadge.textContent = programStatusValue;
+            programStatusBadge.className = `badge ${programStatusBadgeClass(programStatusValue)}`;
+        }
+
+        if (programStepLabel) {
+            if (isProgramRunning && program?.active_step_number) {
+                const task = asString(program?.active_step?.task, "");
+                const actor = asString(program?.active_step?.actor, "");
+                programStepLabel.textContent = `#${program.active_step_number}${task ? ` | ${task}` : actor ? ` | ${actor}` : ""}`;
+            } else if (programStatusValue === "completed") {
+                programStepLabel.textContent = "Completed";
+            } else if (programStatusValue === "stopped") {
+                programStepLabel.textContent = "Stopped";
+            } else if (programStatusValue === "error") {
+                programStepLabel.textContent = "Error";
+            } else {
+                programStepLabel.textContent = "-";
+            }
+        }
+
+        if (programTimeLabel) {
+            programTimeLabel.textContent = isProgramRunning
+                ? formatDurationLabel(asNumber(program?.step_remaining_seconds, 0))
+                : "-";
+        }
+
+        if (programProgressFill) {
+            const progressPercent = Math.round(clamp(asNumber(program?.step_progress, 0), 0, 1) * 100);
+            programProgressFill.style.width = `${progressPercent}%`;
+        }
+
+        if (programProgressLabel) {
+            if (sameRecipeRunning) {
+                const actor = asString(program?.active_step?.actor, "");
+                const task = asString(program?.active_step?.task, "");
+                programProgressLabel.textContent = task
+                    ? `${task}${actor ? ` | ${actor}` : ""}`
+                    : actor || "Recipe program running.";
+            } else if (otherRecipeRunning) {
+                programProgressLabel.textContent = `Another recipe is running: ${asString(program?.recipe_title, "active program")}.`;
+            } else if (programStatusValue === "completed") {
+                programProgressLabel.textContent = "Program completed.";
+            } else if (programStatusValue === "stopped") {
+                programProgressLabel.textContent = "Program stopped.";
+            } else if (programStatusValue === "error") {
+                programProgressLabel.textContent = "Program ended with an error.";
+            } else {
+                programProgressLabel.textContent = summary ? "Ready to start." : "Select a recipe first.";
+            }
+        }
+
+        renderProgramTargets(program);
+
+        if (sameRecipeRunning) {
+            setProgramStatus("Recipe program is running. Stop it at any time if you need to abort the sequence.", "muted");
+        } else if (otherRecipeRunning) {
+            setProgramStatus(
+                `Another recipe program is currently running (${asString(program?.recipe_title, "active recipe")}). Stop it before starting a different one.`,
+                "error",
+            );
+        } else if (programStatusValue === "completed") {
+            setProgramStatus("Recipe program completed. You can start it again.", "success");
+        } else if (programStatusValue === "stopped") {
+            setProgramStatus("Recipe program stopped. Start it again when you are ready.", "muted");
+        } else if (programStatusValue === "error") {
+            setProgramStatus(asString(program?.last_error, "Recipe program failed."), "error");
+        } else if (summary && !selectedBuildName) {
+            setProgramStatus("The selected recipe has no valid flowsheet mapping.", "error");
+        } else if (summary) {
+            setProgramStatus("Start the recipe program to run the stored sequence on this flowsheet.", "muted");
+        } else {
+            setProgramStatus("Select a recipe to enable start and stop.", "muted");
+        }
+
+        if (programStartButton) {
+            programStartButton.disabled =
+                !state.selectedRecipeId ||
+                !activeBuildId ||
+                state.isProgramBusy ||
+                sameRecipeRunning ||
+                otherRecipeRunning;
+        }
+        if (programStopButton) {
+            programStopButton.disabled = !isProgramRunning || state.isProgramBusy;
+        }
+    }
+
+    async function loadProcessProgram(options) {
+        const settings = options || {};
+        try {
+            const payload = await fetchJson("/api/process-program", {
+                timeoutMs: 10000,
+                maxRetries: settings.quiet ? 1 : 0,
+            });
+            state.programData = payload?.program || null;
+            if (state.programData && asString(state.programData.status, "idle") === "running" && state.manualMode) {
+                setManualMode(false);
+            }
+            updateProgramCard();
+            syncManualModeToggle();
+            renderNodes();
+        } catch (error) {
+            if (!settings.quiet) {
+                setProgramStatus(error?.message || "Recipe program status could not be loaded.", "error");
+            }
+        }
+    }
+
+    async function startSelectedRecipeProgram() {
+        if (!state.selectedRecipeId) {
+            setProgramStatus("Select a recipe before starting the program.", "error");
+            return;
+        }
+        if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
+            setProgramStatus("No valid process token is available for this page.", "error");
+            return;
+        }
+
+        state.isProgramBusy = true;
+        updateProgramCard();
+        setProgramStatus("Starting recipe program...", "muted");
+
+        const headers = { "Content-Type": "application/json" };
+        if (metaData.manualWriteToken) {
+            headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
+        }
+
+        try {
+            const payload = await fetchJson("/api/process-program/start", {
+                method: "POST",
+                headers,
+                timeoutMs: 12000,
+                body: JSON.stringify({
+                    recipe_id: state.selectedRecipeId,
+                    requested_by: "process_recipe",
+                }),
+            });
+            state.programData = payload?.program || null;
+            setProgramStatus("Recipe program started.", "success");
+        } catch (error) {
+            setProgramStatus(error?.message || "Recipe program could not be started.", "error");
+        } finally {
+            state.isProgramBusy = false;
+            updateProgramCard();
+            syncManualModeToggle();
+            renderNodes();
+        }
+    }
+
+    async function stopActiveRecipeProgram() {
+        if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
+            setProgramStatus("No valid process token is available for this page.", "error");
+            return;
+        }
+
+        state.isProgramBusy = true;
+        updateProgramCard();
+        setProgramStatus("Stopping recipe program...", "muted");
+
+        const headers = { "Content-Type": "application/json" };
+        if (metaData.manualWriteToken) {
+            headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
+        }
+
+        try {
+            const payload = await fetchJson("/api/process-program/stop", {
+                method: "POST",
+                headers,
+                timeoutMs: 12000,
+                body: JSON.stringify({ requested_by: "process_recipe" }),
+            });
+            state.programData = payload?.program || null;
+            setProgramStatus("Recipe program stopped.", "success");
+        } catch (error) {
+            setProgramStatus(error?.message || "Recipe program could not be stopped.", "error");
+        } finally {
+            state.isProgramBusy = false;
+            updateProgramCard();
+            syncManualModeToggle();
+            renderNodes();
+        }
+    }
+
     function readPersistedViewState() {
         try {
             const raw = window.localStorage.getItem(PROCESS_VIEW_STORAGE_KEY);
@@ -1566,14 +1958,33 @@
         return Number.isInteger(buildId) && buildId > 0 ? buildId : null;
     }
 
+    function queryRecipeId() {
+        const rawValue = new URLSearchParams(window.location.search).get("recipe_id");
+        const recipeId = Number(rawValue);
+        return Number.isInteger(recipeId) && recipeId > 0 ? recipeId : null;
+    }
+
     function currentBuildId() {
         const buildId = Number(buildData?.reactor_build_id);
         return Number.isInteger(buildId) && buildId > 0 ? buildId : null;
     }
 
+    function currentRecipeId() {
+        const recipeId = Number(selectedRecipeData?.recipe_id);
+        return Number.isInteger(recipeId) && recipeId > 0 ? recipeId : null;
+    }
+
+    function selectedRecipeSummary() {
+        if (state.selectedRecipeId == null) {
+            return null;
+        }
+        return recipeSummaryMap.get(state.selectedRecipeId) || null;
+    }
+
     function persistViewState() {
         const buildId = currentBuildId();
-        if (!buildId) {
+        const recipeId = currentRecipeId();
+        if (!buildId && !recipeId) {
             clearPersistedViewState();
             return;
         }
@@ -1582,7 +1993,9 @@
             window.localStorage.setItem(
                 PROCESS_VIEW_STORAGE_KEY,
                 JSON.stringify({
+                    selectionMode: state.selectionMode,
                     buildId,
+                    recipeId,
                     manualMode: state.manualMode,
                     selectedNodeId: state.selectedNodeId || null,
                     selectedPlotSeriesIds: Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : [],
@@ -1915,6 +2328,24 @@
             return;
         }
 
+        if (isRecipeMode()) {
+            clearManualInputsDirty();
+            hideManualCard();
+            resetManualSummary();
+            syncManualControlsEnabled(false);
+            setManualStatus("Manual control is disabled while recipe mode is selected.", "muted");
+            return;
+        }
+
+        if (runningProgram()) {
+            clearManualInputsDirty();
+            hideManualCard();
+            resetManualSummary();
+            syncManualControlsEnabled(false);
+            setManualStatus("Manual control is locked while a recipe program is running.", "muted");
+            return;
+        }
+
         if (!state.manualMode) {
             clearManualInputsDirty();
             hideManualCard();
@@ -1971,6 +2402,14 @@
     }
 
     function setManualMode(enabled) {
+        if (isRecipeMode()) {
+            setManualStatus("Manual control is disabled while recipe mode is selected.", "muted");
+            return;
+        }
+        if (runningProgram()) {
+            setManualStatus("Manual control is locked while a recipe program is running.", "muted");
+            return;
+        }
         if (manualToggleButton.disabled || state.isSending) {
             if (state.isSending) {
                 setManualStatus("Please wait until the current device request is finished.", "muted");
@@ -2004,27 +2443,54 @@
     }
 
     const buildData = parseJsonScript("process-build-data", null);
+    const recipeData = parseJsonScript("process-recipes-data", []);
+    const selectedRecipeData = parseJsonScript("process-selected-recipe", null);
+    const selectionData = parseJsonScript("process-selection-data", {});
     const manualTargets = parseJsonScript("process-manual-targets", {});
     const plotTargetData = parseJsonScript("process-plot-targets", {});
     const metaData = parseJsonScript("process-meta-data", {});
     const definition = buildData && typeof buildData === "object" ? buildData.definition_json || {} : {};
     const nodes = Array.isArray(definition?.nodes) ? definition.nodes.map(normalizeNode) : [];
     const edges = Array.isArray(definition?.edges) ? definition.edges.map((edge) => normalizeEdge(edge, nodes)) : [];
+    const recipeSummaryMap = new Map(
+        (Array.isArray(recipeData) ? recipeData : [])
+            .filter((item) => item && typeof item === "object")
+            .map((item) => {
+                const recipeId = Number(item.recipe_id);
+                return Number.isInteger(recipeId) && recipeId > 0 ? [recipeId, item] : null;
+            })
+            .filter(Boolean),
+    );
     const persistedViewState = readPersistedViewState();
     const requestedBuildId = queryBuildId();
+    const requestedRecipeId = queryRecipeId();
     const activeBuildId = currentBuildId();
+    const activeRecipeId = currentRecipeId();
+    const initialSelectionMode = asString(selectionData?.mode, requestedRecipeId ? "recipe" : "build");
 
-    if (!activeBuildId && !requestedBuildId) {
+    if (!activeBuildId && !requestedBuildId && !activeRecipeId && !requestedRecipeId) {
+        const persistedMode = asString(persistedViewState?.selectionMode, "build");
+        const persistedRecipeId = Number(persistedViewState?.recipeId);
         const persistedBuildId = Number(persistedViewState?.buildId);
+        const params = new URLSearchParams(window.location.search);
+        if (persistedMode === "recipe" && Number.isInteger(persistedRecipeId) && persistedRecipeId > 0) {
+            params.set("recipe_id", String(persistedRecipeId));
+            window.location.replace(`${window.location.pathname}?${params.toString()}`);
+            return;
+        }
         if (Number.isInteger(persistedBuildId) && persistedBuildId > 0) {
-            const params = new URLSearchParams(window.location.search);
             params.set("build_id", String(persistedBuildId));
             window.location.replace(`${window.location.pathname}?${params.toString()}`);
             return;
         }
     }
 
-    const canRestorePersistedState = activeBuildId && Number(persistedViewState?.buildId) === activeBuildId;
+    const canRestorePersistedState =
+        activeBuildId &&
+        (
+            (initialSelectionMode === "recipe" && Number(persistedViewState?.recipeId) === activeRecipeId) ||
+            (initialSelectionMode !== "recipe" && Number(persistedViewState?.buildId) === activeBuildId)
+        );
     const restoredSelectedNodeId = canRestorePersistedState
         ? asString(persistedViewState?.selectedNodeId, "").trim() || null
         : null;
@@ -2041,7 +2507,10 @@
         nodes,
         edges,
         canvasSize: parseCanvasSize(definition, nodes),
-        manualMode: Boolean(canRestorePersistedState && persistedViewState?.manualMode),
+        selectionMode: initialSelectionMode === "recipe" ? "recipe" : "build",
+        selectedRecipeId: activeRecipeId,
+        selectedBuildId: activeBuildId,
+        manualMode: Boolean(initialSelectionMode !== "recipe" && canRestorePersistedState && persistedViewState?.manualMode),
         selectedNodeId: restoredSelectedNodeId,
         selectedPlotSeriesIds: restoredPlotSeriesIds,
         plotSeriesData: [],
@@ -2053,6 +2522,8 @@
         isSending: false,
         isManualBusy: false,
         manualRequestId: 0,
+        programData: null,
+        isProgramBusy: false,
     };
 
     if (state.selectedNodeId) {
@@ -2174,23 +2645,55 @@
             });
     });
 
+    processSourceToggle?.addEventListener("click", (event) => {
+        const button = event.target?.closest?.("[data-mode]");
+        if (!button) {
+            return;
+        }
+        const nextMode = button.getAttribute("data-mode") === "recipe" ? "recipe" : "build";
+        setSelectionMode(nextMode);
+        const selectedId = nextMode === "recipe"
+            ? parseInt(processRecipeSelect?.value || state.selectedRecipeId || "", 10)
+            : parseInt(processBuildSelect?.value || state.selectedBuildId || "", 10);
+        navigateToProcessSelection(nextMode, Number.isInteger(selectedId) && selectedId > 0 ? selectedId : null);
+    });
+
     processBuildSelect?.addEventListener("change", () => {
-        if (!processPickerForm || processBuildSelect.disabled) {
+        if (processBuildSelect.disabled) {
             return;
         }
-        if (!String(processBuildSelect.value || "").trim()) {
+        const buildId = Number.parseInt(processBuildSelect.value || "", 10);
+        if (!Number.isInteger(buildId) || buildId <= 0) {
             clearPersistedViewState();
+            navigateToProcessSelection("build", null);
             return;
         }
-        if (typeof processPickerForm.requestSubmit === "function") {
-            processPickerForm.requestSubmit();
+        navigateToProcessSelection("build", buildId);
+    });
+
+    processRecipeSelect?.addEventListener("change", () => {
+        if (processRecipeSelect.disabled) {
             return;
         }
-        processPickerForm.submit();
+        const recipeId = Number.parseInt(processRecipeSelect.value || "", 10);
+        if (!Number.isInteger(recipeId) || recipeId <= 0) {
+            clearPersistedViewState();
+            navigateToProcessSelection("recipe", null);
+            return;
+        }
+        navigateToProcessSelection("recipe", recipeId);
     });
 
     processClearSelectionLink?.addEventListener("click", () => {
         clearPersistedViewState();
+    });
+
+    programStartButton?.addEventListener("click", () => {
+        void startSelectedRecipeProgram();
+    });
+
+    programStopButton?.addEventListener("click", () => {
+        void stopActiveRecipeProgram();
     });
 
     window.setInterval(() => {
@@ -2219,17 +2722,27 @@
         void loadPlotMeasurements({ quiet: true });
     }, PROCESS_PLOT_REFRESH_MS);
 
+    window.setInterval(() => {
+        if (document.hidden) {
+            return;
+        }
+        void loadProcessProgram({ quiet: true });
+    }, PROCESS_PROGRAM_POLL_MS);
+
     if (manualToggleButton) {
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));
         manualToggleButton.classList.toggle("btn-primary", state.manualMode);
         manualToggleButton.textContent = "Manual";
     }
 
+    syncProcessSelectionUi();
     renderPlotSelection();
     renderPlotCharts(state.plotSeriesData);
     void loadPlotMeasurements({ quiet: true });
+    void loadProcessProgram({ quiet: true });
     syncManualModeToggle();
     renderAll();
+    updateProgramCard();
     if (state.manualMode && state.selectedNodeId) {
         const initialNode = getNodeById(state.selectedNodeId);
         const initialTarget = selectedTarget();

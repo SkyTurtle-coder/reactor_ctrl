@@ -9,7 +9,7 @@ from werkzeug.exceptions import HTTPException
 
 from .api import api_bp
 from .extensions import db
-from .services import start_device_manual_reconciler
+from .services import start_device_manual_reconciler, start_recipe_program_reconciler
 from .web import web_bp
 
 
@@ -199,5 +199,6 @@ def create_app() -> Flask:
     app.register_blueprint(api_bp)
     app.register_blueprint(web_bp)
     start_device_manual_reconciler(app)
+    start_recipe_program_reconciler(app)
 
     return app

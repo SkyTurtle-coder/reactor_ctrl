@@ -5,6 +5,12 @@ from .device_manual_runtime import (
     queue_manual_state_update,
     start_device_manual_reconciler,
 )
+from .recipe_program_runtime import (
+    recipe_program_state_to_dict,
+    start_recipe_program,
+    start_recipe_program_reconciler,
+    stop_recipe_program,
+)
 from .drivers import get_driver, list_supported_protocol_options, list_supported_protocols, protocol_label
 from .simulators import NPortSimulator, SimulatedNPortPort, SimulatedTextDevice, build_default_nport_simulator
 from .transports import TcpSocketConfig, TcpSocketProbeResult, TcpSocketTransport, probe_tcp_socket
@@ -30,4 +36,8 @@ __all__ = [
     "probe_tcp_socket",
     "queue_manual_state_update",
     "start_device_manual_reconciler",
+    "recipe_program_state_to_dict",
+    "start_recipe_program",
+    "start_recipe_program_reconciler",
+    "stop_recipe_program",
 ]

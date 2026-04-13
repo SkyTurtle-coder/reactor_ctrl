@@ -274,8 +274,23 @@ pre {
     min-width: 0;
 }
 
-.process-picker-row select {
+.process-toolbar-field {
+    display: grid;
+    gap: 0.28rem;
     flex: 1;
+    min-width: 0;
+}
+
+.process-toolbar-field span {
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.process-picker-row select {
+    width: 100%;
     min-width: 0;
     height: 2.1rem;
     padding: 0.3rem 0.65rem;
@@ -290,6 +305,35 @@ pre {
 .process-picker-row select:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+}
+
+.process-source-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0.2rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: #ffffff;
+    flex-shrink: 0;
+}
+
+.process-source-toggle-btn {
+    min-height: unset;
+    padding: 0.45rem 0.85rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.84rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.process-source-toggle-btn.is-active {
+    background: rgba(253, 231, 14, 0.92);
+    color: #171717;
 }
 
 .process-toolbar-btn {
@@ -409,6 +453,140 @@ pre {
 
 .process-selection-notice {
     margin: 0;
+}
+
+.process-program-card {
+    margin-top: 0.9rem;
+    overflow: hidden;
+}
+
+.process-program-card-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 1rem 1.15rem;
+    background:
+        linear-gradient(135deg, rgba(253, 231, 14, 0.12), rgba(248, 242, 232, 0.92)),
+        #ffffff;
+    border-bottom: 1px solid rgba(253, 231, 14, 0.3);
+}
+
+.process-program-card-copy {
+    display: grid;
+    gap: 0.3rem;
+}
+
+.process-program-card-title {
+    margin: 0;
+    font-size: 1.35rem;
+    line-height: 1.08;
+}
+
+.process-program-card-text {
+    margin: 0;
+    color: var(--muted);
+}
+
+.process-program-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.process-program-body {
+    display: grid;
+    gap: 1rem;
+}
+
+.process-program-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem;
+}
+
+.process-program-meta-item {
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #ffffff;
+}
+
+.process-program-meta-label {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.process-program-progress-block {
+    display: grid;
+    gap: 0.45rem;
+}
+
+.process-program-progress-bar {
+    position: relative;
+    height: 0.85rem;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+}
+
+.process-program-progress-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #facc15, #f59e0b);
+    transition: width 220ms ease;
+}
+
+.process-program-progress-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.process-program-targets {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.process-program-targets-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.process-program-target-list {
+    display: grid;
+    gap: 0.55rem;
+}
+
+.process-program-target-chip {
+    display: grid;
+    gap: 0.3rem;
+    padding: 0.85rem 0.95rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #ffffff;
+}
+
+.process-program-target-chip strong {
+    font-size: 0.96rem;
+}
+
+.process-program-target-chip span {
+    color: var(--muted);
+    font-size: 0.88rem;
 }
 
 .process-plot-panel {
@@ -925,6 +1103,10 @@ h2 {
 .process-node.is-manual-unresolved:focus-visible {
     filter: drop-shadow(0 0 0.8rem rgba(186, 137, 52, 0.32));
     outline: none;
+}
+
+.process-node.is-program-active {
+    filter: drop-shadow(0 0 0.8rem rgba(16, 185, 129, 0.45));
 }
 
 .process-manual-body {
@@ -2173,6 +2355,18 @@ kbd {
         display: grid;
     }
 
+    .process-toolbar,
+    .process-toolbar-controls,
+    .process-picker-row,
+    .process-program-card-header {
+        display: grid;
+    }
+
+    .process-toolbar-brand,
+    .process-program-toolbar {
+        justify-content: flex-start;
+    }
+
     .process-header,
     .process-viewer-header,
     .process-picker-grid {
@@ -2223,6 +2417,18 @@ kbd {
     }
 
     .process-picker-actions {
+        display: grid;
+    }
+
+    .process-source-toggle {
+        width: 100%;
+    }
+
+    .process-source-toggle-btn {
+        flex: 1;
+    }
+
+    .process-program-progress-meta {
         display: grid;
     }
 

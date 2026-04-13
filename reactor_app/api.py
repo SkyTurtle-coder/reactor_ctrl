@@ -24,6 +24,7 @@ from .models import (
     Measurement,
     ReactorBuild,
     Recipe,
+    RecipeProgramState,
 )
 from .services import (
     DeviceCommandError,
@@ -35,6 +36,9 @@ from .services import (
     manual_state_to_dict,
     probe_tcp_socket,
     queue_manual_state_update,
+    recipe_program_state_to_dict,
+    start_recipe_program,
+    stop_recipe_program,
 )
 
 
@@ -135,7 +139,7 @@ def _is_process_manual_request() -> bool:
     if request.method != "POST":
         return False
     path = request.path.rstrip("/")
-    return re.fullmatch(r"/api/devices/\d+/(commands|manual-state)", path) is not None
+    return re.fullmatch(r"/api/(devices/\d+/(commands|manual-state)|process-program/(start|stop))", path) is not None
 
 
 def _is_recipe_write_request() -> bool:
@@ -1954,3 +1958,56 @@ def delete_recipe(recipe_id: int):
     if not ok:
         return error_response
     return "", 204
+
+
+@api_bp.get("/process-program")
+def get_process_program():
+    item = db.session.get(RecipeProgramState, 1)
+    return jsonify({"program": recipe_program_state_to_dict(item)})
+
+
+@api_bp.post("/process-program/start")
+def start_process_program():
+    try:
+        body = _load_json_payload()
+        recipe_id = _parse_int(body.get("recipe_id"), field_name="recipe_id", min_value=1)
+        requested_by = _normalize_requested_by(body.get("requested_by"), default="process_recipe")
+        if _extract_process_manual_token() is not None:
+            requested_by = "process_recipe"
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    recipe, error_response = _get_or_404(Recipe, recipe_id, "Recipe")
+    if error_response:
+        return error_response
+
+    try:
+        item = start_recipe_program(current_app, recipe, requested_by=requested_by)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify({"program": recipe_program_state_to_dict(item)}), 202
+
+
+@api_bp.post("/process-program/stop")
+def stop_process_program():
+    try:
+        body = _load_json_payload()
+        requested_by = _normalize_requested_by(body.get("requested_by"), default="process_recipe")
+        if _extract_process_manual_token() is not None:
+            requested_by = "process_recipe"
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    try:
+        item = stop_recipe_program(current_app, requested_by=requested_by)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify({"program": recipe_program_state_to_dict(item)}), 202
