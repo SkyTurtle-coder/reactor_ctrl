@@ -306,6 +306,7 @@ CREATE TABLE IF NOT EXISTS recipe (
   operator_name VARCHAR(120) NOT NULL,
   version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
   status VARCHAR(32) NOT NULL DEFAULT 'draft',
+  reactor_build_id BIGINT UNSIGNED NULL,
   steps_json JSON NOT NULL,
   created_by VARCHAR(120) NOT NULL,
   updated_by VARCHAR(120) NULL,
@@ -315,7 +316,12 @@ CREATE TABLE IF NOT EXISTS recipe (
   PRIMARY KEY (recipe_id),
   KEY idx_recipe_title (title),
   KEY idx_recipe_status (status),
-  KEY idx_recipe_active (is_active)
+  KEY idx_recipe_active (is_active),
+  KEY idx_recipe_build (reactor_build_id),
+  CONSTRAINT fk_recipe_reactor_build
+    FOREIGN KEY (reactor_build_id) REFERENCES reactor_build (reactor_build_id)
+    ON UPDATE CASCADE
+    ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE OR REPLACE VIEW v_latest_measurement_per_channel AS

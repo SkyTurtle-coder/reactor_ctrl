@@ -19,9 +19,15 @@
 </section>
 {% endif %}
 
-<section class="recipe-shell">
+{% if selected_recipe_missing %}
+<section class="card">
+    <div class="card-body">
+        <p class="error-text">The requested recipe could not be found.</p>
+    </div>
+</section>
+{% endif %}
 
-    <!-- Toolbar -->
+<section class="recipe-shell">
     <div class="card recipe-toolbar-card">
         <div class="recipe-toolbar-inner">
             <label class="recipe-field recipe-picker-field">
@@ -37,21 +43,39 @@
             </label>
             <div class="recipe-toolbar-actions">
                 <button id="recipe-new-btn" class="btn" type="button">New Recipe</button>
-                <button id="recipe-save-btn" class="btn btn-primary" type="button" {% if not recipe_storage_available %}disabled{% endif %}>Save</button>
+                <button
+                    id="recipe-save-btn"
+                    class="btn btn-primary"
+                    type="button"
+                    {% if not recipe_storage_available %}disabled{% endif %}
+                >Save</button>
             </div>
         </div>
     </div>
 
-    <!-- Header fields -->
     <div class="card recipe-header-card">
         <div class="card-body recipe-header-body">
             <label class="recipe-field">
                 <span>Recipe Title</span>
-                <input id="recipe-title" type="text" maxlength="120" placeholder="e.g. Batch A – Synthesis run">
+                <input id="recipe-title" type="text" maxlength="120" placeholder="e.g. Batch A - Synthesis run">
             </label>
             <label class="recipe-field">
                 <span>Operator</span>
                 <input id="recipe-operator" type="text" maxlength="120" placeholder="Name or initials">
+            </label>
+            <label class="recipe-field">
+                <span>Flowsheet</span>
+                <select id="recipe-build-select" {% if not recipe_storage_available %}disabled{% endif %}>
+                    <option value="">Select flowsheet</option>
+                    {% for b in saved_builds %}
+                    <option
+                        value="{{ b.reactor_build_id }}"
+                        {% if current_recipe and current_recipe.reactor_build_id == b.reactor_build_id %}selected{% endif %}
+                    >
+                        {{ b.build_name }}{% if not b.is_active %} (inactive){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
             </label>
             <div class="recipe-meta-chips">
                 <div class="recipe-meta-chip">
@@ -70,7 +94,6 @@
         </div>
     </div>
 
-    <!-- Steps table -->
     <div class="card recipe-steps-card">
         <div class="card-header">
             <h2>Process Steps</h2>
@@ -80,11 +103,11 @@
                 <thead>
                     <tr>
                         <th class="recipe-col-num">#</th>
-                        <th class="recipe-col-task">Actor</th>
+                        <th class="recipe-col-actor">Actor</th>
                         <th class="recipe-col-task">Task</th>
                         <th class="recipe-col-num-val">&Delta; [min]</th>
                         <th class="recipe-col-num-val">Soll Temp. [&deg;C]</th>
-                        <th class="recipe-col-num-val">Pressure [mbar(A)]</th>
+                        <th class="recipe-col-num-val">Pressure [mBar(A)]</th>
                         <th class="recipe-col-num-val">RPM</th>
                         <th class="recipe-col-del"></th>
                     </tr>
@@ -96,13 +119,14 @@
                 </tbody>
             </table>
         </div>
+        <p id="recipe-no-flowsheet-hint" class="recipe-no-flowsheet-hint is-hidden">
+            Select a flowsheet above to populate the Actor dropdown.
+        </p>
     </div>
 
-    <!-- Status bar -->
     <div class="recipe-status-bar" aria-live="polite">
         <p id="recipe-status-msg" class="muted"></p>
     </div>
-
 </section>
 
 <script id="recipe-saved-list" type="application/json">{{ saved_recipes | tojson }}</script>

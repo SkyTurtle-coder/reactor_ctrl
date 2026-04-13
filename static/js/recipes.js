@@ -1,492 +1,823 @@
 (function () {
     "use strict";
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
+    const NUMERIC_FIELDS = ["delta_time", "temp", "pressure", "rpm"];
 
-    function parseJsonScript(id) {
-        var el = document.getElementById(id);
-        if (!el) return null;
-        try { return JSON.parse(el.textContent); } catch (_) { return null; }
+    function parseJsonScript(id, fallback) {
+        const element = document.getElementById(id);
+        if (!element) {
+            return fallback;
+        }
+        try {
+            return JSON.parse(element.textContent);
+        } catch (_error) {
+            return fallback;
+        }
     }
 
-    function escapeHtml(str) {
-        if (str === null || str === undefined) return "";
-        return String(str)
+    function asString(value, fallback = "") {
+        if (value == null) {
+            return fallback;
+        }
+        const normalized = String(value).trim();
+        return normalized || fallback;
+    }
+
+    function parseId(value) {
+        if (value == null || value === "") {
+            return null;
+        }
+        const parsed = Number.parseInt(String(value), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? "")
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
             .replace(/>/g, "&gt;")
             .replace(/"/g, "&quot;");
     }
 
-    function setStatus(msg, tone) {
-        var el = document.getElementById("recipe-status-msg");
-        if (!el) return;
-        el.textContent = msg || "";
-        el.className = tone === "error" ? "error-text" : "muted";
+    async function fetchJson(url, options = {}) {
+        const response = await fetch(url, options);
+        const responseText = await response.text();
+        let payload = {};
+
+        if (responseText) {
+            try {
+                payload = JSON.parse(responseText);
+            } catch (_error) {
+                payload = {};
+            }
+        }
+
+        if (!response.ok) {
+            throw new Error(payload.error || `Request failed (HTTP ${response.status}).`);
+        }
+        return payload;
     }
 
-    function setSaveState(label, cssClass) {
-        var el = document.getElementById("recipe-save-state");
-        if (!el) return;
-        el.textContent = label;
-        el.className = "badge " + (cssClass || "badge-muted");
+    function emptyStep() {
+        return {
+            actor: "",
+            task: "",
+            delta_time: null,
+            temp: null,
+            pressure: null,
+            rpm: null,
+        };
+    }
+
+    function normalizeLoadedStep(rawStep) {
+        const payload = rawStep && typeof rawStep === "object" ? rawStep : {};
+        const step = emptyStep();
+        step.actor = asString(payload.actor);
+        step.task = asString(payload.task);
+        for (const fieldName of NUMERIC_FIELDS) {
+            const rawValue = payload[fieldName];
+            if (rawValue == null || rawValue === "") {
+                step[fieldName] = null;
+                continue;
+            }
+            const parsed = Number.parseFloat(rawValue);
+            step[fieldName] = Number.isFinite(parsed) ? parsed : null;
+        }
+        return step;
+    }
+
+    function isActorNode(node) {
+        if (!node || typeof node !== "object") {
+            return false;
+        }
+        if (asString(node.category).toLowerCase() === "actuators") {
+            return true;
+        }
+        const control = node.control;
+        return Boolean(control && typeof control === "object" && asString(control.profile_id));
+    }
+
+    function actorOptionsForBuild(buildData) {
+        const definition = buildData && typeof buildData === "object" && buildData.definition_json && typeof buildData.definition_json === "object"
+            ? buildData.definition_json
+            : {};
+        const rawNodes = Array.isArray(definition.nodes) ? definition.nodes : [];
+        const seenActorIds = new Set();
+        const options = [];
+
+        for (const rawNode of rawNodes) {
+            if (!isActorNode(rawNode)) {
+                continue;
+            }
+
+            const instanceId = asString(rawNode.instance_id);
+            if (!instanceId) {
+                continue;
+            }
+
+            const lookupKey = instanceId.toLowerCase();
+            if (seenActorIds.has(lookupKey)) {
+                continue;
+            }
+            seenActorIds.add(lookupKey);
+
+            const symbolId = asString(rawNode.symbol_id);
+            const labelText = asString(rawNode.label, symbolId || "Actor");
+            options.push({
+                value: instanceId,
+                label: labelText && labelText !== instanceId ? `${instanceId} | ${labelText}` : instanceId,
+            });
+        }
+
+        options.sort((left, right) => left.value.localeCompare(right.value, undefined, { sensitivity: "base" }));
+        return options;
+    }
+
+    const metaData = parseJsonScript("recipe-meta", {});
+    const currentRecipeData = parseJsonScript("recipe-current-data", null);
+
+    const state = {
+        recipeId: parseId(metaData.selectedRecipeId),
+        reactorBuildId: parseId(currentRecipeData && currentRecipeData.reactor_build_id),
+        actorOptions: [],
+        steps: [],
+        dirty: false,
+        loadingBuild: false,
+    };
+
+    const dom = {
+        recipeSelect: document.getElementById("recipe-select"),
+        buildSelect: document.getElementById("recipe-build-select"),
+        newButton: document.getElementById("recipe-new-btn"),
+        saveButton: document.getElementById("recipe-save-btn"),
+        titleInput: document.getElementById("recipe-title"),
+        operatorInput: document.getElementById("recipe-operator"),
+        statusBadge: document.getElementById("recipe-status-badge"),
+        saveStateBadge: document.getElementById("recipe-save-state"),
+        stepCount: document.getElementById("recipe-step-count"),
+        tableBody: document.getElementById("recipe-tbody"),
+        statusMessage: document.getElementById("recipe-status-msg"),
+        flowHint: document.getElementById("recipe-no-flowsheet-hint"),
+    };
+
+    function actorLookup() {
+        return new Map(state.actorOptions.map((option) => [option.value.toLowerCase(), option]));
+    }
+
+    function isKnownActor(value) {
+        const normalized = asString(value).toLowerCase();
+        return Boolean(normalized) && actorLookup().has(normalized);
+    }
+
+    function updateStepCount() {
+        if (dom.stepCount) {
+            dom.stepCount.textContent = String(state.steps.length);
+        }
+    }
+
+    function setStatus(message, tone = "muted") {
+        if (!dom.statusMessage) {
+            return;
+        }
+        dom.statusMessage.textContent = message || "";
+        dom.statusMessage.className = tone === "error" ? "error-text" : "muted";
+    }
+
+    function setSaveState(label, badgeClass) {
+        if (!dom.saveStateBadge) {
+            return;
+        }
+        dom.saveStateBadge.textContent = label;
+        dom.saveStateBadge.className = `badge ${badgeClass}`;
     }
 
     function markUnsaved() {
+        state.dirty = true;
         setSaveState("Unsaved", "badge-warning");
-        _state.dirty = true;
     }
 
     function markSaved() {
+        state.dirty = false;
         setSaveState("Saved", "badge-muted");
-        _state.dirty = false;
     }
 
-    // -------------------------------------------------------------------------
-    // State
-    // -------------------------------------------------------------------------
+    function updateStatusBadge(status) {
+        if (!dom.statusBadge) {
+            return;
+        }
 
-    var _meta = parseJsonScript("recipe-meta") || {};
-    var _savedList = parseJsonScript("recipe-saved-list") || [];
-    var _currentData = parseJsonScript("recipe-current-data");
+        const normalizedStatus = asString(status, "draft");
+        let badgeClass = "badge-muted";
+        if (normalizedStatus === "approved") {
+            badgeClass = "badge-success";
+        } else if (normalizedStatus === "archived") {
+            badgeClass = "badge-warning";
+        }
 
-    var _state = {
-        recipeId: _meta.selectedRecipeId || null,
-        steps: [],     // real data rows (never includes the empty trailing row)
-        dirty: false,
-    };
-
-    // Numeric fields that are copied when the user focuses the empty row
-    var NUMERIC_FIELDS = ["delta_time", "temp", "pressure", "rpm"];
-
-    // -------------------------------------------------------------------------
-    // DOM refs
-    // -------------------------------------------------------------------------
-
-    var dom = {
-        select: document.getElementById("recipe-select"),
-        newBtn: document.getElementById("recipe-new-btn"),
-        saveBtn: document.getElementById("recipe-save-btn"),
-        title: document.getElementById("recipe-title"),
-        operator: document.getElementById("recipe-operator"),
-        statusBadge: document.getElementById("recipe-status-badge"),
-        stepCount: document.getElementById("recipe-step-count"),
-        tbody: document.getElementById("recipe-tbody"),
-    };
-
-    // -------------------------------------------------------------------------
-    // Row rendering
-    // -------------------------------------------------------------------------
-
-    function makeNumericInput(value, fieldName, rowIndex, isEmpty) {
-        var val = (value === null || value === undefined) ? "" : value;
-        return (
-            '<input type="number" step="0.01" min="0"' +
-            ' data-field="' + fieldName + '"' +
-            ' data-row="' + rowIndex + '"' +
-            ' class="recipe-num-input' + (isEmpty ? " recipe-input-empty" : "") + '"' +
-            ' value="' + escapeHtml(val) + '"' +
-            (isEmpty ? ' placeholder="—"' : "") +
-            '>'
-        );
+        dom.statusBadge.textContent = normalizedStatus;
+        dom.statusBadge.className = `badge ${badgeClass}`;
     }
 
-    function makeTextInput(value, fieldName, rowIndex, isEmpty, placeholder) {
-        var val = value || "";
-        return (
-            '<input type="text" maxlength="255"' +
-            ' data-field="' + fieldName + '"' +
-            ' data-row="' + rowIndex + '"' +
-            ' class="recipe-text-input' + (isEmpty ? " recipe-input-empty" : "") + '"' +
-            ' value="' + escapeHtml(val) + '"' +
-            (isEmpty && placeholder ? ' placeholder="' + escapeHtml(placeholder) + '"' : "") +
-            '>'
-        );
+    function syncBuildSelect() {
+        if (!dom.buildSelect) {
+            return;
+        }
+        dom.buildSelect.value = state.reactorBuildId ? String(state.reactorBuildId) : "";
+    }
+
+    function currentFlowHint() {
+        if (state.loadingBuild) {
+            return "Loading actor list from the selected flowsheet.";
+        }
+        if (!state.reactorBuildId) {
+            return "Select a flowsheet above to populate the Actor dropdown.";
+        }
+        if (state.actorOptions.length === 0) {
+            return "The selected flowsheet does not contain any actors.";
+        }
+        return "";
+    }
+
+    function syncFlowHint() {
+        if (!dom.flowHint) {
+            return;
+        }
+        const message = currentFlowHint();
+        dom.flowHint.textContent = message;
+        dom.flowHint.classList.toggle("is-hidden", !message);
+    }
+
+    function invalidActorCount() {
+        if (!state.reactorBuildId) {
+            return 0;
+        }
+        let invalidCount = 0;
+        for (const step of state.steps) {
+            if (!step.actor || !isKnownActor(step.actor)) {
+                invalidCount += 1;
+            }
+        }
+        return invalidCount;
+    }
+
+    function canEditSteps() {
+        return Boolean(state.reactorBuildId) && state.actorOptions.length > 0 && !state.loadingBuild;
+    }
+
+    function createStepFromPrevious() {
+        if (!canEditSteps()) {
+            return null;
+        }
+
+        const nextStep = emptyStep();
+        const previousStep = state.steps.length > 0 ? state.steps[state.steps.length - 1] : null;
+        if (previousStep) {
+            if (isKnownActor(previousStep.actor)) {
+                nextStep.actor = previousStep.actor;
+            }
+            for (const fieldName of NUMERIC_FIELDS) {
+                nextStep[fieldName] = previousStep[fieldName];
+            }
+        }
+
+        state.steps.push(nextStep);
+        markUnsaved();
+        return state.steps.length - 1;
+    }
+
+    function makeActorSelect(value, rowIndex, isEmpty, disabled) {
+        const normalizedValue = asString(value);
+        const knownActor = normalizedValue ? actorLookup().get(normalizedValue.toLowerCase()) : null;
+        let html = `<select data-field="actor" data-row="${rowIndex}" class="recipe-actor-select${isEmpty ? " recipe-input-empty" : ""}"${disabled ? " disabled" : ""}>`;
+
+        let placeholder = "Select actor";
+        if (!state.reactorBuildId) {
+            placeholder = "Select flowsheet first";
+        } else if (state.actorOptions.length === 0) {
+            placeholder = "No actors available";
+        } else if (isEmpty) {
+            placeholder = "Select actor...";
+        }
+        html += `<option value="">${escapeHtml(placeholder)}</option>`;
+
+        if (normalizedValue && !knownActor) {
+            html += `<option value="${escapeHtml(normalizedValue)}" selected>${escapeHtml(`${normalizedValue} (not in flowsheet)`)}</option>`;
+        }
+
+        for (const option of state.actorOptions) {
+            const isSelected = option.value === normalizedValue;
+            html += `<option value="${escapeHtml(option.value)}"${isSelected ? " selected" : ""}>${escapeHtml(option.label)}</option>`;
+        }
+
+        html += "</select>";
+        return html;
+    }
+
+    function makeTextInput(value, fieldName, rowIndex, isEmpty, placeholder, disabled) {
+        const normalizedValue = asString(value);
+        return `<input type="text" maxlength="255" data-field="${fieldName}" data-row="${rowIndex}" class="recipe-text-input${isEmpty ? " recipe-input-empty" : ""}" value="${escapeHtml(normalizedValue)}"${placeholder ? ` placeholder="${escapeHtml(placeholder)}"` : ""}${disabled ? " disabled" : ""}>`;
+    }
+
+    function makeNumericInput(value, fieldName, rowIndex, isEmpty, disabled) {
+        const normalizedValue = value == null ? "" : String(value);
+        return `<input type="number" step="0.01" min="0" data-field="${fieldName}" data-row="${rowIndex}" class="recipe-num-input${isEmpty ? " recipe-input-empty" : ""}" value="${escapeHtml(normalizedValue)}"${isEmpty ? ' placeholder="..."' : ""}${disabled ? " disabled" : ""}>`;
     }
 
     function renderTable() {
-        var rows = _state.steps;
-        var html = "";
-
-        // Data rows
-        for (var i = 0; i < rows.length; i++) {
-            var step = rows[i];
-            var num = i + 1;
-            html += '<tr data-row="' + i + '">';
-            html += '<td class="recipe-num-cell">' + num + '</td>';
-            html += '<td>' + makeTextInput(step.actor, "actor", i, false) + '</td>';
-            html += '<td>' + makeTextInput(step.task, "task", i, false) + '</td>';
-            html += '<td>' + makeNumericInput(step.delta_time, "delta_time", i, false) + '</td>';
-            html += '<td>' + makeNumericInput(step.temp, "temp", i, false) + '</td>';
-            html += '<td>' + makeNumericInput(step.pressure, "pressure", i, false) + '</td>';
-            html += '<td>' + makeNumericInput(step.rpm, "rpm", i, false) + '</td>';
-            html += '<td><button class="btn recipe-del-btn" data-del="' + i + '" type="button" title="Delete row">&#x2715;</button></td>';
-            html += '</tr>';
+        if (!dom.tableBody) {
+            return;
         }
 
-        // Always one empty trailing row
-        var emptyIdx = rows.length;
-        html += '<tr class="recipe-empty-row" data-row="' + emptyIdx + '">';
-        html += '<td class="recipe-num-cell recipe-num-cell-empty"></td>';
-        html += '<td>' + makeTextInput("", "actor", emptyIdx, true, "Actor…") + '</td>';
-        html += '<td>' + makeTextInput("", "task", emptyIdx, true, "Click to add step…") + '</td>';
-        html += '<td>' + makeNumericInput("", "delta_time", emptyIdx, true) + '</td>';
-        html += '<td>' + makeNumericInput("", "temp", emptyIdx, true) + '</td>';
-        html += '<td>' + makeNumericInput("", "pressure", emptyIdx, true) + '</td>';
-        html += '<td>' + makeNumericInput("", "rpm", emptyIdx, true) + '</td>';
-        html += '<td></td>';
-        html += '</tr>';
+        const controlsDisabled = !canEditSteps();
+        let html = "";
 
-        dom.tbody.innerHTML = html;
-
-        if (dom.stepCount) {
-            dom.stepCount.textContent = rows.length;
+        for (let index = 0; index < state.steps.length; index += 1) {
+            const step = state.steps[index];
+            const actorRequired = Boolean(state.reactorBuildId) && (!step.actor || !isKnownActor(step.actor));
+            html += `<tr data-row="${index}">`;
+            html += `<td class="recipe-num-cell">${index + 1}</td>`;
+            html += `<td class="${actorRequired ? "recipe-cell-required" : ""}">${makeActorSelect(step.actor, index, false, controlsDisabled)}</td>`;
+            html += `<td>${makeTextInput(step.task, "task", index, false, "", controlsDisabled)}</td>`;
+            html += `<td>${makeNumericInput(step.delta_time, "delta_time", index, false, controlsDisabled)}</td>`;
+            html += `<td>${makeNumericInput(step.temp, "temp", index, false, controlsDisabled)}</td>`;
+            html += `<td>${makeNumericInput(step.pressure, "pressure", index, false, controlsDisabled)}</td>`;
+            html += `<td>${makeNumericInput(step.rpm, "rpm", index, false, controlsDisabled)}</td>`;
+            html += `<td><button class="btn recipe-del-btn" data-del="${index}" type="button" title="Delete row"${controlsDisabled ? " disabled" : ""}>X</button></td>`;
+            html += "</tr>";
         }
 
+        const emptyRowIndex = state.steps.length;
+        html += `<tr class="recipe-empty-row" data-row="${emptyRowIndex}">`;
+        html += '<td class="recipe-num-cell recipe-num-cell-empty">.</td>';
+        html += `<td>${makeActorSelect("", emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += `<td>${makeTextInput("", "task", emptyRowIndex, true, "Click to add step...", controlsDisabled)}</td>`;
+        html += `<td>${makeNumericInput("", "delta_time", emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += `<td>${makeNumericInput("", "temp", emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += `<td>${makeNumericInput("", "pressure", emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += `<td>${makeNumericInput("", "rpm", emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += "<td></td>";
+        html += "</tr>";
+
+        dom.tableBody.innerHTML = html;
+        updateStepCount();
+        syncFlowHint();
         attachRowListeners();
     }
 
-    // -------------------------------------------------------------------------
-    // Row event listeners (re-attached after each render)
-    // -------------------------------------------------------------------------
-
     function attachRowListeners() {
-        // Delete buttons
-        var delBtns = dom.tbody.querySelectorAll("[data-del]");
-        for (var i = 0; i < delBtns.length; i++) {
-            delBtns[i].addEventListener("click", onDeleteRow);
+        if (!dom.tableBody) {
+            return;
         }
 
-        // All inputs — data sync
-        var inputs = dom.tbody.querySelectorAll("input");
-        for (var j = 0; j < inputs.length; j++) {
-            inputs[j].addEventListener("input", onCellInput);
-            inputs[j].addEventListener("focus", onCellFocus);
+        for (const button of dom.tableBody.querySelectorAll("[data-del]")) {
+            button.addEventListener("click", onDeleteRow);
+        }
+
+        for (const input of dom.tableBody.querySelectorAll('input[data-field="task"]')) {
+            input.addEventListener("input", onTaskInput);
+            input.addEventListener("focus", onRowControlFocus);
+        }
+
+        for (const input of dom.tableBody.querySelectorAll("input[type='number']")) {
+            input.addEventListener("input", onNumericInput);
+            input.addEventListener("focus", onRowControlFocus);
+        }
+
+        for (const select of dom.tableBody.querySelectorAll('select[data-field="actor"]')) {
+            select.addEventListener("change", onActorChange);
+            select.addEventListener("focus", onRowControlFocus);
         }
     }
 
-    function onDeleteRow(e) {
-        var idx = parseInt(e.currentTarget.getAttribute("data-del"), 10);
-        if (isNaN(idx) || idx < 0 || idx >= _state.steps.length) return;
-        _state.steps.splice(idx, 1);
+    function onDeleteRow(event) {
+        const rowIndex = parseId(event.currentTarget.getAttribute("data-del"));
+        if (rowIndex == null || rowIndex < 0 || rowIndex >= state.steps.length) {
+            return;
+        }
+        state.steps.splice(rowIndex, 1);
         markUnsaved();
         renderTable();
     }
 
-    function onCellFocus(e) {
-        var input = e.currentTarget;
-        var rowIdx = parseInt(input.getAttribute("data-row"), 10);
-        var isEmptyRow = rowIdx === _state.steps.length;
-        if (!isEmptyRow) return;
+    function onRowControlFocus(event) {
+        const control = event.currentTarget;
+        const rowIndex = parseId(control.getAttribute("data-row"));
+        if (rowIndex == null || rowIndex !== state.steps.length) {
+            return;
+        }
 
-        // Copy numeric values from previous row (if any), leave actor and task empty
-        if (_state.steps.length > 0) {
-            var prev = _state.steps[_state.steps.length - 1];
-            var newStep = { actor: "", task: "" };
-            for (var k = 0; k < NUMERIC_FIELDS.length; k++) {
-                newStep[NUMERIC_FIELDS[k]] = prev[NUMERIC_FIELDS[k]];
+        const newRowIndex = createStepFromPrevious();
+        if (newRowIndex == null) {
+            if (!state.reactorBuildId) {
+                setStatus("Select a flowsheet before adding steps.", "error");
+            } else if (state.actorOptions.length === 0) {
+                setStatus("The selected flowsheet does not contain any actors.", "error");
             }
-            _state.steps.push(newStep);
-        } else {
-            _state.steps.push(emptyStep());
+            return;
         }
-        markUnsaved();
+
+        const fieldName = control.getAttribute("data-field");
         renderTable();
 
-        // Restore focus to the same field in the newly rendered row (now second-to-last)
-        var field = input.getAttribute("data-field");
-        var newRowIdx = _state.steps.length - 1;
-        var selector = 'input[data-row="' + newRowIdx + '"][data-field="' + field + '"]';
-        var target = dom.tbody.querySelector(selector);
-        if (target) target.focus();
+        const selector = fieldName === "actor"
+            ? `select[data-row="${newRowIndex}"][data-field="${fieldName}"]`
+            : `input[data-row="${newRowIndex}"][data-field="${fieldName}"]`;
+        const target = dom.tableBody ? dom.tableBody.querySelector(selector) : null;
+        if (target) {
+            target.focus();
+        }
     }
 
-    function onCellInput(e) {
-        var input = e.currentTarget;
-        var rowIdx = parseInt(input.getAttribute("data-row"), 10);
-        var field = input.getAttribute("data-field");
+    function onTaskInput(event) {
+        const input = event.currentTarget;
+        const rowIndex = parseId(input.getAttribute("data-row"));
+        if (rowIndex == null || rowIndex >= state.steps.length) {
+            return;
+        }
+        state.steps[rowIndex].task = input.value;
+        markUnsaved();
+    }
 
-        // Only update real (non-empty-trailing) rows here
-        // The empty row becomes real on focus (onCellFocus handles that)
-        if (rowIdx >= _state.steps.length) return;
+    function onNumericInput(event) {
+        const input = event.currentTarget;
+        const rowIndex = parseId(input.getAttribute("data-row"));
+        const fieldName = input.getAttribute("data-field");
+        if (rowIndex == null || rowIndex >= state.steps.length || !fieldName) {
+            return;
+        }
 
-        var step = _state.steps[rowIdx];
-        if (field === "task" || field === "actor") {
-            step[field] = input.value;
-        } else {
-            var raw = input.value.trim();
-            step[field] = raw === "" ? null : parseFloat(raw);
+        const rawValue = input.value.trim();
+        state.steps[rowIndex][fieldName] = rawValue === "" ? null : Number.parseFloat(rawValue);
+        markUnsaved();
+    }
+
+    function onActorChange(event) {
+        const select = event.currentTarget;
+        const rowIndex = parseId(select.getAttribute("data-row"));
+        if (rowIndex == null || rowIndex >= state.steps.length) {
+            return;
+        }
+
+        state.steps[rowIndex].actor = select.value;
+        const tableCell = select.closest("td");
+        if (tableCell) {
+            tableCell.classList.toggle(
+                "recipe-cell-required",
+                Boolean(state.reactorBuildId) && (!select.value || !isKnownActor(select.value)),
+            );
         }
         markUnsaved();
+    }
 
-        // Update step count without full re-render
-        if (dom.stepCount) {
-            dom.stepCount.textContent = _state.steps.length;
+    async function loadBuildActors(buildId, { quiet = false } = {}) {
+        state.reactorBuildId = parseId(buildId);
+        state.actorOptions = [];
+        syncBuildSelect();
+
+        if (!state.reactorBuildId) {
+            return [];
+        }
+
+        const buildData = await fetchJson(`/api/reactor-builds/${state.reactorBuildId}`);
+        state.actorOptions = actorOptionsForBuild(buildData);
+        if (!quiet && state.actorOptions.length === 0) {
+            setStatus("The selected flowsheet does not contain any actors.", "error");
+        }
+        return state.actorOptions;
+    }
+
+    async function refreshActorOptions(buildId, { quiet = false, renderPending = false } = {}) {
+        state.loadingBuild = true;
+        if (renderPending) {
+            renderTable();
+        }
+
+        try {
+            return await loadBuildActors(buildId, { quiet });
+        } catch (error) {
+            state.actorOptions = [];
+            if (!quiet) {
+                setStatus(error.message || "Could not load flowsheet actors.", "error");
+            }
+            return [];
+        } finally {
+            state.loadingBuild = false;
+            syncBuildSelect();
+            renderTable();
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Load / init
-    // -------------------------------------------------------------------------
-
-    function emptyStep() {
-        return { actor: "", task: "", delta_time: null, temp: null, pressure: null, rpm: null };
-    }
-
-    function loadRecipe(data) {
-        if (!data) {
-            _state.recipeId = null;
-            _state.steps = [];
-            if (dom.title) dom.title.value = "";
-            if (dom.operator) dom.operator.value = "";
+    function applyRecipeData(recipeData, { preserveActorOptions = false } = {}) {
+        if (!recipeData) {
+            state.recipeId = null;
+            state.reactorBuildId = null;
+            state.steps = [];
+            if (!preserveActorOptions) {
+                state.actorOptions = [];
+            }
+            if (dom.recipeSelect) {
+                dom.recipeSelect.value = "";
+            }
+            if (dom.titleInput) {
+                dom.titleInput.value = "";
+            }
+            if (dom.operatorInput) {
+                dom.operatorInput.value = "";
+            }
             updateStatusBadge("draft");
             markSaved();
+            syncBuildSelect();
             renderTable();
             setStatus("");
             return;
         }
-        _state.recipeId = data.recipe_id || null;
-        _state.steps = Array.isArray(data.steps) ? data.steps.slice() : [];
-        if (dom.title) dom.title.value = data.title || "";
-        if (dom.operator) dom.operator.value = data.operator_name || "";
-        updateStatusBadge(data.status || "draft");
-        markSaved();
-        renderTable();
-        setStatus(data.updated_at ? "Last saved: " + data.updated_at : "");
-    }
 
-    function updateStatusBadge(status) {
-        if (!dom.statusBadge) return;
-        dom.statusBadge.textContent = status || "draft";
-        var cls = "badge-muted";
-        if (status === "approved") cls = "badge-success";
-        else if (status === "archived") cls = "badge-warning";
-        dom.statusBadge.className = "badge " + cls;
-    }
+        state.recipeId = parseId(recipeData.recipe_id);
+        state.reactorBuildId = parseId(recipeData.reactor_build_id);
+        state.steps = Array.isArray(recipeData.steps) ? recipeData.steps.map(normalizeLoadedStep) : [];
 
-    // -------------------------------------------------------------------------
-    // Save
-    // -------------------------------------------------------------------------
-
-    function collectPayload() {
-        // Read current input values directly from the DOM for the real rows
-        // (in case the user typed without triggering onCellInput on the last row)
-        var rows = dom.tbody.querySelectorAll("tr[data-row]");
-        var steps = [];
-
-        for (var i = 0; i < _state.steps.length; i++) {
-            var step = Object.assign({}, _state.steps[i]);
-            // Re-read from DOM in case of stale state
-            var actorEl = dom.tbody.querySelector('input[data-row="' + i + '"][data-field="actor"]');
-            if (actorEl) step.actor = actorEl.value;
-            var taskEl = dom.tbody.querySelector('input[data-row="' + i + '"][data-field="task"]');
-            if (taskEl) step.task = taskEl.value;
-            for (var k = 0; k < NUMERIC_FIELDS.length; k++) {
-                var f = NUMERIC_FIELDS[k];
-                var numEl = dom.tbody.querySelector('input[data-row="' + i + '"][data-field="' + f + '"]');
-                if (numEl) {
-                    var raw = numEl.value.trim();
-                    step[f] = raw === "" ? null : parseFloat(raw);
-                }
-            }
-            // Skip fully empty steps
-            var allNull = NUMERIC_FIELDS.every(function (f) { return step[f] === null || step[f] === undefined || isNaN(step[f]); });
-            if (!step.actor && !step.task && allNull) continue;
-            steps.push(step);
+        if (dom.recipeSelect) {
+            dom.recipeSelect.value = state.recipeId ? String(state.recipeId) : "";
+        }
+        if (dom.titleInput) {
+            dom.titleInput.value = asString(recipeData.title);
+        }
+        if (dom.operatorInput) {
+            dom.operatorInput.value = asString(recipeData.operator_name);
         }
 
+        updateStatusBadge(asString(recipeData.status, "draft"));
+        markSaved();
+        syncBuildSelect();
+        renderTable();
+
+        if (state.reactorBuildId && invalidActorCount() > 0) {
+            setStatus("One or more actor assignments no longer match the selected flowsheet.", "error");
+        } else if (recipeData.updated_at) {
+            setStatus(`Last saved: ${recipeData.updated_at}`);
+        } else {
+            setStatus("");
+        }
+    }
+
+    async function loadRecipeById(recipeId) {
+        setSaveState("Loading...", "badge-muted");
+        setStatus("");
+
+        const recipeData = await fetchJson(`/api/recipes/${recipeId}`);
+        await refreshActorOptions(recipeData.reactor_build_id, { quiet: true });
+        applyRecipeData(recipeData, { preserveActorOptions: true });
+        window.history.replaceState(null, "", `/recipes?recipe_id=${recipeId}`);
+    }
+
+    function readNumericValue(rowIndex, fieldName) {
+        const input = dom.tableBody
+            ? dom.tableBody.querySelector(`input[data-row="${rowIndex}"][data-field="${fieldName}"]`)
+            : null;
+        if (!input) {
+            return null;
+        }
+        const rawValue = input.value.trim();
+        if (!rawValue) {
+            return null;
+        }
+        const parsed = Number.parseFloat(rawValue);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function collectPayload() {
+        const steps = [];
+
+        for (let rowIndex = 0; rowIndex < state.steps.length; rowIndex += 1) {
+            const step = emptyStep();
+            const actorSelect = dom.tableBody
+                ? dom.tableBody.querySelector(`select[data-row="${rowIndex}"][data-field="actor"]`)
+                : null;
+            const taskInput = dom.tableBody
+                ? dom.tableBody.querySelector(`input[data-row="${rowIndex}"][data-field="task"]`)
+                : null;
+
+            step.actor = actorSelect ? actorSelect.value : asString(state.steps[rowIndex].actor);
+            step.task = taskInput ? taskInput.value : asString(state.steps[rowIndex].task);
+            for (const fieldName of NUMERIC_FIELDS) {
+                step[fieldName] = readNumericValue(rowIndex, fieldName);
+            }
+
+            const isCompletelyEmpty = !step.actor && !step.task && NUMERIC_FIELDS.every((fieldName) => step[fieldName] == null);
+            if (!isCompletelyEmpty) {
+                steps.push(step);
+            }
+        }
+
+        const operatorName = dom.operatorInput ? dom.operatorInput.value.trim() : "";
         return {
-            title: (dom.title ? dom.title.value.trim() : ""),
-            operator_name: (dom.operator ? dom.operator.value.trim() : ""),
-            created_by: (dom.operator ? dom.operator.value.trim() : "unknown"),
-            updated_by: (dom.operator ? dom.operator.value.trim() : "unknown"),
-            steps: steps,
+            title: dom.titleInput ? dom.titleInput.value.trim() : "",
+            operator_name: operatorName,
+            created_by: operatorName || "unknown",
+            updated_by: operatorName || "unknown",
+            reactor_build_id: state.reactorBuildId,
+            steps,
         };
     }
 
-    function saveRecipe() {
-        var payload = collectPayload();
+    async function saveRecipe() {
+        const payload = collectPayload();
+
         if (!payload.title) {
             setStatus("Recipe Title is required before saving.", "error");
-            if (dom.title) dom.title.focus();
+            dom.titleInput?.focus();
             return;
         }
         if (!payload.operator_name) {
             setStatus("Operator is required before saving.", "error");
-            if (dom.operator) dom.operator.focus();
+            dom.operatorInput?.focus();
+            return;
+        }
+        if (!payload.reactor_build_id) {
+            setStatus("Select a flowsheet before saving the recipe.", "error");
+            dom.buildSelect?.focus();
+            return;
+        }
+        if (state.actorOptions.length === 0) {
+            setStatus("The selected flowsheet does not contain any actors.", "error");
             return;
         }
 
-        var url = _state.recipeId ? "/api/recipes/" + _state.recipeId : "/api/recipes";
-        var method = _state.recipeId ? "PATCH" : "POST";
-
-        if (!_state.recipeId) {
-            // On create, created_by comes from operator
-            payload.created_by = payload.operator_name;
+        const invalidStep = payload.steps.find((step) => !step.actor || !isKnownActor(step.actor));
+        if (invalidStep) {
+            setStatus("Actor must be set from the selected flowsheet for every step before saving.", "error");
+            return;
         }
-        payload.updated_by = payload.operator_name;
 
-        setSaveState("Saving…", "badge-warning");
+        const isCreate = !state.recipeId;
+        const requestUrl = isCreate ? "/api/recipes" : `/api/recipes/${state.recipeId}`;
+        const requestMethod = isCreate ? "POST" : "PATCH";
+        if (!isCreate) {
+            delete payload.created_by;
+        }
+
+        const headers = { "Content-Type": "application/json" };
+        if (metaData.apiAuthRequired && metaData.recipeWriteToken) {
+            headers["X-Recipe-Token"] = metaData.recipeWriteToken;
+        }
+
+        setSaveState("Saving...", "badge-warning");
         setStatus("");
 
-        var headers = { "Content-Type": "application/json" };
-        if (_meta.apiAuthRequired && _meta.recipeWriteToken) {
-            headers["X-Recipe-Token"] = _meta.recipeWriteToken;
-        }
-
-        fetch(url, {
-            method: method,
-            headers: headers,
-            body: JSON.stringify(payload),
-        })
-        .then(function (resp) {
-            return resp.json().then(function (data) {
-                return { ok: resp.ok, status: resp.status, data: data };
+        try {
+            const savedRecipe = await fetchJson(requestUrl, {
+                method: requestMethod,
+                headers,
+                body: JSON.stringify(payload),
             });
-        })
-        .then(function (result) {
-            if (!result.ok) {
-                var msg = (result.data && result.data.error) ? result.data.error : "Save failed (HTTP " + result.status + ").";
-                setSaveState("Error", "badge-danger");
-                setStatus(msg, "error");
-                return;
-            }
-            var saved = result.data;
-            _state.recipeId = saved.recipe_id;
-            _state.steps = Array.isArray(saved.steps) ? saved.steps.slice() : [];
-            updateStatusBadge(saved.status || "draft");
+
+            state.recipeId = parseId(savedRecipe.recipe_id);
+            state.steps = Array.isArray(savedRecipe.steps) ? savedRecipe.steps.map(normalizeLoadedStep) : [];
+            updateStatusBadge(asString(savedRecipe.status, "draft"));
             markSaved();
-            setStatus("Saved at " + (saved.updated_at || new Date().toISOString()));
-
-            // Update the recipe selector option
-            updateSelectorOption(saved);
+            updateSelectorOption(savedRecipe);
             renderTable();
-        })
-        .catch(function (err) {
+            setStatus(`Saved at ${savedRecipe.updated_at || new Date().toISOString()}`);
+            window.history.replaceState(null, "", `/recipes?recipe_id=${savedRecipe.recipe_id}`);
+        } catch (error) {
             setSaveState("Error", "badge-danger");
-            setStatus("Network error: " + err.message, "error");
-        });
-    }
-
-    function updateSelectorOption(saved) {
-        if (!dom.select) return;
-        var existing = dom.select.querySelector('option[value="' + saved.recipe_id + '"]');
-        var label = saved.title + " | " + (saved.status || "draft") + " | " + (saved.updated_by || saved.created_by || "");
-        if (existing) {
-            existing.textContent = label;
-        } else {
-            var opt = document.createElement("option");
-            opt.value = saved.recipe_id;
-            opt.textContent = label;
-            dom.select.appendChild(opt);
+            setStatus(error.message || "Recipe save failed.", "error");
         }
-        dom.select.value = String(saved.recipe_id);
     }
 
-    // -------------------------------------------------------------------------
-    // Recipe selector
-    // -------------------------------------------------------------------------
+    function updateSelectorOption(savedRecipe) {
+        if (!dom.recipeSelect) {
+            return;
+        }
 
-    function onSelectChange() {
-        var val = dom.select.value;
-        if (val === "") {
-            if (_state.dirty && !confirm("Discard unsaved changes?")) {
-                dom.select.value = _state.recipeId ? String(_state.recipeId) : "";
+        const value = String(savedRecipe.recipe_id);
+        const label = `${savedRecipe.title} | ${savedRecipe.status || "draft"} | ${savedRecipe.updated_by || savedRecipe.created_by || ""}`;
+        let option = dom.recipeSelect.querySelector(`option[value="${value}"]`);
+        if (!option) {
+            option = document.createElement("option");
+            option.value = value;
+            dom.recipeSelect.appendChild(option);
+        }
+        option.textContent = label;
+        dom.recipeSelect.value = value;
+    }
+
+    function confirmDiscardDirtyChanges() {
+        if (!state.dirty) {
+            return true;
+        }
+        return window.confirm("Discard unsaved changes?");
+    }
+
+    function revertRecipeSelection() {
+        if (!dom.recipeSelect) {
+            return;
+        }
+        dom.recipeSelect.value = state.recipeId ? String(state.recipeId) : "";
+    }
+
+    async function onRecipeSelectChange() {
+        const selectedRecipeId = parseId(dom.recipeSelect?.value);
+        if (!selectedRecipeId) {
+            if (!confirmDiscardDirtyChanges()) {
+                revertRecipeSelection();
                 return;
             }
-            loadRecipe(null);
+            await refreshActorOptions(null, { quiet: true });
+            applyRecipeData(null, { preserveActorOptions: true });
             window.history.replaceState(null, "", "/recipes");
             return;
         }
 
-        var id = parseInt(val, 10);
-        if (isNaN(id)) return;
-
-        if (_state.dirty && !confirm("Discard unsaved changes?")) {
-            dom.select.value = _state.recipeId ? String(_state.recipeId) : "";
+        if (!confirmDiscardDirtyChanges()) {
+            revertRecipeSelection();
             return;
         }
 
-        setSaveState("Loading…", "badge-muted");
-        setStatus("");
-
-        fetch("/api/recipes/" + id)
-            .then(function (r) { return r.json(); })
-            .then(function (data) {
-                _state.recipeId = data.recipe_id;
-                _state.steps = Array.isArray(data.steps) ? data.steps.slice() : [];
-                if (dom.title) dom.title.value = data.title || "";
-                if (dom.operator) dom.operator.value = data.operator_name || "";
-                updateStatusBadge(data.status || "draft");
-                markSaved();
-                renderTable();
-                setStatus(data.updated_at ? "Last saved: " + data.updated_at : "");
-                window.history.replaceState(null, "", "/recipes?recipe_id=" + id);
-            })
-            .catch(function (err) {
-                setSaveState("Error", "badge-danger");
-                setStatus("Could not load recipe: " + err.message, "error");
-            });
-    }
-
-    // -------------------------------------------------------------------------
-    // Unsaved changes warning
-    // -------------------------------------------------------------------------
-
-    window.addEventListener("beforeunload", function (e) {
-        if (_state.dirty) {
-            e.preventDefault();
-            e.returnValue = "";
+        try {
+            await loadRecipeById(selectedRecipeId);
+        } catch (error) {
+            setSaveState("Error", "badge-danger");
+            setStatus(error.message || "Could not load the selected recipe.", "error");
+            revertRecipeSelection();
         }
-    });
-
-    // -------------------------------------------------------------------------
-    // Title / operator change tracking
-    // -------------------------------------------------------------------------
+    }
 
     function onHeaderInput() {
         markUnsaved();
     }
 
-    // -------------------------------------------------------------------------
-    // Init
-    // -------------------------------------------------------------------------
+    async function onBuildSelectChange() {
+        const nextBuildId = parseId(dom.buildSelect?.value);
+        await refreshActorOptions(nextBuildId, { renderPending: true });
+        markUnsaved();
+
+        if (!state.reactorBuildId) {
+            setStatus("Select a flowsheet before adding steps.", "error");
+            return;
+        }
+        if (state.actorOptions.length === 0) {
+            setStatus("The selected flowsheet does not contain any actors.", "error");
+            return;
+        }
+        if (invalidActorCount() > 0) {
+            setStatus("Check actor assignments after changing the flowsheet.", "error");
+            return;
+        }
+        setStatus("Actor list updated from the selected flowsheet.");
+    }
+
+    async function initializePage() {
+        const initialBuildId = parseId(currentRecipeData && currentRecipeData.reactor_build_id);
+        if (initialBuildId) {
+            await refreshActorOptions(initialBuildId, { quiet: true });
+            applyRecipeData(currentRecipeData, { preserveActorOptions: true });
+            return;
+        }
+        applyRecipeData(currentRecipeData, { preserveActorOptions: false });
+    }
 
     function init() {
-        // Wire up header events
-        if (dom.title) dom.title.addEventListener("input", onHeaderInput);
-        if (dom.operator) dom.operator.addEventListener("input", onHeaderInput);
+        dom.titleInput?.addEventListener("input", onHeaderInput);
+        dom.operatorInput?.addEventListener("input", onHeaderInput);
+        dom.newButton?.addEventListener("click", async () => {
+            if (!confirmDiscardDirtyChanges()) {
+                return;
+            }
+            if (dom.recipeSelect) {
+                dom.recipeSelect.value = "";
+            }
+            await refreshActorOptions(null, { quiet: true });
+            applyRecipeData(null, { preserveActorOptions: true });
+            window.history.replaceState(null, "", "/recipes");
+        });
+        dom.saveButton?.addEventListener("click", () => {
+            void saveRecipe();
+        });
+        dom.recipeSelect?.addEventListener("change", () => {
+            void onRecipeSelectChange();
+        });
+        dom.buildSelect?.addEventListener("change", () => {
+            void onBuildSelectChange();
+        });
 
-        // Toolbar
-        if (dom.newBtn) {
-            dom.newBtn.addEventListener("click", function () {
-                if (_state.dirty && !confirm("Discard unsaved changes?")) return;
-                if (dom.select) dom.select.value = "";
-                loadRecipe(null);
-                window.history.replaceState(null, "", "/recipes");
-            });
-        }
-        if (dom.saveBtn) {
-            dom.saveBtn.addEventListener("click", saveRecipe);
-        }
-        if (dom.select) {
-            dom.select.addEventListener("change", onSelectChange);
-        }
-
-        // Keyboard shortcut: Ctrl+S
-        document.addEventListener("keydown", function (e) {
-            if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-                e.preventDefault();
-                saveRecipe();
+        document.addEventListener("keydown", (event) => {
+            if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+                event.preventDefault();
+                void saveRecipe();
             }
         });
 
-        // Load initial data
-        loadRecipe(_currentData);
+        window.addEventListener("beforeunload", (event) => {
+            if (!state.dirty) {
+                return;
+            }
+            event.preventDefault();
+            event.returnValue = "";
+        });
+
+        void initializePage();
     }
 
     init();
-
 })();

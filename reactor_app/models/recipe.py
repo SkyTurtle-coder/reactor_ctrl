@@ -12,6 +12,12 @@ class Recipe(db.Model):
     operator_name = db.Column(db.String(120), nullable=False)
     version = db.Column(db.SmallInteger, nullable=False, server_default=db.text("1"))
     status = db.Column(db.String(32), nullable=False, server_default=db.text("'draft'"), index=True)
+    reactor_build_id = db.Column(
+        unsigned_bigint(),
+        db.ForeignKey("reactor_build.reactor_build_id", onupdate="CASCADE", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     steps_json = db.Column(db.JSON, nullable=False)
     created_by = db.Column(db.String(120), nullable=False)
     updated_by = db.Column(db.String(120))

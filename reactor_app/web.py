@@ -564,6 +564,7 @@ def process_view():
 def recipes_view():
     recipe_id = request.args.get("recipe_id", type=int)
     saved_recipes: list[dict[str, Any]] = []
+    saved_builds: list[dict[str, Any]] = []
     current_recipe = None
     selected_recipe_missing = False
     recipe_storage_available = True
@@ -584,6 +585,23 @@ def recipes_view():
             }
             for r in items
         ]
+        builds = (
+            ReactorBuild.query.order_by(
+                ReactorBuild.is_active.desc(),
+                ReactorBuild.build_name.asc(),
+                ReactorBuild.reactor_build_id.desc(),
+            ).all()
+        )
+        saved_builds = [
+            {
+                "reactor_build_id": b.reactor_build_id,
+                "build_name": b.build_name,
+                "build_date": b.build_date.isoformat() if b.build_date else None,
+                "updated_by": b.updated_by or b.created_by,
+                "is_active": bool(b.is_active),
+            }
+            for b in builds
+        ]
         if recipe_id is not None:
             raw = db.session.get(Recipe, recipe_id)
             selected_recipe_missing = raw is None
@@ -594,6 +612,7 @@ def recipes_view():
                     "operator_name": raw.operator_name,
                     "version": raw.version,
                     "status": raw.status,
+                    "reactor_build_id": raw.reactor_build_id,
                     "steps": raw.steps_json if isinstance(raw.steps_json, list) else [],
                     "created_by": raw.created_by,
                     "updated_by": raw.updated_by,
@@ -622,6 +641,7 @@ def recipes_view():
             "recipes.html",
             active_page="recipes",
             saved_recipes=saved_recipes,
+            saved_builds=saved_builds,
             current_recipe=current_recipe,
             selected_recipe_id=recipe_id if current_recipe is not None else None,
             selected_recipe_missing=selected_recipe_missing,

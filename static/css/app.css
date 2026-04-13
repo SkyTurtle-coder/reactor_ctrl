@@ -2288,7 +2288,7 @@ kbd {
 /* Header card */
 .recipe-header-body {
     display: grid;
-    grid-template-columns: 1fr 1fr auto;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
     gap: 1rem;
     align-items: start;
 }
@@ -2369,6 +2369,10 @@ kbd {
     min-width: 180px;
 }
 
+.recipe-col-actor {
+    min-width: 220px;
+}
+
 .recipe-col-num-val {
     width: 7rem;
     white-space: nowrap;
@@ -2390,8 +2394,10 @@ kbd {
 }
 
 .recipe-text-input,
-.recipe-num-input {
+.recipe-num-input,
+.recipe-actor-select {
     width: 100%;
+    min-height: 2.2rem;
     padding: 0.35rem 0.5rem;
     border: 1px solid transparent;
     border-radius: 6px;
@@ -2399,25 +2405,40 @@ kbd {
     color: var(--text);
     font-size: 0.9rem;
     font-family: inherit;
+    appearance: none;
     transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .recipe-text-input:hover,
-.recipe-num-input:hover {
+.recipe-num-input:hover,
+.recipe-actor-select:hover {
     border-color: var(--border);
     background: var(--surface-alt);
 }
 
 .recipe-text-input:focus,
-.recipe-num-input:focus {
+.recipe-num-input:focus,
+.recipe-actor-select:focus {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
     border-color: transparent;
     background: var(--surface);
 }
 
+.recipe-text-input:disabled,
+.recipe-num-input:disabled,
+.recipe-actor-select:disabled {
+    cursor: not-allowed;
+    color: var(--muted);
+    background: rgba(0, 0, 0, 0.03);
+}
+
 .recipe-input-empty {
     color: var(--muted);
+}
+
+.recipe-cell-required {
+    background: rgba(154, 47, 36, 0.08);
 }
 
 .recipe-empty-row td {
@@ -2444,10 +2465,22 @@ kbd {
     min-height: 1.6rem;
 }
 
+.recipe-no-flowsheet-hint {
+    margin: 0;
+    padding: 0.85rem 1.25rem 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    background: rgba(248, 242, 232, 0.45);
+}
+
+.recipe-no-flowsheet-hint.is-hidden {
+    display: none;
+}
+
 /* Responsive */
 @media (max-width: 900px) {
     .recipe-header-body {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .recipe-meta-chips {
