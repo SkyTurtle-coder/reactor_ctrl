@@ -225,10 +225,28 @@ def _read_ika_status(device: Device) -> dict[str, float | None]:
     setpoint_response = _run_logged_manual_command(device, "IN_SP_4")
     actual_response = _run_logged_manual_command(device, "IN_PV_4")
     torque_response = _run_logged_manual_command(device, "IN_PV_5")
+
+    setpoint = _parse_ika_numeric_response(setpoint_response)
+    actual = _parse_ika_numeric_response(actual_response)
+    torque = _parse_ika_numeric_response(torque_response)
+
+    # If every channel returned None (empty or non-numeric), the device is not
+    # communicating properly.  Treat this as an explicit failure so that the
+    # reconciler stores a visible error instead of silently treating the command
+    # as successfully applied.
+    if setpoint is None and actual is None and torque is None:
+        raise RuntimeError(
+            "Stirrer returned no valid data on any channel "
+            f"(IN_SP_4={setpoint_response!r}, IN_PV_4={actual_response!r}, "
+            f"IN_PV_5={torque_response!r}). "
+            "The device may still be booting after a power cycle, or the "
+            "connection is broken. Will retry automatically."
+        )
+
     return {
-        "setpoint_rpm": _parse_ika_numeric_response(setpoint_response),
-        "actual_rpm": _parse_ika_numeric_response(actual_response),
-        "torque_ncm": _parse_ika_numeric_response(torque_response),
+        "setpoint_rpm": setpoint,
+        "actual_rpm": actual,
+        "torque_ncm": torque,
     }
 
 
@@ -254,13 +272,29 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
 
     if desired_is_on:
         _run_logged_manual_command(device, "START_4")
-        time.sleep(0.18)
+        # Give the device time to process the start command before sending
+        # the setpoint.  0.5 s is more robust than 0.18 s, especially after
+        # a power cycle when firmware may not be fully ready.
+        time.sleep(0.5)
         _run_logged_manual_command(device, f"OUT_SP_4 {desired_speed}")
-        time.sleep(0.18)
+        time.sleep(0.5)
+
+        # Verify the setpoint was accepted: a None response means the device
+        # is not communicating (e.g. still booting).  Raise so the reconciler
+        # stores a visible error and retries on the next cycle.
+        sp_response = _run_logged_manual_command(device, "IN_SP_4")
+        sp_value = _parse_ika_numeric_response(sp_response)
+        if sp_value is None:
+            raise RuntimeError(
+                f"Stirrer did not confirm setpoint after START command "
+                f"(IN_SP_4 returned {sp_response!r}). "
+                "The device may still be booting. Will retry automatically."
+            )
         return
 
     _run_logged_manual_command(device, "STOP_4")
-    time.sleep(0.18)
+    # Give device time to process the stop command before subsequent reads.
+    time.sleep(0.5)
 
 
 def _release_manual_state_lease(state: DeviceManualState, *, status: str) -> None:
@@ -306,6 +340,16 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
 
         _refresh_state_from_telemetry(state, telemetry)
         if desired_pending:
+            # Final sanity check: if the desired state was ON but the setpoint
+            # came back as None in the post-apply telemetry, the device silently
+            # dropped our command (e.g. a second boot glitch).  Do NOT mark as
+            # applied so the reconciler retries on the next cycle.
+            if bool(state.desired_is_on) and state.reported_setpoint_rpm is None:
+                raise RuntimeError(
+                    "Stirrer accepted the START command but setpoint reads as "
+                    "None in the subsequent telemetry poll. The device may have "
+                    "reset. Will retry automatically."
+                )
             state.applied_version = processed_version
         state.last_error = None
         state.next_poll_at = _now_utc() + _manual_poll_interval(app) if watch_active else None

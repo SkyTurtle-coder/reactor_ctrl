@@ -15,6 +15,7 @@ class _FakeSessionForProcess:
         self._state = state
         self._device = device
         self.commit_calls = 0
+        self.rollback_calls = 0
 
     def get(self, model, _device_id):
         if model is DeviceManualState:
@@ -25,6 +26,9 @@ class _FakeSessionForProcess:
 
     def commit(self):
         self.commit_calls += 1
+
+    def rollback(self):
+        self.rollback_calls += 1
 
 
 class _FakeSessionForClaim:
@@ -122,6 +126,219 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         self.assertEqual(claimed, 3)
         self.assertEqual(fake_session.rollback_calls, 1)
         self.assertEqual(fake_session.commit_calls, 1)
+
+
+class ParseIkaNumericResponseTests(unittest.TestCase):
+    """_parse_ika_numeric_response edge-cases."""
+
+    def _call(self, text):
+        return device_manual_runtime._parse_ika_numeric_response(text)
+
+    def test_valid_float_string(self):
+        self.assertAlmostEqual(self._call("300.0"), 300.0)
+
+    def test_zero(self):
+        self.assertAlmostEqual(self._call("0.0"), 0.0)
+
+    def test_none_input(self):
+        self.assertIsNone(self._call(None))
+
+    def test_empty_string(self):
+        self.assertIsNone(self._call(""))
+
+    def test_whitespace_only(self):
+        self.assertIsNone(self._call("   "))
+
+    def test_non_numeric_string(self):
+        self.assertIsNone(self._call("ERR"))
+
+    def test_float_with_whitespace(self):
+        self.assertAlmostEqual(self._call(" 150.5 "), 150.5)
+
+
+class ReadIkaStatusAllNoneTests(unittest.TestCase):
+    """_read_ika_status must raise RuntimeError when every channel returns None."""
+
+    def test_raises_when_all_responses_are_empty(self):
+        # Simulate a device that responds with empty strings to all IN_ queries.
+        call_count = {"n": 0}
+
+        def fake_run(device, cmd):
+            call_count["n"] += 1
+            return ""  # empty → _parse_ika_numeric_response returns None
+
+        with patch.object(device_manual_runtime, "_run_logged_manual_command", fake_run):
+            with self.assertRaises(RuntimeError) as ctx:
+                device_manual_runtime._read_ika_status(object())
+
+        self.assertIn("no valid data", str(ctx.exception))
+        self.assertEqual(call_count["n"], 3)
+
+    def test_does_not_raise_when_only_one_channel_is_none(self):
+        # setpoint valid, actual/torque empty → should not raise.
+        responses = iter(["300.0", "", ""])
+
+        def fake_run(device, cmd):
+            return next(responses)
+
+        with patch.object(device_manual_runtime, "_run_logged_manual_command", fake_run):
+            result = device_manual_runtime._read_ika_status(object())
+
+        self.assertAlmostEqual(result["setpoint_rpm"], 300.0)
+        self.assertIsNone(result["actual_rpm"])
+        self.assertIsNone(result["torque_ncm"])
+
+
+class ApplyDesiredIkaStateTests(unittest.TestCase):
+    """_apply_desired_ika_state must verify setpoint acceptance after START."""
+
+    def _make_state(self, *, is_on, speed):
+        state = DeviceManualState(
+            device_id=1,
+            desired_is_on=is_on,
+            desired_speed=speed,
+        )
+        return state
+
+    def test_on_raises_when_setpoint_not_confirmed(self):
+        """If IN_SP_4 returns None after START, raise RuntimeError."""
+        sent = []
+
+        def fake_run(device, cmd):
+            sent.append(cmd)
+            if cmd.startswith("IN_SP_4"):
+                return ""  # device not responding
+            return None  # write commands return None
+
+        state = self._make_state(is_on=True, speed=300)
+        with patch.object(device_manual_runtime, "_run_logged_manual_command", fake_run):
+            with patch.object(device_manual_runtime.time, "sleep"):
+                with self.assertRaises(RuntimeError) as ctx:
+                    device_manual_runtime._apply_desired_ika_state(object(), state)
+
+        self.assertIn("did not confirm setpoint", str(ctx.exception))
+        # START_4 and OUT_SP_4 must have been sent before the check
+        self.assertIn("START_4", sent)
+        self.assertTrue(any("OUT_SP_4" in s for s in sent))
+
+    def test_on_succeeds_when_setpoint_confirmed(self):
+        """If IN_SP_4 returns a value, no exception is raised."""
+        def fake_run(device, cmd):
+            if cmd.startswith("IN_SP_4"):
+                return "300.0"
+            return None
+
+        state = self._make_state(is_on=True, speed=300)
+        with patch.object(device_manual_runtime, "_run_logged_manual_command", fake_run):
+            with patch.object(device_manual_runtime.time, "sleep"):
+                # Should not raise
+                device_manual_runtime._apply_desired_ika_state(object(), state)
+
+    def test_off_sends_stop_and_does_not_read_back(self):
+        """STOP_4 path must not read IN_SP_4."""
+        sent = []
+
+        def fake_run(device, cmd):
+            sent.append(cmd)
+            return None
+
+        state = self._make_state(is_on=False, speed=0)
+        with patch.object(device_manual_runtime, "_run_logged_manual_command", fake_run):
+            with patch.object(device_manual_runtime.time, "sleep"):
+                device_manual_runtime._apply_desired_ika_state(object(), state)
+
+        self.assertEqual(sent, ["STOP_4"])
+
+
+class ProcessManualStateAppliedVersionTests(unittest.TestCase):
+    """applied_version must NOT be incremented when telemetry is invalid after apply."""
+
+    def _make_app(self):
+        return Flask(__name__)
+
+    def test_applied_version_not_set_when_setpoint_is_none_after_apply(self):
+        """
+        Simulate: desired ON v1, apply runs (raises RuntimeError because setpoint
+        check fails).  applied_version must stay at 0 and last_error must be set.
+        """
+        app = self._make_app()
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        state = DeviceManualState(
+            device_id=1,
+            queue_status="running",
+            desired_version=1,
+            applied_version=0,
+            desired_is_on=True,
+            desired_speed=300,
+            lease_owner="worker-x",
+        )
+        state.watch_expires_at = now + timedelta(seconds=30)
+        state.next_poll_at = now - timedelta(seconds=1)
+
+        device = Device(
+            device_id=1,
+            asset_serial="IKA-1",
+            display_name="IKA Stirrer",
+            device_type="actuator",
+            protocol="ika_eurostar_60",
+        )
+        fake_session = _FakeSessionForProcess(state=state, device=device)
+
+        def fake_apply(dev, st):
+            raise RuntimeError("IN_SP_4 returned empty – device still booting")
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "_apply_desired_ika_state", fake_apply):
+                device_manual_runtime._process_manual_state(app, device_id=1, worker_id="worker-x")
+
+        self.assertEqual(state.applied_version, 0, "applied_version must stay 0 on failure")
+        self.assertIn("booting", state.last_error or "")
+        self.assertEqual(state.queue_status, "error")
+
+    def test_applied_version_set_when_telemetry_valid(self):
+        """
+        Simulate: desired ON v1, apply succeeds, telemetry is valid.
+        applied_version must advance to 1.
+        """
+        app = self._make_app()
+        now = datetime.now(timezone.utc)
+        state = DeviceManualState(
+            device_id=1,
+            queue_status="running",
+            desired_version=1,
+            applied_version=0,
+            desired_is_on=True,
+            desired_speed=300,
+            lease_owner="worker-x",
+        )
+        state.watch_expires_at = now + timedelta(seconds=30)
+        state.next_poll_at = now - timedelta(seconds=1)
+
+        device = Device(
+            device_id=1,
+            asset_serial="IKA-1",
+            display_name="IKA Stirrer",
+            device_type="actuator",
+            protocol="ika_eurostar_60",
+        )
+        fake_session = _FakeSessionForProcess(state=state, device=device)
+
+        def fake_apply(_dev, _st):
+            pass  # success
+
+        def fake_read_status(_dev):
+            return {"setpoint_rpm": 300.0, "actual_rpm": 280.0, "torque_ncm": 1.2}
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "_apply_desired_ika_state", fake_apply):
+                with patch.object(device_manual_runtime, "_read_ika_status", fake_read_status):
+                    device_manual_runtime._process_manual_state(app, device_id=1, worker_id="worker-x")
+
+        self.assertEqual(state.applied_version, 1)
+        self.assertIsNone(state.last_error)
+        self.assertEqual(state.queue_status, "idle")
 
 
 if __name__ == "__main__":

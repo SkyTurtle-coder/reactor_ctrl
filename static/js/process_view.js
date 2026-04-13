@@ -1691,7 +1691,19 @@
         }
 
         const prefix = asString(settings.prefix, settings.quiet ? "Status refreshed." : "Device state loaded.");
-        setManualStatus(`${prefix} Waiting for the first device status from the server.`, settings.tone || "muted");
+        // Distinguish between "never polled yet" and "polled but device returned
+        // no valid data".  The latter most often means the device is still booting
+        // after a power cycle or has a communication issue.
+        const updatedAt = snapshot?.reported_state?.updated_at ?? null;
+        if (updatedAt != null) {
+            setManualStatus(
+                `${prefix} Device responded but reported no valid data (setpoint, RPM and torque are all empty). ` +
+                "The stirrer may still be booting after a power cycle. Retrying automatically.",
+                "error"
+            );
+        } else {
+            setManualStatus(`${prefix} Waiting for the first device status from the server.`, settings.tone || "muted");
+        }
     }
 
     function isIkaMotorTarget(node, target) {
