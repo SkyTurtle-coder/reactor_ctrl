@@ -16,6 +16,7 @@ from .device_runtime import DeviceCommandError, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
+_DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for new active IKA devices
 
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle.  channel_code values must match the codes
@@ -87,6 +88,16 @@ def _manual_poll_interval(app: Flask) -> timedelta:
 def _manual_loop_sleep(app: Flask) -> float:
     milliseconds = max(100, int(app.config.get("DEVICE_MANUAL_RECONCILER_LOOP_MS", 500)))
     return milliseconds / 1000.0
+
+
+def _background_poll_interval(app: Flask) -> timedelta:
+    """Interval between telemetry polls when no UI session is active.
+
+    This controls how often IKA device readings are stored as measurements
+    even when nobody has the Process page open.  Defaults to 30 s.
+    """
+    seconds = max(10, int(app.config.get("MEASUREMENT_POLLER_INTERVAL_SECONDS", 30)))
+    return timedelta(seconds=seconds)
 
 
 def _manual_lease_duration(app: Flask) -> timedelta:
@@ -371,6 +382,37 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
     time.sleep(0.5)
 
 
+def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
+    """Create DeviceManualState rows for active IKA devices that have no state row yet.
+
+    This seeds background telemetry polling for devices that have never been
+    accessed through the Process UI, so measurements are stored continuously
+    regardless of whether any user has the page open.
+    """
+    active_devices = (
+        db.session.query(Device)
+        .filter(Device.protocol == "ika_eurostar_60", Device.is_active.is_(True))
+        .all()
+    )
+    seeded = 0
+    for device in active_devices:
+        existing = db.session.get(DeviceManualState, device.device_id)
+        if existing is None:
+            state = DeviceManualState(
+                device_id=device.device_id,
+                queue_status="idle",
+                desired_version=0,
+                applied_version=0,
+            )
+            db.session.add(state)
+            seeded += 1
+    if seeded:
+        db.session.commit()
+        app.logger.info(
+            "Measurement poller: seeded DeviceManualState for %d IKA device(s).", seeded
+        )
+
+
 def _release_manual_state_lease(state: DeviceManualState, *, status: str) -> None:
     state.queue_status = status
     state.lease_owner = None
@@ -388,7 +430,14 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
     next_poll_at = _as_utc_datetime(state.next_poll_at)
     watch_active = bool(watch_expires_at and watch_expires_at > now)
     desired_pending = int(state.desired_version or 0) > int(state.applied_version or 0)
-    poll_due = watch_active and (next_poll_at is None or next_poll_at <= now)
+    # UI-driven poll: only when a browser has the Process page open.
+    ui_poll_due = watch_active and (next_poll_at is None or next_poll_at <= now)
+    # Background poll: fires even with no UI session so measurements are stored
+    # continuously.  Uses a longer interval than the live UI poll cadence.
+    bg_interval = _background_poll_interval(app)
+    last_reported = _as_utc_datetime(state.last_reported_at)
+    bg_poll_due = last_reported is None or last_reported + bg_interval <= now
+    poll_due = ui_poll_due or bg_poll_due
 
     if device is None or not _supports_manual_runtime(device):
         state.last_error = "Manual runtime is not supported for this device."
@@ -427,7 +476,13 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                 )
             state.applied_version = processed_version
         state.last_error = None
-        state.next_poll_at = _now_utc() + _manual_poll_interval(app) if watch_active else None
+        # When a UI session is active use the fast live-poll interval.
+        # Otherwise fall back to the slower background poll interval so
+        # telemetry keeps being stored continuously even with no browser open.
+        if watch_active:
+            state.next_poll_at = _now_utc() + _manual_poll_interval(app)
+        else:
+            state.next_poll_at = _now_utc() + bg_interval
         _release_manual_state_lease(state, status="idle")
         db.session.commit()
     except Exception as exc:
@@ -444,16 +499,25 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
 
 def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     now = _now_utc()
+    # Background telemetry cutoff: poll even without an active UI session.
+    bg_cutoff = now - _background_poll_interval(app)
     candidates = (
         db.session.query(DeviceManualState.device_id)
         .filter(
             or_(DeviceManualState.lease_expires_at.is_(None), DeviceManualState.lease_expires_at < now),
             or_(
+                # Explicit command pending
                 DeviceManualState.desired_version > DeviceManualState.applied_version,
+                # UI-driven live poll
                 and_(
                     DeviceManualState.watch_expires_at.is_not(None),
                     DeviceManualState.watch_expires_at > now,
                     or_(DeviceManualState.next_poll_at.is_(None), DeviceManualState.next_poll_at <= now),
+                ),
+                # Background telemetry poll: device hasn't been read recently
+                or_(
+                    DeviceManualState.last_reported_at.is_(None),
+                    DeviceManualState.last_reported_at <= bg_cutoff,
                 ),
             ),
         )
@@ -468,7 +532,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     )
 
     lease_until = now + _manual_lease_duration(app)
-    for (device_id,) in candidates:
+    for (device_id,) in candidates:  # noqa: variable reuse
         try:
             claimed = (
                 db.session.query(DeviceManualState)
@@ -499,9 +563,19 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
 
 def _reconciler_loop(app: Flask, worker_id: str) -> None:
     loop_sleep = _manual_loop_sleep(app)
+    last_discovery_at: float = 0.0
+
     while True:
         try:
             with app.app_context():
+                # Periodically create DeviceManualState rows for newly registered
+                # or previously-unseen active IKA devices so they get picked up
+                # by background telemetry polling even before any UI session.
+                now_ts = time.monotonic()
+                if now_ts - last_discovery_at >= _DEVICE_DISCOVERY_INTERVAL_SECONDS:
+                    _ensure_manual_states_for_active_ika_devices(app)
+                    last_discovery_at = now_ts
+
                 device_id = _claim_next_device_id(app, worker_id)
                 if device_id is None:
                     db.session.remove()

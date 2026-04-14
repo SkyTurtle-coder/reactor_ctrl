@@ -54,7 +54,7 @@
     const plotRangeSelect = document.getElementById("process-plot-range-select");
     const plotChartStack = document.getElementById("process-plot-chart-stack");
     const plotStatus = document.getElementById("process-plot-status");
-    const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
+    const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView.v2";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
