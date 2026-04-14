@@ -44,12 +44,21 @@ class ThemeToggleTests(unittest.TestCase):
         repo_root = Path(__file__).resolve().parents[1]
         stylesheet = (repo_root / "static" / "css" / "app.css").read_text(encoding="utf-8")
         script = (repo_root / "static" / "js" / "theme.js").read_text(encoding="utf-8")
+        process_script = (repo_root / "static" / "js" / "process_view.js").read_text(encoding="utf-8")
 
         self.assertIn('html[data-theme="dark"]', stylesheet)
         self.assertIn(".theme-switch", stylesheet)
+        self.assertIn("--plot-surface", stylesheet)
+        self.assertIn("--plot-label", stylesheet)
+        self.assertIn(".process-program-meta-item", stylesheet)
+        self.assertIn(".process-program-progress-bar", stylesheet)
         self.assertIn("(prefers-color-scheme: dark)", script)
         self.assertIn("localStorage", script)
         self.assertIn('root.dataset.theme = theme;', script)
+        self.assertIn('window.dispatchEvent(new CustomEvent("reactor:themechange"', script)
+        self.assertIn('window.addEventListener("reactor:themechange"', process_script)
+        self.assertIn('cssThemeValue("--plot-surface"', process_script)
+        self.assertNotIn('fill="rgba(255,255,255,0.82)"', process_script)
 
 
 if __name__ == "__main__":

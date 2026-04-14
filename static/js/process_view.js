@@ -169,6 +169,23 @@
         return unit ? `${value.toFixed(digits)} ${unit}` : `${value.toFixed(digits)}`;
     }
 
+    function cssThemeValue(name, fallback) {
+        const computedValue = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        return computedValue || fallback;
+    }
+
+    function plotThemeTokens() {
+        return {
+            panelFill: cssThemeValue("--plot-surface", "rgba(255,255,255,0.82)"),
+            panelStroke: cssThemeValue("--plot-surface-border", "rgba(0,0,0,0.08)"),
+            gridY: cssThemeValue("--plot-grid-y", "rgba(0,0,0,0.10)"),
+            gridX: cssThemeValue("--plot-grid-x", "rgba(0,0,0,0.06)"),
+            axis: cssThemeValue("--plot-axis", "rgba(0,0,0,0.20)"),
+            label: cssThemeValue("--plot-label", "rgba(0,0,0,0.66)"),
+            pointStroke: cssThemeValue("--plot-point-outline", "#ffffff"),
+        };
+    }
+
     function formatDurationLabel(totalSeconds) {
         if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
             return "-";
@@ -1295,6 +1312,7 @@
         card.className = "process-plot-chart-card";
         const unitLabel = unitKey || "unitless";
         const points = seriesItems.flatMap((series) => series.points);
+        const theme = plotThemeTokens();
 
         const header = document.createElement("div");
         header.className = "process-plot-chart-head";
@@ -1373,10 +1391,10 @@
         });
 
         const gridLines = yTicks
-            .map((tick) => `<line x1="${bounds.left}" y1="${tick.y.toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="rgba(0,0,0,0.10)" stroke-width="1"/>`)
+            .map((tick) => `<line x1="${bounds.left}" y1="${tick.y.toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="${theme.gridY}" stroke-width="1"/>`)
             .join("");
         const xLines = xTicks
-            .map((tick) => `<line x1="${tick.x.toFixed(2)}" y1="${bounds.top}" x2="${tick.x.toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="rgba(0,0,0,0.06)" stroke-width="1"/>`)
+            .map((tick) => `<line x1="${tick.x.toFixed(2)}" y1="${bounds.top}" x2="${tick.x.toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="${theme.gridX}" stroke-width="1"/>`)
             .join("");
         const paths = seriesItems
             .map((series, index) => {
@@ -1389,25 +1407,25 @@
                 const pointPath = buildPlotPath(series, bounds);
                 return `
                     <path d="${pointPath}" fill="none" stroke="${plotColor(index)}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-                    <circle cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="4.5" fill="${plotColor(index)}" stroke="#ffffff" stroke-width="2"/>
+                    <circle cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="4.5" fill="${plotColor(index)}" stroke="${theme.pointStroke}" stroke-width="2"/>
                 `;
             })
             .join("");
         const yLabels = yTicks
-            .map((tick) => `<text x="${bounds.left - 10}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" fill="rgba(0,0,0,0.66)" font-size="11">${escapeHtml(formatPlotValue(tick.value, unitKey))}</text>`)
+            .map((tick) => `<text x="${bounds.left - 10}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" fill="${theme.label}" font-size="11">${escapeHtml(formatPlotValue(tick.value, unitKey))}</text>`)
             .join("");
         const xLabels = xTicks
-            .map((tick) => `<text x="${tick.x.toFixed(2)}" y="${viewBoxHeight - 12}" text-anchor="middle" fill="rgba(0,0,0,0.66)" font-size="11">${escapeHtml(formatPlotTimestamp(tick.value))}</text>`)
+            .map((tick) => `<text x="${tick.x.toFixed(2)}" y="${viewBoxHeight - 12}" text-anchor="middle" fill="${theme.label}" font-size="11">${escapeHtml(formatPlotTimestamp(tick.value))}</text>`)
             .join("");
 
         const frame = document.createElement("div");
         frame.className = "process-plot-chart-frame";
         frame.innerHTML = `
             <svg class="process-plot-chart-svg" viewBox="0 0 ${viewBoxWidth} ${viewBoxHeight}" role="img" aria-label="Trend plot for ${escapeHtml(unitLabel)} values">
-                <rect x="${bounds.left}" y="${bounds.top}" width="${bounds.width}" height="${bounds.height}" rx="12" fill="rgba(255,255,255,0.82)" stroke="rgba(0,0,0,0.08)"/>
+                <rect x="${bounds.left}" y="${bounds.top}" width="${bounds.width}" height="${bounds.height}" rx="12" fill="${theme.panelFill}" stroke="${theme.panelStroke}"/>
                 ${gridLines}
                 ${xLines}
-                <line x1="${bounds.left}" y1="${(bounds.top + bounds.height).toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="rgba(0,0,0,0.2)" stroke-width="1.2"/>
+                <line x1="${bounds.left}" y1="${(bounds.top + bounds.height).toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="${theme.axis}" stroke-width="1.2"/>
                 ${paths}
                 ${yLabels}
                 ${xLabels}
@@ -2532,6 +2550,12 @@
             renderPlotCharts([]);
         });
     }
+
+    window.addEventListener("reactor:themechange", () => {
+        if (plotChartStack) {
+            renderPlotCharts(state.plotSeriesData);
+        }
+    });
 
     manualSettingsForm?.addEventListener("submit", (event) => {
         event.preventDefault();

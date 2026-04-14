@@ -25,6 +25,14 @@
     --overlay: rgba(0, 0, 0, 0.4);
     --canvas-grid: rgba(0, 0, 0, 0.04);
     --canvas-grid-strong: rgba(0, 0, 0, 0.12);
+    --progress-track: rgba(0, 0, 0, 0.08);
+    --plot-surface: rgba(255, 255, 255, 0.82);
+    --plot-surface-border: rgba(0, 0, 0, 0.08);
+    --plot-grid-y: rgba(0, 0, 0, 0.10);
+    --plot-grid-x: rgba(0, 0, 0, 0.06);
+    --plot-axis: rgba(0, 0, 0, 0.20);
+    --plot-label: rgba(0, 0, 0, 0.66);
+    --plot-point-outline: #ffffff;
     --text-shadow-surface: rgba(255, 255, 255, 0.98);
     --code-surface: #1a1a1a;
     --code-text: #f0f0f0;
@@ -63,6 +71,14 @@ html[data-theme="dark"] {
     --overlay: rgba(3, 5, 8, 0.62);
     --canvas-grid: rgba(255, 255, 255, 0.05);
     --canvas-grid-strong: rgba(255, 255, 255, 0.12);
+    --progress-track: rgba(255, 255, 255, 0.09);
+    --plot-surface: rgba(18, 23, 30, 0.92);
+    --plot-surface-border: rgba(255, 255, 255, 0.12);
+    --plot-grid-y: rgba(255, 255, 255, 0.12);
+    --plot-grid-x: rgba(255, 255, 255, 0.07);
+    --plot-axis: rgba(255, 255, 255, 0.22);
+    --plot-label: rgba(245, 240, 223, 0.84);
+    --plot-point-outline: #11141a;
     --text-shadow-surface: rgba(9, 12, 16, 0.94);
     --code-surface: #090c11;
     --code-text: #f7f2df;
@@ -662,7 +678,7 @@ pre {
     padding: 0.85rem 0.95rem;
     border: 1px solid var(--border);
     border-radius: 12px;
-    background: #ffffff;
+    background: var(--surface);
 }
 
 .process-program-meta-label {
@@ -682,7 +698,7 @@ pre {
     position: relative;
     height: 0.85rem;
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.08);
+    background: var(--progress-track);
     overflow: hidden;
 }
 
@@ -2484,11 +2500,37 @@ html[data-theme="dark"] .theme-switch-track {
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+html[data-theme="dark"] .badge-muted {
+    background: rgba(174, 181, 191, 0.16);
+    color: #d8dee5;
+}
+
+html[data-theme="dark"] .badge-success {
+    background: rgba(99, 201, 146, 0.14);
+    color: #95e7b7;
+}
+
+html[data-theme="dark"] .badge-warning {
+    background: rgba(242, 180, 92, 0.16);
+    color: #ffd389;
+}
+
+html[data-theme="dark"] .badge-danger {
+    background: rgba(240, 143, 132, 0.16);
+    color: #ffb3ab;
+}
+
+html[data-theme="dark"] .badge-info {
+    background: rgba(132, 196, 255, 0.16);
+    color: #b4dcff;
+}
+
 html[data-theme="dark"] .card,
 html[data-theme="dark"] .feature-tile,
 html[data-theme="dark"] .tile-stat,
 html[data-theme="dark"] .process-toolbar,
 html[data-theme="dark"] .process-source-toggle,
+html[data-theme="dark"] .process-program-meta-item,
 html[data-theme="dark"] .process-program-target-chip,
 html[data-theme="dark"] .process-plot-selector-card,
 html[data-theme="dark"] .process-plot-chart-card,
@@ -2545,7 +2587,7 @@ html[data-theme="dark"] .builder-category[open] {
 
 html[data-theme="dark"] .process-plot-chart-svg {
     background:
-        linear-gradient(180deg, rgba(253, 231, 14, 0.06), rgba(17, 20, 26, 0.96)),
+        linear-gradient(180deg, rgba(253, 231, 14, 0.05), rgba(12, 16, 21, 0.98)),
         var(--surface);
 }
 

@@ -38,11 +38,17 @@
     }
 
     function applyTheme(theme, persistSelection) {
+        var previousTheme = root.dataset.theme;
         root.dataset.theme = theme;
         root.style.colorScheme = theme;
         syncToggles(theme);
         if (persistSelection) {
             persistTheme(theme);
+        }
+        if (previousTheme !== theme) {
+            window.dispatchEvent(new CustomEvent("reactor:themechange", {
+                detail: { theme: theme },
+            }));
         }
     }
 
