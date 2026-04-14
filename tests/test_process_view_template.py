@@ -167,7 +167,9 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
         self.assertIn('params.append("channel_code", option.channelCode);', source)
         self.assertIn('`/api/devices/${group.deviceId}/plot-series?${params.toString()}`', source)
+        self.assertIn('params.set("await_ms", "2500");', source)
         self.assertIn("selectedPlotRangeId", source)
+        self.assertIn("plotPanelOpen", source)
         self.assertIn("renderPlotSelection();", source)
         self.assertIn("void loadPlotMeasurements({ quiet: true });", source)
 

@@ -40,6 +40,7 @@ from .services import (
     recipe_program_state_to_dict,
     start_recipe_program,
     stop_recipe_program,
+    wait_for_manual_state_refresh,
 )
 from .services.measurement_plot import load_device_plot_series
 
@@ -1504,7 +1505,15 @@ def get_manual_state_for_device(device_id: int):
     try:
         watch = _parse_query_bool("watch", default=False)
         refresh = _parse_query_bool("refresh", default=False)
+        await_ms = _parse_int(
+            request.args.get("await_ms", 0),
+            field_name="await_ms",
+            min_value=0,
+            max_value=5000,
+        )
         requested_by = _normalize_requested_by(request.args.get("requested_by"), default="process_view")
+        existing_state = db.session.get(DeviceManualState, device.device_id)
+        previous_reported_at = None if existing_state is None else existing_state.last_reported_at
         state = ensure_manual_state_snapshot(
             current_app,
             device,
@@ -1518,6 +1527,14 @@ def get_manual_state_for_device(device_id: int):
     ok, error_response = _commit()
     if not ok:
         return error_response
+
+    if refresh and await_ms > 0:
+        state = wait_for_manual_state_refresh(
+            current_app,
+            device.device_id,
+            previous_reported_at=previous_reported_at,
+            timeout_ms=await_ms,
+        ) or state
     return jsonify({"state": _device_manual_state_to_dict(state)})
 
 

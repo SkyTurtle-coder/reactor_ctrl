@@ -229,6 +229,40 @@ def queue_manual_state_update(
     return state
 
 
+def wait_for_manual_state_refresh(
+    app: Flask,
+    device_id: int,
+    *,
+    previous_reported_at: datetime | None,
+    timeout_ms: int,
+) -> DeviceManualState | None:
+    timeout_seconds = max(0.0, timeout_ms / 1000.0)
+    deadline = time.monotonic() + timeout_seconds
+    previous_timestamp = _as_utc_datetime(previous_reported_at)
+
+    while True:
+        db.session.remove()
+        state = db.session.get(DeviceManualState, device_id)
+        if state is None:
+            return None
+
+        current_reported_at = _as_utc_datetime(state.last_reported_at)
+        queue_status = str(state.queue_status or "idle").strip().lower()
+
+        if previous_timestamp is None:
+            if current_reported_at is not None or queue_status not in {"queued", "running"}:
+                return state
+        elif current_reported_at is not None and current_reported_at > previous_timestamp:
+            return state
+        elif queue_status == "error":
+            return state
+
+        if time.monotonic() >= deadline:
+            return state
+
+        time.sleep(0.05)
+
+
 def _run_logged_manual_command(device: Device, command_text: str) -> str | None:
     try:
         execution = execute_device_command(

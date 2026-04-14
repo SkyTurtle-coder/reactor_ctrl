@@ -4,6 +4,7 @@ from .device_manual_runtime import (
     manual_state_to_dict,
     queue_manual_state_update,
     start_device_manual_reconciler,
+    wait_for_manual_state_refresh,
 )
 from .recipe_program_runtime import (
     recipe_program_state_to_dict,
@@ -36,6 +37,7 @@ __all__ = [
     "probe_tcp_socket",
     "queue_manual_state_update",
     "start_device_manual_reconciler",
+    "wait_for_manual_state_refresh",
     "recipe_program_state_to_dict",
     "start_recipe_program",
     "start_recipe_program_reconciler",

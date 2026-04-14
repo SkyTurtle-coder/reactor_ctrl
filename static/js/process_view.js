@@ -1347,6 +1347,7 @@
         params.set("watch", settings.watch === false ? "0" : "1");
         if (settings.refresh !== false) {
             params.set("refresh", "1");
+            params.set("await_ms", "2500");
         }
         params.set("requested_by", "process_view_plot");
 
@@ -1371,7 +1372,7 @@
         }
 
         const uniqueNodeIds = Array.from(new Set(runtimeOptions.map((option) => option.nodeId))).filter(Boolean);
-        for (const nodeId of uniqueNodeIds) {
+        await Promise.all(uniqueNodeIds.map(async (nodeId) => {
             const cachedTelemetry = state.latestPlotTelemetryByNodeId[nodeId];
             try {
                 const hasFreshCache =
@@ -1388,7 +1389,7 @@
                     syncRuntimePlotTelemetry(nodeId, cachedTelemetry.telemetry, cachedTelemetry.timestampMs);
                 }
             }
-        }
+        }));
     }
 
     function plotColor(index) {
@@ -2106,6 +2107,7 @@
                     selectedNodeId: state.selectedNodeId || null,
                     selectedPlotSeriesIds: Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : [],
                     selectedPlotRangeId: normalizePlotRangeId(state.selectedPlotRangeId),
+                    plotPanelOpen: Boolean(plotPanel?.open),
                 }),
             );
         } catch (_error) {
@@ -2612,6 +2614,7 @@
     const restoredPlotRangeId = canRestorePersistedState
         ? normalizePlotRangeId(persistedViewState?.selectedPlotRangeId)
         : DEFAULT_PROCESS_PLOT_RANGE_ID;
+    const restoredPlotPanelOpen = Boolean(canRestorePersistedState && persistedViewState?.plotPanelOpen);
 
     const state = {
         nodes,
@@ -2624,6 +2627,7 @@
         selectedNodeId: restoredSelectedNodeId,
         selectedPlotSeriesIds: restoredPlotSeriesIds,
         selectedPlotRangeId: restoredPlotRangeId,
+        plotPanelOpen: restoredPlotPanelOpen,
         plotSeriesData: [],
         runtimePlotSeriesById: {},
         latestPlotTelemetryByNodeId: {},
@@ -2658,6 +2662,8 @@
     });
 
     plotPanel?.addEventListener("toggle", () => {
+        state.plotPanelOpen = Boolean(plotPanel.open);
+        persistViewState();
         if (plotPanel.open && state.selectedPlotSeriesIds.length > 0) {
             void loadPlotMeasurements({ quiet: true });
         }
@@ -2862,6 +2868,9 @@
     }
 
     syncProcessSelectionUi();
+    if (plotPanel) {
+        plotPanel.open = Boolean(state.plotPanelOpen);
+    }
     renderPlotSelection();
     renderPlotCharts(state.plotSeriesData);
     if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
