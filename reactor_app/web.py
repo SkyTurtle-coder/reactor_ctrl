@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+import csv
+import io
+import re
+import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -969,6 +973,215 @@ def commands_overview() -> str:
         summary=summary,
         **_base_context(),
     )
+
+
+# ── Data page ─────────────────────────────────────────────────────────────────
+
+def _safe_csv_filename(value: str) -> str:
+    """Return a filesystem-safe ASCII filename component (max 64 chars)."""
+    cleaned = re.sub(r"[^\w\-]", "_", str(value or "unknown"), flags=re.ASCII)
+    return (cleaned[:64] or "unknown").strip("_") or "unknown"
+
+
+def _data_filter_cutoff(since_days: int | None) -> datetime | None:
+    if since_days is None or since_days <= 0:
+        return None
+    return datetime.now(timezone.utc) - timedelta(days=since_days)
+
+
+def _parse_data_export_params() -> tuple[int | None, int | None]:
+    """Parse device_id and since_days from the current request args."""
+    device_id_raw = request.args.get("device_id", "").strip()
+    since_days_raw = request.args.get("since_days", "").strip()
+    device_id = int(device_id_raw) if device_id_raw.isdigit() else None
+    since_days = int(since_days_raw) if since_days_raw.isdigit() and int(since_days_raw) > 0 else None
+    return device_id, since_days
+
+
+def _load_data_summary() -> dict:
+    row = db.session.query(
+        func.count(Measurement.measurement_id).label("total_count"),
+        func.count(func.distinct(Measurement.device_id)).label("device_count"),
+        func.count(func.distinct(Measurement.channel_code)).label("channel_count"),
+        func.min(Measurement.measured_at).label("oldest_at"),
+        func.max(Measurement.measured_at).label("newest_at"),
+    ).one()
+    return {
+        "total_count": int(row.total_count or 0),
+        "device_count": int(row.device_count or 0),
+        "channel_count": int(row.channel_count or 0),
+        "oldest_at": row.oldest_at,
+        "newest_at": row.newest_at,
+    }
+
+
+def _load_channel_stats() -> list:
+    return (
+        db.session.query(
+            Device.device_id,
+            Device.display_name.label("device_name"),
+            Measurement.channel_code,
+            func.count(Measurement.measurement_id).label("row_count"),
+            func.min(Measurement.measured_at).label("oldest_at"),
+            func.max(Measurement.measured_at).label("latest_at"),
+        )
+        .join(Device, Device.device_id == Measurement.device_id)
+        .group_by(Device.device_id, Device.display_name, Measurement.channel_code)
+        .order_by(Device.display_name.asc(), Measurement.channel_code.asc())
+        .all()
+    )
+
+
+@web_bp.get("/data")
+def data_overview() -> str:
+    _fallback_summary = {
+        "total_count": 0, "device_count": 0, "channel_count": 0,
+        "oldest_at": None, "newest_at": None,
+    }
+    summary, notice1 = _run_web_query(
+        _load_data_summary,
+        fallback=_fallback_summary,
+        log_label="Data overview summary query",
+        notice="Measurement statistics could not be loaded.",
+    )
+    channel_stats, notice2 = _run_web_query(
+        _load_channel_stats,
+        fallback=[],
+        log_label="Data channel stats query",
+        notice="Channel breakdown could not be loaded.",
+    )
+    devices, _ = _run_web_query(
+        lambda: (
+            db.session.query(Device.device_id, Device.display_name)
+            .join(Measurement, Measurement.device_id == Device.device_id)
+            .group_by(Device.device_id, Device.display_name)
+            .order_by(Device.display_name.asc())
+            .all()
+        ),
+        fallback=[],
+        log_label="Data devices query",
+        notice="",
+    )
+    notices = [n for n in [notice1, notice2] if n]
+    return render_template(
+        "data.html",
+        active_page="data",
+        summary=summary,
+        channel_stats=channel_stats,
+        devices=devices,
+        page_notice=" ".join(notices) if notices else None,
+        page_notice_tone="error" if notices else None,
+        **_base_context(),
+    )
+
+
+@web_bp.get("/data/count.json")
+def data_count_json():
+    """Return row count for the current filter — used by the export preview."""
+    device_id, since_days = _parse_data_export_params()
+    cutoff = _data_filter_cutoff(since_days)
+    try:
+        q = db.session.query(func.count(Measurement.measurement_id))
+        if device_id:
+            q = q.filter(Measurement.device_id == device_id)
+        if cutoff is not None:
+            q = q.filter(Measurement.measured_at >= cutoff)
+        total = int(q.scalar() or 0)
+        return jsonify({"count": total})
+    except Exception:
+        db.session.rollback()
+        return jsonify({"count": None}), 500
+
+
+@web_bp.get("/data/export.zip")
+def data_export_zip():
+    """Stream a ZIP archive containing one CSV file per (device, channel) pair."""
+    device_id, since_days = _parse_data_export_params()
+    cutoff = _data_filter_cutoff(since_days)
+
+    try:
+        rows = (
+            db.session.query(
+                Device.display_name.label("device_name"),
+                Measurement.channel_code,
+                Measurement.measured_at,
+                Measurement.numeric_value,
+                Measurement.text_value,
+                Measurement.unit,
+                Measurement.quality_score,
+                Measurement.source,
+            )
+            .join(Device, Device.device_id == Measurement.device_id)
+            .filter(
+                *([Measurement.device_id == device_id] if device_id else []),
+                *([Measurement.measured_at >= cutoff] if cutoff is not None else []),
+            )
+            .order_by(Device.display_name.asc(), Measurement.channel_code.asc(), Measurement.measured_at.asc())
+            .all()
+        )
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception("Data export query failed: %s", exc)
+        return "Export failed due to a database error.", 500
+
+    # Build in-memory ZIP: one CSV per (device, channel_code) pair.
+    csv_buffers: dict[str, io.StringIO] = {}
+    csv_writers: dict[str, Any] = {}
+    _CSV_HEADER = ["measured_at", "numeric_value", "text_value", "unit", "quality_score", "source"]
+
+    for row in rows:
+        key = f"{_safe_csv_filename(row.device_name)}__{_safe_csv_filename(row.channel_code)}"
+        if key not in csv_buffers:
+            buf: io.StringIO = io.StringIO()
+            csv_buffers[key] = buf
+            csv_writers[key] = csv.writer(buf, lineterminator="\r\n")
+            csv_writers[key].writerow(_CSV_HEADER)
+        csv_writers[key].writerow([
+            row.measured_at.isoformat() if row.measured_at else "",
+            "" if row.numeric_value is None else float(row.numeric_value),
+            row.text_value or "",
+            row.unit or "",
+            "" if row.quality_score is None else float(row.quality_score),
+            row.source or "",
+        ])
+
+    export_ts = datetime.now(timezone.utc)
+    readme_lines = [
+        "Measurement Export",
+        f"Generated : {export_ts.strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"Filter    : {'device_id=' + str(device_id) if device_id else 'all devices'}"
+                   f"  /  {'last ' + str(since_days) + ' days' if since_days else 'all time'}",
+        f"Files     : {len(csv_buffers)}",
+        f"Total rows: {sum(len(b.getvalue().splitlines()) - 1 for b in csv_buffers.values())}",
+        "",
+        "Each CSV file contains data for one channel on one device.",
+        "Filename pattern: {device}__{channel}.csv",
+        "",
+        "Columns:",
+        "  measured_at    UTC timestamp (ISO 8601)",
+        "  numeric_value  Numeric measurement value",
+        "  text_value     Text measurement value",
+        "  unit           Physical unit (rpm, degC, ...)",
+        "  quality_score  Data quality 0.0-1.0 (may be empty)",
+        "  source         Data source (poller, manual, ...)",
+    ]
+
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("README.txt", "\n".join(readme_lines))
+        for filename, buf in sorted(csv_buffers.items()):
+            zf.writestr(f"{filename}.csv", buf.getvalue())
+
+    zip_buf.seek(0)
+    date_str = export_ts.strftime("%Y-%m-%d")
+    suffix = f"_device{device_id}" if device_id else ""
+    suffix += f"_last{since_days}d" if since_days else ""
+    zip_filename = f"measurements{suffix}_{date_str}.zip"
+
+    response = make_response(zip_buf.read())
+    response.headers["Content-Type"] = "application/zip"
+    response.headers["Content-Disposition"] = f'attachment; filename="{zip_filename}"'
+    return response
 
 
 @web_bp.get("/health")
