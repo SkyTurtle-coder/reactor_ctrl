@@ -294,6 +294,16 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
                 f"(IN_SP_4 returned {sp_response!r}). "
                 "The device may still be booting. Will retry automatically."
             )
+        # Detect device-level clamping: the IKA panel has a physical speed limit
+        # (Menu → Speed Limit) that silently caps OUT_SP_4 regardless of what we
+        # send.  A mismatch of more than 5 rpm means the physical limit is too low.
+        if desired_speed > 0 and sp_value < desired_speed - 5:
+            raise RuntimeError(
+                f"Device accepted {int(round(sp_value))} rpm instead of the "
+                f"requested {desired_speed} rpm. The physical speed limit on "
+                f"the IKA panel is set too low. Please raise it to at least "
+                f"{desired_speed} rpm via the device menu (Speed Limit)."
+            )
         return
 
     _run_logged_manual_command(device, "STOP_4")

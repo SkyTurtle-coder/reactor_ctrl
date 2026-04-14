@@ -1,11 +1,12 @@
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from reactor_app.actuator_profiles import get_actuator_profile
 from reactor_app.device_limits import IKA_EUROSTAR_60_MAX_RPM, max_rpm_for_protocol
-from reactor_app.models import ReactorBuild, Recipe
+from reactor_app.models import DeviceManualState, ReactorBuild, Recipe
 from reactor_app.services import recipe_program_runtime
+from reactor_app.services.device_manual_runtime import _apply_desired_ika_state, _parse_ika_numeric_response
 
 
 class IkaRpmLimitTests(unittest.TestCase):
@@ -91,6 +92,68 @@ class IkaRpmLimitTests(unittest.TestCase):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, build)
 
         self.assertEqual(snapshot["steps"][0]["rpm"], IKA_EUROSTAR_60_MAX_RPM)
+
+
+class IkaDeviceClampingDetectionTests(unittest.TestCase):
+    """Tests for device-level speed clamping detection in the manual reconciler."""
+
+    def _make_state(self, desired_speed: int, desired_is_on: bool = True) -> DeviceManualState:
+        state = DeviceManualState()
+        state.desired_is_on = desired_is_on
+        state.desired_speed = desired_speed
+        return state
+
+    def _make_device(self) -> MagicMock:
+        device = MagicMock()
+        device.device_id = 1
+        return device
+
+    def test_raises_when_device_clamps_setpoint(self):
+        """If the IKA panel limits speed and returns a lower value, raise with a clear message."""
+        device = self._make_device()
+        state = self._make_state(desired_speed=1500)
+
+        # Device responds: START_4 → None, OUT_SP_4 → None, IN_SP_4 → "500.0 4" (clamped)
+        with patch(
+            "reactor_app.services.device_manual_runtime._run_logged_manual_command",
+            side_effect=[None, None, "500.0 4"],
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                _apply_desired_ika_state(device, state)
+
+        msg = str(ctx.exception)
+        self.assertIn("500", msg)
+        self.assertIn("1500", msg)
+        self.assertIn("Speed Limit", msg)
+
+    def test_no_error_when_setpoint_accepted_exactly(self):
+        """No error when the device confirms the requested setpoint."""
+        device = self._make_device()
+        state = self._make_state(desired_speed=1500)
+
+        with patch(
+            "reactor_app.services.device_manual_runtime._run_logged_manual_command",
+            side_effect=[None, None, "1500.0 4"],
+        ):
+            # Should not raise
+            _apply_desired_ika_state(device, state)
+
+    def test_no_error_within_tolerance(self):
+        """Small rounding differences (≤ 5 rpm) do not trigger the clamping error."""
+        device = self._make_device()
+        state = self._make_state(desired_speed=1500)
+
+        with patch(
+            "reactor_app.services.device_manual_runtime._run_logged_manual_command",
+            side_effect=[None, None, "1496.0 4"],
+        ):
+            _apply_desired_ika_state(device, state)
+
+    def test_parse_ika_response_strips_channel_suffix(self):
+        self.assertAlmostEqual(_parse_ika_numeric_response("500.0 4"), 500.0)
+        self.assertAlmostEqual(_parse_ika_numeric_response("1500.0 4"), 1500.0)
+        self.assertIsNone(_parse_ika_numeric_response(None))
+        self.assertIsNone(_parse_ika_numeric_response(""))
 
 
 if __name__ == "__main__":
