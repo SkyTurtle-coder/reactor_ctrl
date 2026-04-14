@@ -60,7 +60,7 @@
     const PROCESS_PROGRAM_POLL_MS = 1200;
     const PROCESS_PLOT_REFRESH_MS = 5000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
-    const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
+    const DEFAULT_PROCESS_PLOT_RANGE_ID = "all";
     const PROCESS_PLOT_RANGE_OPTIONS = Object.freeze([
         { id: "30m", label: "Last 30 min", sinceMinutes: 30, maxPoints: 180 },
         { id: "1h", label: "Last hour", sinceMinutes: 60, maxPoints: 240 },

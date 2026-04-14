@@ -11,11 +11,21 @@ from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
-from ..models import Device, DeviceManualState
+from ..models import Device, DeviceManualState, Measurement, MeasurementChannel
 from .device_runtime import DeviceCommandError, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
+
+# Channel definitions for IKA telemetry that are persisted as measurements
+# on every reconciler poll cycle.  channel_code values must match the codes
+# referenced in web.py's _fallback_plot_channels_for_target so the plot can
+# seamlessly switch from runtime_fallback to stored measurements.
+_IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
+    {"key": "setpoint_rpm", "channel_code": "ika_setpoint_rpm", "display_name": "Setpoint RPM", "unit": "rpm"},
+    {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
+    {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
+)
 
 
 def _now_utc() -> datetime:
@@ -270,6 +280,56 @@ def _refresh_state_from_telemetry(state: DeviceManualState, telemetry: dict[str,
         state.desired_speed = state.reported_setpoint_rpm or 0
 
 
+def _persist_ika_telemetry_as_measurements(
+    device: Device,
+    telemetry: dict[str, float | None],
+    measured_at: datetime,
+) -> None:
+    """Write IKA telemetry values to the measurement table.
+
+    Called after every successful telemetry poll so that the complete
+    history of actual and setpoint RPM plus torque is stored and
+    available for the process-view plot and the Data export.
+    """
+    for spec in _IKA_TELEMETRY_CHANNELS:
+        value = telemetry.get(spec["key"])
+        if value is None:
+            continue
+
+        channel = MeasurementChannel.query.filter_by(
+            device_id=device.device_id,
+            channel_code=spec["channel_code"],
+        ).one_or_none()
+
+        if channel is None:
+            channel = MeasurementChannel(
+                device_id=device.device_id,
+                channel_code=spec["channel_code"],
+                display_name=spec["display_name"],
+                unit=spec["unit"],
+                value_type="float",
+                is_active=True,
+            )
+            db.session.add(channel)
+            db.session.flush()
+        else:
+            channel.display_name = spec["display_name"]
+            channel.unit = spec["unit"]
+            channel.is_active = True
+
+        db.session.add(Measurement(
+            device_id=device.device_id,
+            channel_id=channel.channel_id,
+            channel_code=channel.channel_code,
+            measured_at=measured_at,
+            numeric_value=float(value),
+            unit=channel.unit,
+            source="manual_reconciler",
+        ))
+
+    db.session.flush()
+
+
 def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
     desired_is_on = bool(state.desired_is_on)
     desired_speed = max(0, int(state.desired_speed or 0))
@@ -353,6 +413,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
             return
 
         _refresh_state_from_telemetry(state, telemetry)
+        _persist_ika_telemetry_as_measurements(device, telemetry, state.last_reported_at)
         if desired_pending:
             # Final sanity check: if the desired state was ON but the setpoint
             # came back as None in the post-apply telemetry, the device silently

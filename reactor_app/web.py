@@ -143,6 +143,15 @@ def _fallback_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list
             },
             {
                 "channel_id": None,
+                "channel_code": "ika_setpoint_rpm",
+                "display_name": "Setpoint RPM",
+                "unit": "rpm",
+                "value_type": "float",
+                "data_source": "runtime_fallback",
+                "runtime_metric": "setpointRpm",
+            },
+            {
+                "channel_id": None,
                 "channel_code": "ika_torque_ncm",
                 "display_name": "Torque",
                 "unit": "Ncm",
