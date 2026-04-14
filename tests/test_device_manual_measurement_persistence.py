@@ -130,6 +130,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
             db.session.execute(text("DROP TABLE IF EXISTS device_manual_state"))
             db.session.execute(text("DROP TABLE IF EXISTS device"))
             db.session.commit()
+            db.engine.dispose()
 
         cls._tmpdir.cleanup()
         app_config.Config.SQLALCHEMY_DATABASE_URI = cls._original_database_uri
@@ -221,6 +222,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 [item.numeric_value for item in measurements if item.channel_code == "ika_torque_ncm"],
                 [1.2, 1.5],
             )
+            self.assertTrue(all(item.source == "poller" for item in measurements))
 
     def test_active_ika_discovery_seeds_manual_state_and_measurement_channels(self):
         with self.app.app_context():

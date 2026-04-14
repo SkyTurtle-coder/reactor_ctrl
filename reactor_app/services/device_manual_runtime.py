@@ -26,6 +26,7 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
+_IKA_TELEMETRY_MEASUREMENT_SOURCE = "poller"
 
 
 def _now_utc() -> datetime:
@@ -405,7 +406,8 @@ def _persist_ika_telemetry_as_measurements(
             measured_at=measured_at,
             numeric_value=float(value),
             unit=channel.unit,
-            source="manual_reconciler",
+            # Must stay inside the measurement schema's allowed source enum.
+            source=_IKA_TELEMETRY_MEASUREMENT_SOURCE,
         ))
 
     db.session.flush()

@@ -90,6 +90,7 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
             db.session.execute(text("DROP TABLE IF EXISTS measurement"))
             db.session.execute(text("DROP TABLE IF EXISTS device"))
             db.session.commit()
+            db.engine.dispose()
 
         cls._tmpdir.cleanup()
         app_config.Config.SQLALCHEMY_DATABASE_URI = cls._original_database_uri
