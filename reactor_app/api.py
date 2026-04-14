@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, verify_scoped_token
 from .actuator_profiles import get_default_profile_id, normalize_control_definition
+from .device_limits import max_rpm_for_protocol
 from .extensions import db
 from .flowsheet_library import build_symbol_index, load_flowsheet_library
 from .models import (
@@ -1459,7 +1460,12 @@ def queue_manual_state_for_device(device_id: int):
         if _extract_process_manual_token() is not None:
             requested_by = "process_manual"
         desired_is_on = _parse_bool(body.get("is_on"), field_name="is_on")
-        desired_speed = _parse_int(body.get("speed"), field_name="speed", min_value=0, max_value=10000)
+        desired_speed = _parse_int(
+            body.get("speed"),
+            field_name="speed",
+            min_value=0,
+            max_value=max_rpm_for_protocol(device.protocol, default=10000),
+        )
         if desired_is_on and desired_speed <= 0:
             raise ValueError("Field 'speed' must be greater than 0 when 'is_on' is true.")
         state = queue_manual_state_update(

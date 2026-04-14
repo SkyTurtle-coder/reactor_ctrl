@@ -13,6 +13,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import joinedload
 
 from ..actuator_profiles import get_default_profile_id
+from ..device_limits import IKA_EUROSTAR_60_MAX_RPM
 from ..extensions import db
 from ..models import Device, DeviceBindingCurrent, DeviceConnection, Recipe, RecipeProgramState, ReactorBuild
 from .device_manual_runtime import queue_manual_state_update
@@ -381,6 +382,12 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             raise ValueError(
                 f"Step {index} contains Temp/Pressure values for actor '{actor}'. "
                 "Recipe runtime currently applies RPM-controlled motor steps only."
+            )
+        rpm = step.get("rpm")
+        if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
+            raise ValueError(
+                f"Step {index} requests {rpm:g} rpm for actor '{actor}'. "
+                f"IKA EUROSTAR 60 supports up to {IKA_EUROSTAR_60_MAX_RPM} rpm."
             )
 
     return {

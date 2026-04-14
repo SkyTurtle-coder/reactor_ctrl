@@ -3,6 +3,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from .device_limits import IKA_EUROSTAR_60_MAX_RPM
+
 
 ACTUATOR_PROFILES: dict[str, dict[str, Any]] = {
     "motor_rpm": {
@@ -23,7 +25,7 @@ ACTUATOR_PROFILES: dict[str, dict[str, Any]] = {
                 "mode": "int",
                 "unit": "rpm",
                 "min": 0,
-                "max": 10000,
+                "max": IKA_EUROSTAR_60_MAX_RPM,
                 "step": 10,
                 "default": 0,
             },

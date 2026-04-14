@@ -320,7 +320,8 @@
 
     function makeNumericInput(value, fieldName, rowIndex, isEmpty, disabled) {
         const normalizedValue = value == null ? "" : String(value);
-        return `<input type="number" step="0.01" min="0" data-field="${fieldName}" data-row="${rowIndex}" class="recipe-num-input${isEmpty ? " recipe-input-empty" : ""}" value="${escapeHtml(normalizedValue)}"${isEmpty ? ' placeholder="..."' : ""}${disabled ? " disabled" : ""}>`;
+        const maxAttr = fieldName === "rpm" ? ' max="2000"' : "";
+        return `<input type="number" step="0.01" min="0"${maxAttr} data-field="${fieldName}" data-row="${rowIndex}" class="recipe-num-input${isEmpty ? " recipe-input-empty" : ""}" value="${escapeHtml(normalizedValue)}"${isEmpty ? ' placeholder="..."' : ""}${disabled ? " disabled" : ""}>`;
     }
 
     function renderTable() {
