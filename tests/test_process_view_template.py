@@ -167,7 +167,6 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
         self.assertIn('params.append("channel_code", option.channelCode);', source)
         self.assertIn('`/api/devices/${group.deviceId}/plot-series?${params.toString()}`', source)
-        self.assertIn('params.set("await_ms", "2500");', source)
         self.assertIn("selectedPlotRangeId", source)
         self.assertIn("plotPanelOpen", source)
         self.assertIn("renderPlotSelection();", source)
@@ -181,17 +180,16 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("fragment.appendChild(renderPlotChartCard(unitKey, group));", source)
         self.assertIn("Selected series with the same unit are rendered together.", source)
 
-    def test_process_view_script_uses_runtime_plot_fallback_for_ika_motor(self):
+    def test_process_view_script_uses_measurement_only_plot_loading(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
         source = script_path.read_text(encoding="utf-8")
 
-        self.assertIn('option.dataSource === "runtime_fallback"', source)
-        self.assertIn("function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs)", source)
-        self.assertIn("function loadRuntimePlotSnapshot(nodeId, options)", source)
-        self.assertIn("await ensureRuntimePlotSamples(runtimeOptions);", source)
-        self.assertIn("syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());", source)
-        self.assertIn("await loadRuntimePlotSnapshot(nodeId, {", source)
-        self.assertIn('params.set("requested_by", "process_view_plot");', source)
+        self.assertNotIn("runtime_fallback", source)
+        self.assertNotIn("function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs)", source)
+        self.assertNotIn("function loadRuntimePlotSnapshot(nodeId, options)", source)
+        self.assertNotIn("ensureRuntimePlotSamples", source)
+        self.assertIn("const seriesItems = storedSeries;", source)
+        self.assertIn("No stored measurements are available for the selected series in this unit group yet.", source)
 
     def test_process_view_api_supports_manual_state_endpoints(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")
@@ -203,13 +201,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('@api_bp.post("/process-program/start")', source)
         self.assertIn('@api_bp.post("/process-program/stop")', source)
 
-    def test_process_view_server_adds_ika_plot_fallback_channels(self):
+    def test_process_view_server_adds_expected_ika_measurement_channels(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "web.py").read_text(encoding="utf-8")
 
-        self.assertIn("def _fallback_plot_channels_for_target", source)
+        self.assertIn("def _default_measurement_plot_channels_for_target", source)
         self.assertIn('"channel_code": "ika_actual_rpm"', source)
         self.assertIn('"channel_code": "ika_torque_ncm"', source)
-        self.assertIn('"data_source": "runtime_fallback"', source)
+        self.assertIn('"data_source": "measurement"', source)
 
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
         repo_root = Path(__file__).resolve().parents[1]

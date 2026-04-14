@@ -127,7 +127,7 @@ def _normalized_lookup_value(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
-def _fallback_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list[dict[str, Any]]:
+def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list[dict[str, Any]]:
     normalized_symbol_id = _normalized_lookup_value(symbol_id)
     normalized_protocol = _normalized_lookup_value(protocol)
     if normalized_symbol_id == "motor" and normalized_protocol == "ika_eurostar_60":
@@ -138,8 +138,7 @@ def _fallback_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list
                 "display_name": "Actual RPM",
                 "unit": "rpm",
                 "value_type": "float",
-                "data_source": "runtime_fallback",
-                "runtime_metric": "actualRpm",
+                "data_source": "measurement",
             },
             {
                 "channel_id": None,
@@ -147,8 +146,7 @@ def _fallback_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list
                 "display_name": "Setpoint RPM",
                 "unit": "rpm",
                 "value_type": "float",
-                "data_source": "runtime_fallback",
-                "runtime_metric": "setpointRpm",
+                "data_source": "measurement",
             },
             {
                 "channel_id": None,
@@ -156,8 +154,7 @@ def _fallback_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list
                 "display_name": "Torque",
                 "unit": "Ncm",
                 "value_type": "float",
-                "data_source": "runtime_fallback",
-                "runtime_metric": "torqueNcm",
+                "data_source": "measurement",
             },
         ]
     return []
@@ -316,14 +313,14 @@ def _resolve_process_device_targets(
             for channel in channels
         ]
         known_channel_codes = {str(item.get("channel_code") or "").strip().lower() for item in channel_payload}
-        for fallback_channel in _fallback_plot_channels_for_target(
+        for expected_channel in _default_measurement_plot_channels_for_target(
             symbol_id=resolved_symbol_id,
             protocol=resolved_protocol,
         ):
-            fallback_code = str(fallback_channel.get("channel_code") or "").strip().lower()
-            if fallback_code and fallback_code not in known_channel_codes:
-                channel_payload.append(fallback_channel)
-                known_channel_codes.add(fallback_code)
+            expected_code = str(expected_channel.get("channel_code") or "").strip().lower()
+            if expected_code and expected_code not in known_channel_codes:
+                channel_payload.append(expected_channel)
+                known_channel_codes.add(expected_code)
         target.update(
             {
                 "server_code": server.server_code if server is not None else server_code,

@@ -222,6 +222,70 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 [1.2, 1.5],
             )
 
+    def test_active_ika_discovery_seeds_manual_state_and_measurement_channels(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="IKA-DISCOVERY-001",
+                manufacturer_serial="SN-DISCOVERY-001",
+                display_name="IKA Discovery Test",
+                device_type="actuator",
+                protocol="ika_eurostar_60",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.commit()
+
+            device_manual_runtime._ensure_manual_states_for_active_ika_devices(self.app)
+
+            state = db.session.get(DeviceManualState, device.device_id)
+            channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == device.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+
+            self.assertIsNotNone(state)
+            self.assertEqual(
+                [channel.channel_code for channel in channels],
+                ["ika_actual_rpm", "ika_setpoint_rpm", "ika_torque_ncm"],
+            )
+
+    def test_active_ika_discovery_backfills_measurement_channels_for_existing_manual_state(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="IKA-DISCOVERY-002",
+                manufacturer_serial="SN-DISCOVERY-002",
+                display_name="IKA Discovery Existing State Test",
+                device_type="actuator",
+                protocol="ika_eurostar_60",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            db.session.add(
+                DeviceManualState(
+                    device_id=device.device_id,
+                    queue_status="idle",
+                    desired_version=0,
+                    applied_version=0,
+                )
+            )
+            db.session.commit()
+
+            device_manual_runtime._ensure_manual_states_for_active_ika_devices(self.app)
+
+            channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == device.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+            self.assertEqual(
+                [channel.channel_code for channel in channels],
+                ["ika_actual_rpm", "ika_setpoint_rpm", "ika_torque_ncm"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

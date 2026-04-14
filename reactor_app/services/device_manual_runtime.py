@@ -19,9 +19,8 @@ _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
 _DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for new active IKA devices
 
 # Channel definitions for IKA telemetry that are persisted as measurements
-# on every reconciler poll cycle.  channel_code values must match the codes
-# referenced in web.py's _fallback_plot_channels_for_target so the plot can
-# seamlessly switch from runtime_fallback to stored measurements.
+# on every reconciler poll cycle. channel_code values are part of the
+# measurement model and are used by both the Process plot and the Data view.
 _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_rpm", "channel_code": "ika_setpoint_rpm", "display_name": "Setpoint RPM", "unit": "rpm"},
     {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
@@ -135,6 +134,58 @@ def _parse_ika_numeric_response(text: str | None) -> float | None:
 
 def _supports_manual_runtime(device: Device | None) -> bool:
     return str(getattr(device, "protocol", "") or "").strip().lower() == "ika_eurostar_60"
+
+
+def _load_ika_measurement_channels(device_id: int) -> dict[str, MeasurementChannel]:
+    channel_codes = [spec["channel_code"] for spec in _IKA_TELEMETRY_CHANNELS]
+    return {
+        channel.channel_code: channel
+        for channel in db.session.query(MeasurementChannel)
+        .filter(
+            MeasurementChannel.device_id == device_id,
+            MeasurementChannel.channel_code.in_(channel_codes),
+        )
+        .all()
+    }
+
+
+def _ensure_ika_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
+    existing_channels = _load_ika_measurement_channels(device.device_id)
+    needs_flush = False
+
+    for spec in _IKA_TELEMETRY_CHANNELS:
+        channel = existing_channels.get(spec["channel_code"])
+        if channel is None:
+            channel = MeasurementChannel(
+                device_id=device.device_id,
+                channel_code=spec["channel_code"],
+                display_name=spec["display_name"],
+                unit=spec["unit"],
+                value_type="float",
+                is_active=True,
+            )
+            db.session.add(channel)
+            existing_channels[channel.channel_code] = channel
+            needs_flush = True
+            continue
+
+        if channel.display_name != spec["display_name"]:
+            channel.display_name = spec["display_name"]
+            needs_flush = True
+        if channel.unit != spec["unit"]:
+            channel.unit = spec["unit"]
+            needs_flush = True
+        if str(channel.value_type or "").strip().lower() != "float":
+            channel.value_type = "float"
+            needs_flush = True
+        if not bool(channel.is_active):
+            channel.is_active = True
+            needs_flush = True
+
+    if needs_flush:
+        db.session.flush()
+
+    return existing_channels
 
 
 def _ensure_manual_state(device: Device) -> DeviceManualState:
@@ -336,16 +387,7 @@ def _persist_ika_telemetry_as_measurements(
     history of actual and setpoint RPM plus torque is stored and
     available for the process-view plot and the Data export.
     """
-    channel_codes = [spec["channel_code"] for spec in _IKA_TELEMETRY_CHANNELS]
-    existing_channels = {
-        channel.channel_code: channel
-        for channel in db.session.query(MeasurementChannel)
-        .filter(
-            MeasurementChannel.device_id == device.device_id,
-            MeasurementChannel.channel_code.in_(channel_codes),
-        )
-        .all()
-    }
+    existing_channels = _ensure_ika_measurement_channels(device)
 
     for spec in _IKA_TELEMETRY_CHANNELS:
         value = telemetry.get(spec["key"])
@@ -353,23 +395,8 @@ def _persist_ika_telemetry_as_measurements(
             continue
 
         channel = existing_channels.get(spec["channel_code"])
-
         if channel is None:
-            channel = MeasurementChannel(
-                device_id=device.device_id,
-                channel_code=spec["channel_code"],
-                display_name=spec["display_name"],
-                unit=spec["unit"],
-                value_type="float",
-                is_active=True,
-            )
-            db.session.add(channel)
-            db.session.flush()
-            existing_channels[channel.channel_code] = channel
-        else:
-            channel.display_name = spec["display_name"]
-            channel.unit = spec["unit"]
-            channel.is_active = True
+            continue
 
         db.session.add(Measurement(
             device_id=device.device_id,
@@ -465,21 +492,29 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
         .filter(Device.protocol == "ika_eurostar_60", Device.is_active.is_(True))
         .all()
     )
-    seeded = 0
+    seeded_states = 0
+    seeded_channels = 0
     for device in active_devices:
-        existing = db.session.get(DeviceManualState, device.device_id)
-        if existing is not None:
-            continue
         try:
-            state = DeviceManualState(
-                device_id=device.device_id,
-                queue_status="idle",
-                desired_version=0,
-                applied_version=0,
-            )
-            db.session.add(state)
+            added_state = False
+            existing_state = db.session.get(DeviceManualState, device.device_id)
+            if existing_state is None:
+                db.session.add(
+                    DeviceManualState(
+                        device_id=device.device_id,
+                        queue_status="idle",
+                        desired_version=0,
+                        applied_version=0,
+                    )
+                )
+                added_state = True
+            existing_channels = _load_ika_measurement_channels(device.device_id)
+            _ensure_ika_measurement_channels(device)
+            added_channels = max(0, len(_IKA_TELEMETRY_CHANNELS) - len(existing_channels))
             db.session.commit()  # Commit individually to survive multi-worker races
-            seeded += 1
+            if added_state:
+                seeded_states += 1
+            seeded_channels += added_channels
         except IntegrityError:
             # Another Gunicorn worker inserted the row first — safe to ignore.
             db.session.rollback()
@@ -490,9 +525,11 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
                 device.device_id,
                 exc_info=True,
             )
-    if seeded:
+    if seeded_states or seeded_channels:
         app.logger.info(
-            "Measurement poller: seeded DeviceManualState for %d IKA device(s).", seeded
+            "Measurement poller: seeded %d manual-state row(s) and %d measurement channel(s) for active IKA device(s).",
+            seeded_states,
+            seeded_channels,
         )
 
 

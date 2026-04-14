@@ -1081,8 +1081,6 @@
                     unit: asString(channel?.unit, ""),
                     valueType,
                     symbolId: asString(target?.symbol_id, ""),
-                    dataSource: asString(channel?.data_source, "measurement"),
-                    runtimeMetric: asString(channel?.runtime_metric, ""),
                 });
             }
         }
@@ -1226,7 +1224,7 @@
                     <input type="checkbox" value="${escapeHtml(option.id)}" ${state.selectedPlotSeriesIds.includes(option.id) ? "checked" : ""}>
                     <span class="process-plot-checkbox-copy">
                         <strong>${escapeHtml(option.channelLabel)}</strong>
-                        <span>${escapeHtml(option.channelCode)}${option.unit ? ` | ${escapeHtml(option.unit)}` : ""}${option.dataSource === "runtime_fallback" ? " | live" : ""}</span>
+                        <span>${escapeHtml(option.channelCode)}${option.unit ? ` | ${escapeHtml(option.unit)}` : ""}</span>
                     </span>
                 `;
                 const input = label.querySelector("input");
@@ -1278,120 +1276,6 @@
         return plotRangeOptionForId(state?.selectedPlotRangeId);
     }
 
-    function trimPlotPointsForActiveRange(points) {
-        const rangeOption = selectedPlotRangeOption();
-        const cutoffMs = Date.now() - (rangeOption.sinceMinutes * 60 * 1000);
-        return (Array.isArray(points) ? points : [])
-            .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y) && point.x >= cutoffMs)
-            .sort((left, right) => left.x - right.x)
-            .slice(-rangeOption.maxPoints);
-    }
-
-    function runtimePlotPointsForSeries(option) {
-        return trimPlotPointsForActiveRange(state.runtimePlotSeriesById[option.id]);
-    }
-
-    function mergePlotPoints(primaryPoints, secondaryPoints) {
-        const mergedPoints = [...(Array.isArray(primaryPoints) ? primaryPoints : []), ...(Array.isArray(secondaryPoints) ? secondaryPoints : [])]
-            .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))
-            .sort((left, right) => left.x - right.x)
-            .filter((point, index, points) => {
-                if (index === 0) {
-                    return true;
-                }
-                const previous = points[index - 1];
-                return previous.x !== point.x || previous.y !== point.y;
-            });
-        return trimPlotPointsForActiveRange(mergedPoints);
-    }
-
-    function appendRuntimePlotPoint(option, value, timestampMs) {
-        if (!option || !Number.isFinite(value) || !Number.isFinite(timestampMs)) {
-            return;
-        }
-        const nextPoint = { x: timestampMs, y: value };
-        const existing = runtimePlotPointsForSeries(option);
-        const mergedPoints = mergePlotPoints(existing, [nextPoint]);
-        state.runtimePlotSeriesById[option.id] = mergedPoints;
-    }
-
-    function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs) {
-        if (!nodeId || !telemetry || !Number.isFinite(timestampMs)) {
-            return;
-        }
-        state.latestPlotTelemetryByNodeId[nodeId] = {
-            telemetry,
-            timestampMs,
-        };
-        const options = plotSeriesOptions.filter(
-            (option) => option.nodeId === nodeId && option.dataSource === "runtime_fallback" && option.runtimeMetric,
-        );
-        for (const option of options) {
-            const rawValue = telemetry[option.runtimeMetric];
-            if (!Number.isFinite(rawValue)) {
-                continue;
-            }
-            appendRuntimePlotPoint(option, rawValue, timestampMs);
-        }
-    }
-
-    async function loadRuntimePlotSnapshot(nodeId, options) {
-        const settings = options || {};
-        const node = getNodeById(nodeId);
-        const target = manualTargets[nodeId] || null;
-        if (!canLoadIkaSettings(node, target)) {
-            return null;
-        }
-
-        const params = new URLSearchParams();
-        params.set("watch", settings.watch === false ? "0" : "1");
-        if (settings.refresh !== false) {
-            params.set("refresh", "1");
-            params.set("await_ms", "2500");
-        }
-        params.set("requested_by", "process_view_plot");
-
-        const payload = await fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`, {
-            timeoutMs: 12000,
-            maxRetries: 1,
-        });
-        const snapshot = payload?.state || null;
-        const telemetry = snapshotTelemetry(snapshot);
-        if (telemetry.setpointRpm != null || telemetry.actualRpm != null || telemetry.torqueNcm != null) {
-            syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());
-        }
-        return snapshot;
-    }
-
-    async function ensureRuntimePlotSamples(options) {
-        const runtimeOptions = (Array.isArray(options) ? options : []).filter(
-            (option) => option.dataSource === "runtime_fallback",
-        );
-        if (!runtimeOptions.length) {
-            return;
-        }
-
-        const uniqueNodeIds = Array.from(new Set(runtimeOptions.map((option) => option.nodeId))).filter(Boolean);
-        await Promise.all(uniqueNodeIds.map(async (nodeId) => {
-            const cachedTelemetry = state.latestPlotTelemetryByNodeId[nodeId];
-            try {
-                const hasFreshCache =
-                    cachedTelemetry?.telemetry &&
-                    Number.isFinite(cachedTelemetry.timestampMs) &&
-                    (Date.now() - cachedTelemetry.timestampMs) < PROCESS_PLOT_REFRESH_MS;
-                await loadRuntimePlotSnapshot(nodeId, {
-                    quiet: true,
-                    refresh: !hasFreshCache,
-                    watch: true,
-                });
-            } catch (_error) {
-                if (cachedTelemetry?.telemetry && Number.isFinite(cachedTelemetry.timestampMs)) {
-                    syncRuntimePlotTelemetry(nodeId, cachedTelemetry.telemetry, cachedTelemetry.timestampMs);
-                }
-            }
-        }));
-    }
-
     function plotColor(index) {
         return PROCESS_PLOT_COLORS[index % PROCESS_PLOT_COLORS.length];
     }
@@ -1411,7 +1295,6 @@
         card.className = "process-plot-chart-card";
         const unitLabel = unitKey || "unitless";
         const points = seriesItems.flatMap((series) => series.points);
-        const hasRuntimeFallback = seriesItems.some((series) => series.dataSource === "runtime_fallback");
 
         const header = document.createElement("div");
         header.className = "process-plot-chart-head";
@@ -1440,9 +1323,7 @@
         if (!points.length) {
             const empty = document.createElement("p");
             empty.className = "process-plot-chart-empty";
-            empty.textContent = hasRuntimeFallback
-                ? "No live samples are available for this unit group yet. The plot requests device telemetry automatically while the checkbox stays active."
-                : "No stored measurements are available for the selected series in this unit group yet.";
+            empty.textContent = "No stored measurements are available for the selected series in this unit group yet.";
             card.appendChild(empty);
             return card;
         }
@@ -1585,7 +1466,7 @@
             setPlotStatus(
                 activeBuildId
                     ? (plotSeriesOptions.length
-                        ? "Select one or more values to display a live trend plot."
+                        ? "Select one or more values to display a stored trend plot."
                         : "No plottable measurement channels are available for this flowsheet yet.")
                     : "Select a flowsheet with mapped sensors or actuators to display plots.",
                 "muted",
@@ -1602,9 +1483,6 @@
         }
 
         try {
-            const runtimeOptions = selectedOptions.filter((option) => option.dataSource === "runtime_fallback");
-            await ensureRuntimePlotSamples(runtimeOptions);
-
             const storedGroups = groupStoredPlotOptionsByDevice(selectedOptions);
             const payloads = await Promise.all(
                 storedGroups.map((group) => {
@@ -1648,28 +1526,7 @@
             const storedSeries = selectedOptions.map(
                 (option) => storedSeriesById.get(option.id) || { ...option, points: [] },
             );
-            const runtimeSeries = runtimeOptions.map((option) => ({
-                ...option,
-                unit: option.unit,
-                points: runtimePlotPointsForSeries(option),
-            }));
-            const mergedSeriesById = new Map();
-            for (const series of [...storedSeries, ...runtimeSeries]) {
-                const existing = mergedSeriesById.get(series.id);
-                if (!existing) {
-                    mergedSeriesById.set(series.id, series);
-                    continue;
-                }
-                mergedSeriesById.set(series.id, {
-                    ...existing,
-                    unit: existing.unit || series.unit,
-                    points: mergePlotPoints(existing.points, series.points),
-                });
-            }
-            const seriesItems = selectedOptions.map((option) => {
-                const mergedSeries = mergedSeriesById.get(option.id);
-                return mergedSeries || { ...option, points: runtimePlotPointsForSeries(option) };
-            });
+            const seriesItems = storedSeries;
             state.plotSeriesData = seriesItems;
             renderPlotCharts(seriesItems);
 
@@ -1681,9 +1538,7 @@
                 );
             } else {
                 setPlotStatus(
-                    runtimeOptions.length > 0
-                        ? `No plot data is available yet for ${rangeOption.label.toLowerCase()}. Waiting for the first live device sample from the selected checkbox.`
-                        : `No plot data is available for the selected values in ${rangeOption.label.toLowerCase()}.`,
+                    `No plot data is available for the selected values in ${rangeOption.label.toLowerCase()}.`,
                     "muted",
                 );
             }
@@ -2368,10 +2223,6 @@
             },
         };
 
-        if (telemetry.setpointRpm != null || telemetry.actualRpm != null || telemetry.torqueNcm != null) {
-            syncRuntimePlotTelemetry(nodeId, telemetry, Date.now());
-        }
-
         updateManualLiveMetrics(telemetry);
         updateManualDeviceStatus(target, telemetry);
         renderOperatorControls(currentNode, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
@@ -2629,8 +2480,6 @@
         selectedPlotRangeId: restoredPlotRangeId,
         plotPanelOpen: restoredPlotPanelOpen,
         plotSeriesData: [],
-        runtimePlotSeriesById: {},
-        latestPlotTelemetryByNodeId: {},
         isPlotBusy: false,
         plotRequestId: 0,
         inputsDirtyForNodeId: null,
