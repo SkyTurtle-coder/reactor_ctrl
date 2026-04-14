@@ -1601,15 +1601,19 @@
         }
 
         try {
-            const storedOptions = selectedOptions.filter((option) => option.dataSource !== "runtime_fallback");
             const runtimeOptions = selectedOptions.filter((option) => option.dataSource === "runtime_fallback");
             await ensureRuntimePlotSamples(runtimeOptions);
 
-            const storedGroups = groupStoredPlotOptionsByDevice(storedOptions);
+            const storedGroups = groupStoredPlotOptionsByDevice(selectedOptions);
             const payloads = await Promise.all(
                 storedGroups.map((group) => {
                     const params = new URLSearchParams();
+                    const seenChannelCodes = new Set();
                     for (const option of group.options) {
+                        if (seenChannelCodes.has(option.channelCode)) {
+                            continue;
+                        }
+                        seenChannelCodes.add(option.channelCode);
                         params.append("channel_code", option.channelCode);
                     }
                     params.set("since_minutes", String(rangeOption.sinceMinutes));
@@ -1640,7 +1644,7 @@
                     storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem.items));
                 }
             });
-            const storedSeries = storedOptions.map(
+            const storedSeries = selectedOptions.map(
                 (option) => storedSeriesById.get(option.id) || { ...option, points: [] },
             );
             const runtimeSeries = runtimeOptions.map((option) => ({
