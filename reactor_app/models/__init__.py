@@ -10,6 +10,8 @@ from .measurement import Measurement
 from .measurement_channel import MeasurementChannel
 from .reactor_build import ReactorBuild
 from .recipe import Recipe
+from .recipe_program_event import RecipeProgramEvent
+from .recipe_program_run import RecipeProgramRun
 from .recipe_program_state import RecipeProgramState
 from .soft_sensor_estimate import SoftSensorEstimate
 from .soft_sensor_model import SoftSensorModel
@@ -28,6 +30,8 @@ __all__ = [
     "MeasurementChannel",
     "ReactorBuild",
     "Recipe",
+    "RecipeProgramEvent",
+    "RecipeProgramRun",
     "RecipeProgramState",
     "SoftSensorEstimate",
     "SoftSensorModel",

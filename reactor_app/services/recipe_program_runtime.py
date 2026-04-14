@@ -15,7 +15,16 @@ from sqlalchemy.orm import joinedload
 from ..actuator_profiles import get_default_profile_id
 from ..device_limits import IKA_EUROSTAR_60_MAX_RPM
 from ..extensions import db
-from ..models import Device, DeviceBindingCurrent, DeviceConnection, Recipe, RecipeProgramState, ReactorBuild
+from ..models import (
+    Device,
+    DeviceBindingCurrent,
+    DeviceConnection,
+    Recipe,
+    RecipeProgramEvent,
+    RecipeProgramRun,
+    RecipeProgramState,
+    ReactorBuild,
+)
 from .device_manual_runtime import queue_manual_state_update
 
 
@@ -430,6 +439,190 @@ def _default_program_payload() -> dict[str, Any]:
     }
 
 
+def _binding_summary_from_snapshot(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    payload: list[dict[str, Any]] = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        payload.append(
+            {
+                "actor": str(binding.get("actor") or "").strip(),
+                "device_id": binding.get("device_id"),
+                "device_display_name": str(binding.get("device_display_name") or "").strip(),
+                "label": str(binding.get("label") or "").strip(),
+                "protocol": str(binding.get("protocol") or "").strip(),
+            }
+        )
+    return payload
+
+
+def _current_targets_payload(targets: dict[str, dict[str, Any]] | None) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for actor in sorted((targets or {}).keys(), key=lambda value: value.lower()):
+        actor_targets = targets.get(actor) if isinstance(targets.get(actor), dict) else {}
+        row = {"actor": actor}
+        for field_name in _NUMERIC_FIELDS:
+            raw_value = actor_targets.get(field_name)
+            if raw_value in (None, ""):
+                row[field_name] = 0.0
+                continue
+            try:
+                row[field_name] = round(float(raw_value), 2)
+            except (TypeError, ValueError):
+                row[field_name] = 0.0
+        payload.append(row)
+    return payload
+
+
+def _applied_targets_payload(applied_targets: dict[str, dict[str, Any]] | None) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for actor in sorted((applied_targets or {}).keys(), key=lambda value: value.lower()):
+        actor_targets = applied_targets.get(actor) if isinstance(applied_targets.get(actor), dict) else {}
+        raw_rpm = actor_targets.get("rpm")
+        rpm = 0
+        if raw_rpm not in (None, ""):
+            try:
+                rpm = max(0, int(round(float(raw_rpm))))
+            except (TypeError, ValueError):
+                rpm = 0
+        payload.append(
+            {
+                "actor": actor,
+                "rpm": rpm,
+                "is_on": bool(actor_targets.get("is_on")),
+            }
+        )
+    return payload
+
+
+def _evaluation_payload(
+    snapshot: dict[str, Any],
+    evaluation: dict[str, Any],
+    *,
+    include_bindings: bool = False,
+) -> dict[str, Any]:
+    completed = bool(evaluation.get("completed"))
+    active_step_index = int(evaluation.get("active_step_index") or 0)
+    payload = {
+        "recipe_id": snapshot.get("recipe_id"),
+        "reactor_build_id": snapshot.get("reactor_build_id"),
+        "recipe_title": str(snapshot.get("recipe_title") or ""),
+        "operator_name": str(snapshot.get("operator_name") or ""),
+        "build_name": str(snapshot.get("build_name") or ""),
+        "total_steps": int(evaluation.get("total_steps") or len(snapshot.get("steps") or [])),
+        "completed": completed,
+        "active_step_index": None if completed else active_step_index,
+        "active_step_number": None if completed else active_step_index + 1,
+        "active_step": deepcopy(evaluation.get("active_step")) if isinstance(evaluation.get("active_step"), dict) else None,
+        "next_step": deepcopy(evaluation.get("next_step")) if isinstance(evaluation.get("next_step"), dict) else None,
+        "step_started_at": _datetime_isoformat(evaluation.get("step_started_at")),
+        "step_duration_seconds": round(float(evaluation.get("step_duration_seconds") or 0.0), 3),
+        "step_elapsed_seconds": round(float(evaluation.get("step_elapsed_seconds") or 0.0), 3),
+        "step_remaining_seconds": round(float(evaluation.get("step_remaining_seconds") or 0.0), 3),
+        "step_progress": round(float(evaluation.get("step_progress") or 0.0), 4),
+        "current_targets": _current_targets_payload(evaluation.get("current_targets") or {}),
+    }
+    if include_bindings:
+        payload["bindings"] = _binding_summary_from_snapshot(snapshot)
+    return payload
+
+
+def _evaluate_state_snapshot(state: RecipeProgramState, *, now: datetime | None = None) -> dict[str, Any]:
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    steps = snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else []
+    return _evaluate_program_timeline(
+        steps,
+        active_step_index=int(state.active_step_index or 0),
+        step_started_at=state.step_started_at,
+        now=now or _now_utc(),
+    )
+
+
+def _find_open_program_run() -> RecipeProgramRun | None:
+    return (
+        RecipeProgramRun.query
+        .filter(RecipeProgramRun.finished_at.is_(None))
+        .order_by(RecipeProgramRun.recipe_program_run_id.desc())
+        .first()
+    )
+
+
+def _record_program_event(
+    run: RecipeProgramRun,
+    event_type: str,
+    *,
+    state: RecipeProgramState | None = None,
+    evaluation: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    include_bindings: bool = False,
+) -> None:
+    snapshot = {}
+    if state is not None and isinstance(state.snapshot_json, dict):
+        snapshot = state.snapshot_json
+    elif isinstance(run.snapshot_json, dict):
+        snapshot = run.snapshot_json
+
+    context_payload = (
+        _evaluation_payload(snapshot, evaluation, include_bindings=include_bindings)
+        if evaluation is not None
+        else ({"bindings": _binding_summary_from_snapshot(snapshot)} if include_bindings else {})
+    )
+    event_payload = {**context_payload, **(deepcopy(payload) if isinstance(payload, dict) else {})}
+
+    active_step_index = None
+    if evaluation is not None and not bool(evaluation.get("completed")):
+        active_step_index = int(evaluation.get("active_step_index") or 0)
+    elif state is not None and str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING:
+        active_step_index = int(state.active_step_index or 0)
+
+    db.session.add(
+        RecipeProgramEvent(
+            run=run,
+            event_type=event_type,
+            active_step_index=active_step_index,
+            event_payload=event_payload or None,
+        )
+    )
+
+
+def _ensure_open_program_run(state: RecipeProgramState | None) -> RecipeProgramRun | None:
+    run = _find_open_program_run()
+    if run is not None:
+        return run
+    if state is None:
+        return None
+
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    if not snapshot:
+        return None
+
+    started_at = _as_utc_datetime(state.started_at) or _now_utc()
+    last_progress_at = _as_utc_datetime(state.last_progress_at) or started_at
+    run = RecipeProgramRun(
+        recipe_id=state.recipe_id,
+        reactor_build_id=state.reactor_build_id,
+        status=str(state.status or _LEASE_STATUS_RUNNING),
+        requested_by=str(state.requested_by or "system"),
+        recipe_title=str(state.recipe_title or ""),
+        operator_name=str(state.operator_name or ""),
+        snapshot_json=deepcopy(snapshot),
+        started_at=started_at,
+        last_progress_at=last_progress_at,
+        last_error=str(state.last_error or "") or None,
+    )
+    db.session.add(run)
+    db.session.flush()
+    _record_program_event(
+        run,
+        "recovered",
+        state=state,
+        evaluation=_evaluate_state_snapshot(state, now=last_progress_at),
+        include_bindings=True,
+    )
+    return run
+
+
 def recipe_program_state_to_dict(item: RecipeProgramState | None) -> dict[str, Any]:
     if item is None:
         return _default_program_payload()
@@ -524,6 +717,12 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
         raise ValueError("Another recipe program is already running. Stop it before starting a new one.")
 
     now = _now_utc()
+    initial_evaluation = _evaluate_program_timeline(
+        snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else [],
+        active_step_index=0,
+        step_started_at=now,
+        now=now,
+    )
     state.recipe_id = recipe.recipe_id
     state.reactor_build_id = recipe.reactor_build_id
     state.status = _LEASE_STATUS_RUNNING
@@ -532,8 +731,12 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
     state.operator_name = recipe.operator_name
     state.snapshot_json = snapshot
     state.last_applied_targets_json = {}
-    state.active_step_index = 0
-    state.step_started_at = now
+    state.active_step_index = 0 if initial_evaluation.get("completed") else int(initial_evaluation.get("active_step_index") or 0)
+    state.step_started_at = (
+        initial_evaluation.get("step_started_at")
+        if not initial_evaluation.get("completed")
+        else now
+    )
     state.started_at = now
     state.finished_at = None
     state.last_progress_at = now
@@ -541,12 +744,34 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
     state.last_error = None
     state.lease_owner = None
     state.lease_expires_at = None
+
+    run = RecipeProgramRun(
+        recipe_id=recipe.recipe_id,
+        reactor_build_id=recipe.reactor_build_id,
+        status=_LEASE_STATUS_RUNNING,
+        requested_by=requested_by,
+        recipe_title=recipe.title,
+        operator_name=recipe.operator_name,
+        snapshot_json=deepcopy(snapshot),
+        started_at=now,
+        last_progress_at=now,
+        last_error=None,
+    )
+    db.session.add(run)
+    _record_program_event(
+        run,
+        "started",
+        state=state,
+        evaluation=initial_evaluation,
+        include_bindings=True,
+    )
     db.session.flush()
     return state
 
 
 def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     state = _ensure_program_state()
+    run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
 
@@ -575,11 +800,28 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     state.last_applied_targets_json = {}
     state.lease_owner = None
     state.lease_expires_at = None
+    if run is not None:
+        run.status = "stopped"
+        run.requested_by = requested_by
+        run.finished_at = now
+        run.last_progress_at = now
+        run.last_error = None
+        _record_program_event(
+            run,
+            "stopped",
+            state=state,
+            evaluation=_evaluate_state_snapshot(state, now=now),
+            payload={"applied_targets": _applied_targets_payload(state.last_applied_targets_json)},
+        )
     db.session.flush()
     return state
 
 
-def _apply_current_targets(app: Flask, state: RecipeProgramState, current_targets: dict[str, dict[str, float]]) -> None:
+def _apply_current_targets(
+    app: Flask,
+    state: RecipeProgramState,
+    current_targets: dict[str, dict[str, float]],
+) -> list[dict[str, Any]]:
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
     binding_lookup = {
@@ -589,6 +831,7 @@ def _apply_current_targets(app: Flask, state: RecipeProgramState, current_target
     }
     applied_lookup = state.last_applied_targets_json if isinstance(state.last_applied_targets_json, dict) else {}
     next_applied_lookup: dict[str, dict[str, Any]] = deepcopy(applied_lookup)
+    applied_changes: list[dict[str, Any]] = []
 
     for actor, targets in current_targets.items():
         binding = binding_lookup.get(actor)
@@ -618,9 +861,23 @@ def _apply_current_targets(app: Flask, state: RecipeProgramState, current_target
             desired_speed=rounded_rpm,
             requested_by="recipe_program",
         )
+        previous_payload = applied_lookup.get(actor) if isinstance(applied_lookup.get(actor), dict) else {}
         next_applied_lookup[actor] = next_payload
+        applied_changes.append(
+            {
+                "actor": actor,
+                "device_id": device.device_id,
+                "device_display_name": device.display_name,
+                "previous": {
+                    "rpm": max(0, int(round(float(previous_payload.get("rpm") or 0.0)))) if previous_payload else 0,
+                    "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
+                },
+                "current": deepcopy(next_payload),
+            }
+        )
 
     state.last_applied_targets_json = next_applied_lookup
+    return applied_changes
 
 
 def _claim_program_state(app: Flask, worker_id: str) -> bool:
@@ -664,21 +921,49 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     steps = snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else []
     try:
+        previous_active_step_index = int(state.active_step_index or 0)
+        run = _ensure_open_program_run(state)
         evaluation = _evaluate_program_timeline(
             steps,
             active_step_index=int(state.active_step_index or 0),
             step_started_at=state.step_started_at,
             now=_now_utc(),
         )
-        _apply_current_targets(app, state, evaluation.get("current_targets") or {})
+        applied_changes = _apply_current_targets(app, state, evaluation.get("current_targets") or {})
 
         state.active_step_index = int(evaluation.get("active_step_index") or 0)
         state.step_started_at = evaluation.get("step_started_at")
         state.last_progress_at = _now_utc()
         state.last_error = None
+        if run is not None:
+            run.status = _LEASE_STATUS_RUNNING
+            run.last_progress_at = state.last_progress_at
+            run.last_error = None
+            if not evaluation.get("completed") and state.active_step_index != previous_active_step_index:
+                _record_program_event(run, "step_started", state=state, evaluation=evaluation)
+            if applied_changes:
+                _record_program_event(
+                    run,
+                    "targets_applied",
+                    state=state,
+                    evaluation=evaluation,
+                    payload={"changes": applied_changes},
+                )
         if evaluation.get("completed"):
             state.status = "completed"
             state.finished_at = _now_utc()
+            if run is not None:
+                run.status = "completed"
+                run.finished_at = state.finished_at
+                run.last_progress_at = state.finished_at
+                run.last_error = None
+                _record_program_event(
+                    run,
+                    "completed",
+                    state=state,
+                    evaluation=evaluation,
+                    payload={"applied_targets": _applied_targets_payload(state.last_applied_targets_json)},
+                )
         _release_program_lease(state)
         db.session.commit()
     except Exception as exc:
@@ -686,11 +971,27 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
         state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
         if state is None:
             return
+        run = _ensure_open_program_run(state)
         state.status = "error"
         state.last_error = str(exc)
         state.finished_at = _now_utc()
         state.last_progress_at = _now_utc()
         _release_program_lease(state)
+        if run is not None:
+            run.status = "error"
+            run.finished_at = state.finished_at
+            run.last_progress_at = state.last_progress_at
+            run.last_error = state.last_error
+            _record_program_event(
+                run,
+                "error",
+                state=state,
+                evaluation=_evaluate_state_snapshot(state, now=state.last_progress_at),
+                payload={
+                    "error": state.last_error,
+                    "applied_targets": _applied_targets_payload(state.last_applied_targets_json),
+                },
+            )
         db.session.commit()
         app.logger.warning("Recipe program reconciler failed: %s", exc)
 

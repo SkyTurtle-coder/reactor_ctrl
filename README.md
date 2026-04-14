@@ -171,6 +171,15 @@ Unterstuetzte Parser:
 
 Gespeicherte Messwerte koennen danach ueber `GET /api/devices/<device_id>/measurements` gelesen werden.
 
+## Persistente Prozesslauf-Historie
+
+Der aktuelle Rezeptlauf wird weiterhin in `recipe_program_state` als Live-Zustand gehalten. Zusaetzlich wird jetzt jede Ausfuehrung dauerhaft in SQL protokolliert:
+
+- `recipe_program_run` speichert jeden gestarteten Prozesslauf mit Start-/Endzeit, Status, Recipe/Floatsheet-Referenz und dem Snapshot der verwendeten Bindings und Schritte.
+- `recipe_program_event` speichert den zeitlichen Ablauf des Laufs als Event-Log, z. B. `started`, `step_started`, `targets_applied`, `completed`, `stopped` oder `error`.
+
+Damit bleibt nicht nur der aktuelle Zustand sichtbar, sondern auch die Historie vergangener Prozesslaeufe und Sollwertwechsel.
+
 ## Lokaler NPort-Simulator
 
 Solange die echte `Moxa NPort 5610-8-DT` noch nicht vorhanden ist, kann ein lokaler Multi-Port-Simulator verwendet werden. Er verhaelt sich wie ein transparenter TCP-Endpunkt fuer `RS-232 over Ethernet` und stellt standardmaessig Ports `4001..4008` bereit.
