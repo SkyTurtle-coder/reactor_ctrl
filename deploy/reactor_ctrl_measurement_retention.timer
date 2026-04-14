@@ -1,0 +1,11 @@
+[Unit]
+Description=Run reactor_ctrl measurement retention hourly
+Requires=reactor_ctrl_measurement_retention.service
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

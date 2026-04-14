@@ -1,0 +1,17 @@
+[Unit]
+Description=reactor_ctrl measurement retention (one-shot cleanup)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pthuerlemann
+Group=pthuerlemann
+WorkingDirectory=/home/pthuerlemann/reactor_ctrl
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pthuerlemann/reactor_ctrl/.venv/bin/python /home/pthuerlemann/reactor_ctrl/run_measurement_retention.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
