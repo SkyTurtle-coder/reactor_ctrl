@@ -6,6 +6,10 @@ from ._types import unsigned_bigint
 
 class Measurement(db.Model):
     __tablename__ = "measurement"
+    __table_args__ = (
+        db.Index("ix_measurement_device_channel_measured_at", "device_id", "channel_code", "measured_at"),
+        db.Index("ix_measurement_device_measured_at", "device_id", "measured_at"),
+    )
 
     measurement_id = db.Column(unsigned_bigint(), primary_key=True)
     device_id = db.Column(

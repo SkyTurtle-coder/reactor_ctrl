@@ -40,6 +40,19 @@ _LEGACY_BINDING_TABLES = (
     },
 )
 
+_MEASUREMENT_INDEX_SPECS = (
+    (
+        "ix_measurement_device_channel_measured_at",
+        "CREATE INDEX ix_measurement_device_channel_measured_at "
+        "ON measurement (device_id, channel_code, measured_at)",
+    ),
+    (
+        "ix_measurement_device_measured_at",
+        "CREATE INDEX ix_measurement_device_measured_at "
+        "ON measurement (device_id, measured_at)",
+    ),
+)
+
 
 def _error_code(exc: SQLAlchemyError) -> int | None:
     original = getattr(exc, "orig", None)
@@ -100,6 +113,34 @@ def _archive_legacy_binding_tables(app: Flask) -> None:
             )
 
 
+def _ensure_measurement_indexes(app: Flask) -> None:
+    inspector = inspect(db.engine)
+    if "measurement" not in inspector.get_table_names():
+        return
+
+    existing_indexes = {index["name"] for index in inspector.get_indexes("measurement")}
+    created_indexes: list[str] = []
+    for index_name, create_sql in _MEASUREMENT_INDEX_SPECS:
+        if index_name in existing_indexes:
+            continue
+        try:
+            db.session.execute(text(create_sql))
+            db.session.commit()
+            created_indexes.append(index_name)
+            existing_indexes.add(index_name)
+        except SQLAlchemyError as exc:
+            db.session.rollback()
+            duplicate_index_name = _error_code(exc) == 1061
+            duplicate_index_text = "already exists" in str(exc).lower()
+            if duplicate_index_name or duplicate_index_text:
+                existing_indexes.add(index_name)
+                continue
+            raise
+
+    if created_indexes:
+        app.logger.info("Created measurement index(es): %s", ", ".join(created_indexes))
+
+
 def _initialize_database_schema(app: Flask) -> None:
     if not app.config.get("AUTO_CREATE_SCHEMA", True):
         return
@@ -108,6 +149,7 @@ def _initialize_database_schema(app: Flask) -> None:
         db.create_all()
         _archive_legacy_binding_tables(app)
         db.create_all()
+        _ensure_measurement_indexes(app)
         db.session.execute(text(_LATEST_MEASUREMENT_VIEW_SQL))
         db.session.commit()
     except Exception:

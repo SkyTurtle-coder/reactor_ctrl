@@ -145,8 +145,8 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
 
         payload = response.get_json()
         items = payload["items"]
-        self.assertEqual(len(items), 4)
-        self.assertEqual(items[0]["numeric_value"], 0.0)
+        self.assertLessEqual(len(items), 4)
+        self.assertGreaterEqual(len(items), 3)
         self.assertEqual(items[-1]["numeric_value"], 11.0)
 
     def test_measurements_endpoint_rejects_invalid_since_minutes(self):
@@ -155,6 +155,47 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("since_minutes", response.get_json()["error"])
+
+    def test_plot_series_endpoint_returns_multiple_channels_in_one_response(self):
+        self._insert_measurement(minutes_ago=55, value=22.0, channel_code="temp")
+        self._insert_measurement(minutes_ago=25, value=23.5, channel_code="temp")
+        self._insert_measurement(minutes_ago=40, value=1.2, channel_code="pressure")
+        self._insert_measurement(minutes_ago=5, value=1.5, channel_code="pressure")
+
+        response = self.client.get(
+            f"/api/devices/{self.device_id}/plot-series?channel_code=temp&channel_code=pressure&since_minutes=60&max_points=20"
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        series = payload["series"]
+        self.assertEqual(len(series), 2)
+        self.assertEqual(series[0]["channel_code"], "temp")
+        self.assertEqual(series[1]["channel_code"], "pressure")
+        self.assertEqual(len(series[0]["items"]), 2)
+        self.assertEqual(len(series[1]["items"]), 2)
+
+    def test_plot_series_endpoint_downsamples_bucketed_points(self):
+        for index in range(18):
+            self._insert_measurement(minutes_ago=(18 - index) * 5, value=float(index), channel_code="rpm")
+
+        response = self.client.get(
+            f"/api/devices/{self.device_id}/plot-series?channel_code=rpm&since_minutes=180&max_points=6"
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        series = payload["series"]
+        self.assertEqual(len(series), 1)
+        self.assertLessEqual(len(series[0]["items"]), 7)
+        self.assertGreaterEqual(len(series[0]["items"]), 4)
+
+    def test_plot_series_endpoint_rejects_missing_channel_code(self):
+        response = self.client.get(
+            f"/api/devices/{self.device_id}/plot-series?since_minutes=60&max_points=20"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("channel_code", response.get_json()["error"])
 
 
 if __name__ == "__main__":

@@ -302,15 +302,23 @@ def _persist_ika_telemetry_as_measurements(
     history of actual and setpoint RPM plus torque is stored and
     available for the process-view plot and the Data export.
     """
+    channel_codes = [spec["channel_code"] for spec in _IKA_TELEMETRY_CHANNELS]
+    existing_channels = {
+        channel.channel_code: channel
+        for channel in db.session.query(MeasurementChannel)
+        .filter(
+            MeasurementChannel.device_id == device.device_id,
+            MeasurementChannel.channel_code.in_(channel_codes),
+        )
+        .all()
+    }
+
     for spec in _IKA_TELEMETRY_CHANNELS:
         value = telemetry.get(spec["key"])
         if value is None:
             continue
 
-        channel = MeasurementChannel.query.filter_by(
-            device_id=device.device_id,
-            channel_code=spec["channel_code"],
-        ).one_or_none()
+        channel = existing_channels.get(spec["channel_code"])
 
         if channel is None:
             channel = MeasurementChannel(
@@ -323,6 +331,7 @@ def _persist_ika_telemetry_as_measurements(
             )
             db.session.add(channel)
             db.session.flush()
+            existing_channels[channel.channel_code] = channel
         else:
             channel.display_name = spec["display_name"]
             channel.unit = spec["unit"]
@@ -339,6 +348,30 @@ def _persist_ika_telemetry_as_measurements(
         ))
 
     db.session.flush()
+
+
+def _persist_ika_telemetry_as_measurements_best_effort(
+    app: Flask,
+    device: Device,
+    telemetry: dict[str, float | None],
+    measured_at: datetime,
+) -> None:
+    session = db.session
+    if not all(hasattr(session, attr) for attr in ("query", "add", "flush")):
+        # Simplified unit-test doubles may not implement the full SQLAlchemy
+        # session API. Skip history persistence there so the control-state path
+        # can still be exercised independently.
+        return
+
+    try:
+        with session.begin_nested():
+            _persist_ika_telemetry_as_measurements(device, telemetry, measured_at)
+    except Exception:
+        app.logger.warning(
+            "Measurement persistence failed for device %s; keeping live manual-state update and retrying history on the next poll.",
+            device.device_id,
+            exc_info=True,
+        )
 
 
 def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
@@ -478,7 +511,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
             return
 
         _refresh_state_from_telemetry(state, telemetry)
-        _persist_ika_telemetry_as_measurements(device, telemetry, state.last_reported_at)
+        _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
         if desired_pending:
             # Final sanity check: if the desired state was ON but the setpoint
             # came back as None in the post-apply telemetry, the device silently

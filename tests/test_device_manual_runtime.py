@@ -104,7 +104,12 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         fake_session = _FakeSessionForProcess(state=state, device=device)
 
         with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
-            device_manual_runtime._process_manual_state(app, device_id=2, worker_id="worker-1")
+            with patch.object(
+                device_manual_runtime,
+                "_read_ika_status",
+                return_value={"setpoint_rpm": 250.0, "actual_rpm": 248.0, "torque_ncm": 1.1},
+            ):
+                device_manual_runtime._process_manual_state(app, device_id=2, worker_id="worker-1")
 
         self.assertEqual(state.queue_status, "idle")
         self.assertIsNone(state.lease_owner)

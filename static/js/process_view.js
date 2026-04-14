@@ -54,13 +54,13 @@
     const plotRangeSelect = document.getElementById("process-plot-range-select");
     const plotChartStack = document.getElementById("process-plot-chart-stack");
     const plotStatus = document.getElementById("process-plot-status");
-    const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView.v2";
+    const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView.v3";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
     const PROCESS_PLOT_REFRESH_MS = 5000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
-    const DEFAULT_PROCESS_PLOT_RANGE_ID = "all";
+    const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
     const PROCESS_PLOT_RANGE_OPTIONS = Object.freeze([
         { id: "30m", label: "Last 30 min", sinceMinutes: 30, maxPoints: 180 },
         { id: "1h", label: "Last hour", sinceMinutes: 60, maxPoints: 240 },
@@ -1132,6 +1132,21 @@
             });
     }
 
+    function groupStoredPlotOptionsByDevice(options) {
+        const groups = new Map();
+        for (const option of Array.isArray(options) ? options : []) {
+            const deviceId = Number(option?.deviceId);
+            const channelCode = asString(option?.channelCode, "");
+            if (!Number.isInteger(deviceId) || deviceId <= 0 || !channelCode) {
+                continue;
+            }
+            const bucket = groups.get(deviceId) || { deviceId, options: [] };
+            bucket.options.push(option);
+            groups.set(deviceId, bucket);
+        }
+        return Array.from(groups.values());
+    }
+
     function syncSelectedPlotSeriesIds() {
         const unique = Array.from(new Set(Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : []));
         state.selectedPlotSeriesIds = unique.filter((item) => plotSeriesOptionMap.has(item));
@@ -1590,14 +1605,17 @@
             const runtimeOptions = selectedOptions.filter((option) => option.dataSource === "runtime_fallback");
             await ensureRuntimePlotSamples(runtimeOptions);
 
+            const storedGroups = groupStoredPlotOptionsByDevice(storedOptions);
             const payloads = await Promise.all(
-                storedOptions.map((option) => {
+                storedGroups.map((group) => {
                     const params = new URLSearchParams();
-                    params.set("channel_code", option.channelCode);
+                    for (const option of group.options) {
+                        params.append("channel_code", option.channelCode);
+                    }
                     params.set("since_minutes", String(rangeOption.sinceMinutes));
                     params.set("max_points", String(rangeOption.maxPoints));
                     return fetchJson(
-                        `/api/devices/${option.deviceId}/measurements?${params.toString()}`,
+                        `/api/devices/${group.deviceId}/plot-series?${params.toString()}`,
                         { timeoutMs: 16000, maxRetries: 1 },
                     );
                 }),
@@ -1606,7 +1624,25 @@
                 return;
             }
 
-            const storedSeries = storedOptions.map((option, index) => normalizePlotMeasurements(option, payloads[index]?.items));
+            const storedSeriesById = new Map();
+            storedGroups.forEach((group, index) => {
+                const payloadSeries = Array.isArray(payloads[index]?.series) ? payloads[index].series : [];
+                const payloadSeriesByCode = new Map(
+                    payloadSeries
+                        .map((series) => {
+                            const channelCode = asString(series?.channel_code, "");
+                            return channelCode ? [channelCode, series] : null;
+                        })
+                        .filter(Boolean),
+                );
+                for (const option of group.options) {
+                    const payloadSeriesItem = payloadSeriesByCode.get(option.channelCode) || { items: [] };
+                    storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem.items));
+                }
+            });
+            const storedSeries = storedOptions.map(
+                (option) => storedSeriesById.get(option.id) || { ...option, points: [] },
+            );
             const runtimeSeries = runtimeOptions.map((option) => ({
                 ...option,
                 unit: option.unit,
@@ -2633,7 +2669,8 @@
                 void loadPlotMeasurements();
                 return;
             }
-            renderPlotCharts(state.plotSeriesData);
+            state.plotSeriesData = [];
+            renderPlotCharts([]);
         });
     }
 
@@ -2823,7 +2860,9 @@
     syncProcessSelectionUi();
     renderPlotSelection();
     renderPlotCharts(state.plotSeriesData);
-    void loadPlotMeasurements({ quiet: true });
+    if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
+        void loadPlotMeasurements({ quiet: true });
+    }
     void loadProcessProgram({ quiet: true });
     syncManualModeToggle();
     renderAll();

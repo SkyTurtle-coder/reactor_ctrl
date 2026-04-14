@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
@@ -41,6 +41,7 @@ from .services import (
     start_recipe_program,
     stop_recipe_program,
 )
+from .services.measurement_plot import load_device_plot_series
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -277,19 +278,6 @@ def _parse_int(value: Any, *, field_name: str, min_value: int | None = None, max
     if max_value is not None and parsed > max_value:
         raise ValueError(f"Field '{field_name}' must be <= {max_value}.")
     return parsed
-
-
-def _downsample_measurements(items: list[Measurement], *, max_points: int) -> list[Measurement]:
-    if max_points <= 0 or len(items) <= max_points:
-        return items
-    if max_points == 1:
-        return [items[-1]]
-
-    last_index = len(items) - 1
-    selected_indexes = {0, last_index}
-    for step in range(1, max_points - 1):
-        selected_indexes.add(round(step * last_index / (max_points - 1)))
-    return [items[index] for index in sorted(selected_indexes)]
 
 
 def _parse_datetime(value: Any, *, field_name: str) -> datetime | None:
@@ -1424,11 +1412,16 @@ def list_device_measurements(device_id: int):
     if channel_code:
         query = query.filter(Measurement.channel_code == channel_code)
     if since_minutes is not None:
-        cutoff = _now_utc() - timedelta(minutes=since_minutes)
-        query = query.filter(Measurement.measured_at >= cutoff)
-        items = query.order_by(Measurement.measured_at.asc(), Measurement.measurement_id.asc()).all()
-        if max_points is not None:
-            items = _downsample_measurements(items, max_points=max_points)
+        if not channel_code:
+            return _json_error("Field 'channel_code' is required when using 'since_minutes'.", 400)
+        series = load_device_plot_series(
+            device_id=device.device_id,
+            channel_codes=[channel_code],
+            since_minutes=since_minutes,
+            max_points=max_points or limit,
+        )
+        items = (series[0] if series else {"items": []}).get("items", [])
+        return jsonify({"items": items})
     else:
         items = (
             query.order_by(Measurement.measured_at.desc(), Measurement.measurement_id.desc())
@@ -1436,6 +1429,54 @@ def list_device_measurements(device_id: int):
             .all()
         )
     return jsonify({"items": [_measurement_to_dict(item) for item in items]})
+
+
+@api_bp.get("/devices/<int:device_id>/plot-series")
+def list_device_plot_series(device_id: int):
+    device, error_response = _get_or_404(Device, device_id, "Device")
+    if error_response:
+        return error_response
+
+    try:
+        since_minutes = _parse_int(
+            request.args.get("since_minutes", 60),
+            field_name="since_minutes",
+            min_value=1,
+            max_value=30 * 24 * 60,
+        )
+        max_points = _parse_int(
+            request.args.get("max_points", 240),
+            field_name="max_points",
+            min_value=2,
+            max_value=2000,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    channel_codes = []
+    for raw_value in request.args.getlist("channel_code"):
+        cleaned = _clean_string(raw_value, field_name="channel_code")
+        if cleaned:
+            channel_codes.append(cleaned)
+    if not channel_codes:
+        return _json_error("At least one 'channel_code' query parameter is required.", 400)
+    if len(channel_codes) > 24:
+        return _json_error("At most 24 channel_code values may be requested at once.", 400)
+
+    series = load_device_plot_series(
+        device_id=device.device_id,
+        channel_codes=channel_codes,
+        since_minutes=since_minutes,
+        max_points=max_points,
+    )
+    return jsonify(
+        {
+            "device_id": device.device_id,
+            "since_minutes": since_minutes,
+            "max_points": max_points,
+            "series": series,
+        }
+    )
 
 
 @api_bp.get("/devices/<int:device_id>/commands")
