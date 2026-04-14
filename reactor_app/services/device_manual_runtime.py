@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from flask import Flask
 from sqlalchemy import and_, case, or_
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from ..extensions import db
 from ..models import Device, DeviceManualState, Measurement, MeasurementChannel
@@ -388,6 +388,10 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
     This seeds background telemetry polling for devices that have never been
     accessed through the Process UI, so measurements are stored continuously
     regardless of whether any user has the page open.
+
+    Each device is committed individually so that an IntegrityError from a
+    concurrent Gunicorn worker inserting the same row does not roll back all
+    other devices.
     """
     active_devices = (
         db.session.query(Device)
@@ -397,7 +401,9 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
     seeded = 0
     for device in active_devices:
         existing = db.session.get(DeviceManualState, device.device_id)
-        if existing is None:
+        if existing is not None:
+            continue
+        try:
             state = DeviceManualState(
                 device_id=device.device_id,
                 queue_status="idle",
@@ -405,9 +411,19 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
                 applied_version=0,
             )
             db.session.add(state)
+            db.session.commit()  # Commit individually to survive multi-worker races
             seeded += 1
+        except IntegrityError:
+            # Another Gunicorn worker inserted the row first — safe to ignore.
+            db.session.rollback()
+        except Exception:
+            db.session.rollback()
+            app.logger.warning(
+                "Measurement poller: failed to seed DeviceManualState for device %s.",
+                device.device_id,
+                exc_info=True,
+            )
     if seeded:
-        db.session.commit()
         app.logger.info(
             "Measurement poller: seeded DeviceManualState for %d IKA device(s).", seeded
         )
@@ -491,7 +507,10 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         if state is None:
             return
         state.last_error = str(exc)
-        state.next_poll_at = _now_utc() + _manual_poll_interval(app)
+        # Use the background interval for retry when no UI session is watching so
+        # an unreachable device is not hammered on every reconciler tick.
+        retry_interval = _manual_poll_interval(app) if watch_active else _background_poll_interval(app)
+        state.next_poll_at = _now_utc() + retry_interval
         _release_manual_state_lease(state, status="error")
         db.session.commit()
         app.logger.warning("Manual reconciler failed for device %s: %s", device_id, exc)
@@ -514,10 +533,19 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                     DeviceManualState.watch_expires_at > now,
                     or_(DeviceManualState.next_poll_at.is_(None), DeviceManualState.next_poll_at <= now),
                 ),
-                # Background telemetry poll: device hasn't been read recently
-                or_(
-                    DeviceManualState.last_reported_at.is_(None),
-                    DeviceManualState.last_reported_at <= bg_cutoff,
+                # Background telemetry poll: device hasn't been read recently AND
+                # its scheduled retry time (if any) has passed.  The retry time is
+                # set to bg_interval after both successes and failures, so this
+                # prevents hammering an unreachable device.
+                and_(
+                    or_(
+                        DeviceManualState.last_reported_at.is_(None),
+                        DeviceManualState.last_reported_at <= bg_cutoff,
+                    ),
+                    or_(
+                        DeviceManualState.next_poll_at.is_(None),
+                        DeviceManualState.next_poll_at <= now,
+                    ),
                 ),
             ),
         )
@@ -573,8 +601,13 @@ def _reconciler_loop(app: Flask, worker_id: str) -> None:
                 # by background telemetry polling even before any UI session.
                 now_ts = time.monotonic()
                 if now_ts - last_discovery_at >= _DEVICE_DISCOVERY_INTERVAL_SECONDS:
-                    _ensure_manual_states_for_active_ika_devices(app)
-                    last_discovery_at = now_ts
+                    try:
+                        _ensure_manual_states_for_active_ika_devices(app)
+                    except Exception:
+                        app.logger.exception("Device discovery failed; will retry on next cycle.")
+                    finally:
+                        # Always advance the timer so a broken DB doesn't busy-loop.
+                        last_discovery_at = now_ts
 
                 device_id = _claim_next_device_id(app, worker_id)
                 if device_id is None:
