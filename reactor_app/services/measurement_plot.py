@@ -27,8 +27,16 @@ def _bucket_seconds(*, since_minutes: int, max_points: int) -> int:
     return max(1, math.ceil((since_minutes * 60) / max(1, max_points)))
 
 
+def _db_dialect_name() -> str:
+    return db.session.bind.dialect.name if db.session.bind is not None else ""
+
+
 def _empty_series(channel_codes: list[str]) -> dict[str, dict[str, Any]]:
     return {channel_code: {"channel_code": channel_code, "unit": None, "items": []} for channel_code in channel_codes}
+
+
+def _series_has_points(series_by_code: dict[str, dict[str, Any]]) -> bool:
+    return any(bool((series or {}).get("items")) for series in series_by_code.values())
 
 
 def _append_series_item(bucket: dict[str, dict[str, Any]], *, channel_code: str, measured_at: datetime, numeric_value: float, unit: str | None) -> None:
@@ -190,7 +198,7 @@ def load_device_plot_series(
 
     cutoff = _now_utc() - timedelta(minutes=max(1, since_minutes))
     bucket_seconds = _bucket_seconds(since_minutes=since_minutes, max_points=max_points)
-    dialect_name = db.session.bind.dialect.name if db.session.bind is not None else ""
+    dialect_name = _db_dialect_name()
 
     try:
         if dialect_name == "mysql":
@@ -200,6 +208,16 @@ def load_device_plot_series(
                 cutoff=cutoff,
                 bucket_seconds=bucket_seconds,
             )
+            if not _series_has_points(series_by_code):
+                # Some MySQL/MariaDB installations behave differently on the
+                # optimized window-function path. Re-run the portable query
+                # before reporting "no data" to the UI.
+                series_by_code = _load_plot_series_python(
+                    device_id=device_id,
+                    channel_codes=normalized_codes,
+                    cutoff=cutoff,
+                    bucket_seconds=bucket_seconds,
+                )
         else:
             series_by_code = _load_plot_series_python(
                 device_id=device_id,
