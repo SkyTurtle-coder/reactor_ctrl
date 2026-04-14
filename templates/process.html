@@ -190,6 +190,20 @@
             </section>
 
             <section class="process-plot-chart-region">
+                <div class="process-plot-chart-toolbar">
+                    <div class="process-plot-chart-toolbar-copy">
+                        <span class="section-label">Time Horizon</span>
+                    </div>
+                    <label class="process-select-field process-plot-range-field">
+                        <span>Window</span>
+                        <select id="process-plot-range-select">
+                            <option value="30m">Last 30 min</option>
+                            <option value="1h" selected>Last hour</option>
+                            <option value="5h">Last 5 hours</option>
+                            <option value="all">All (max 30 days)</option>
+                        </select>
+                    </label>
+                </div>
                 <div class="process-plot-chart-stack" id="process-plot-chart-stack"></div>
                 <p class="process-manual-status muted process-plot-status" id="process-plot-status">
                     Select one or more values to display a live trend plot.

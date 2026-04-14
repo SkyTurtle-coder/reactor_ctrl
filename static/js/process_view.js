@@ -51,6 +51,7 @@
     const plotSelection = document.getElementById("process-plot-selection");
     const plotSelectionCount = document.getElementById("process-plot-selection-count");
     const plotSelectionEmpty = document.getElementById("process-plot-selection-empty");
+    const plotRangeSelect = document.getElementById("process-plot-range-select");
     const plotChartStack = document.getElementById("process-plot-chart-stack");
     const plotStatus = document.getElementById("process-plot-status");
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView";
@@ -58,7 +59,15 @@
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
     const PROCESS_PLOT_REFRESH_MS = 5000;
-    const PROCESS_PLOT_SERIES_LIMIT = 120;
+    const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
+    const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
+    const PROCESS_PLOT_RANGE_OPTIONS = Object.freeze([
+        { id: "30m", label: "Last 30 min", sinceMinutes: 30, maxPoints: 180 },
+        { id: "1h", label: "Last hour", sinceMinutes: 60, maxPoints: 240 },
+        { id: "5h", label: "Last 5 hours", sinceMinutes: 300, maxPoints: 600 },
+        { id: "all", label: "All (max 30 days)", sinceMinutes: PROCESS_PLOT_MAX_LOOKBACK_MINUTES, maxPoints: 960 },
+    ]);
+    const PROCESS_PLOT_RANGE_OPTION_MAP = new Map(PROCESS_PLOT_RANGE_OPTIONS.map((option) => [option.id, option]));
     const PROCESS_PLOT_COLORS = [
         "#0f766e",
         "#dc2626",
@@ -95,6 +104,15 @@
     function asString(value, fallback) {
         const text = String(value ?? "").trim();
         return text || fallback;
+    }
+
+    function normalizePlotRangeId(value) {
+        const candidate = asString(value, DEFAULT_PROCESS_PLOT_RANGE_ID);
+        return PROCESS_PLOT_RANGE_OPTION_MAP.has(candidate) ? candidate : DEFAULT_PROCESS_PLOT_RANGE_ID;
+    }
+
+    function plotRangeOptionForId(value) {
+        return PROCESS_PLOT_RANGE_OPTION_MAP.get(normalizePlotRangeId(value)) || PROCESS_PLOT_RANGE_OPTIONS[1];
     }
 
     function boundedIntegerInputValue(inputElement, fallback) {
@@ -1241,12 +1259,25 @@
         };
     }
 
+    function selectedPlotRangeOption() {
+        return plotRangeOptionForId(state?.selectedPlotRangeId);
+    }
+
+    function trimPlotPointsForActiveRange(points) {
+        const rangeOption = selectedPlotRangeOption();
+        const cutoffMs = Date.now() - (rangeOption.sinceMinutes * 60 * 1000);
+        return (Array.isArray(points) ? points : [])
+            .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y) && point.x >= cutoffMs)
+            .sort((left, right) => left.x - right.x)
+            .slice(-rangeOption.maxPoints);
+    }
+
     function runtimePlotPointsForSeries(option) {
-        return Array.isArray(state.runtimePlotSeriesById[option.id]) ? state.runtimePlotSeriesById[option.id] : [];
+        return trimPlotPointsForActiveRange(state.runtimePlotSeriesById[option.id]);
     }
 
     function mergePlotPoints(primaryPoints, secondaryPoints) {
-        return [...(Array.isArray(primaryPoints) ? primaryPoints : []), ...(Array.isArray(secondaryPoints) ? secondaryPoints : [])]
+        const mergedPoints = [...(Array.isArray(primaryPoints) ? primaryPoints : []), ...(Array.isArray(secondaryPoints) ? secondaryPoints : [])]
             .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y))
             .sort((left, right) => left.x - right.x)
             .filter((point, index, points) => {
@@ -1255,8 +1286,8 @@
                 }
                 const previous = points[index - 1];
                 return previous.x !== point.x || previous.y !== point.y;
-            })
-            .slice(-PROCESS_PLOT_SERIES_LIMIT);
+            });
+        return trimPlotPointsForActiveRange(mergedPoints);
     }
 
     function appendRuntimePlotPoint(option, value, timestampMs) {
@@ -1549,8 +1580,9 @@
         const requestId = state.plotRequestId + 1;
         state.plotRequestId = requestId;
         state.isPlotBusy = true;
+        const rangeOption = selectedPlotRangeOption();
         if (!settings.quiet) {
-            setPlotStatus("Loading trend data for the selected values...", "muted");
+            setPlotStatus(`Loading trend data for ${rangeOption.label.toLowerCase()}...`, "muted");
         }
 
         try {
@@ -1559,12 +1591,16 @@
             await ensureRuntimePlotSamples(runtimeOptions);
 
             const payloads = await Promise.all(
-                storedOptions.map((option) =>
-                    fetchJson(
-                        `/api/devices/${option.deviceId}/measurements?channel_code=${encodeURIComponent(option.channelCode)}&limit=${PROCESS_PLOT_SERIES_LIMIT}`,
+                storedOptions.map((option) => {
+                    const params = new URLSearchParams();
+                    params.set("channel_code", option.channelCode);
+                    params.set("since_minutes", String(rangeOption.sinceMinutes));
+                    params.set("max_points", String(rangeOption.maxPoints));
+                    return fetchJson(
+                        `/api/devices/${option.deviceId}/measurements?${params.toString()}`,
                         { timeoutMs: 16000, maxRetries: 1 },
-                    ),
-                ),
+                    );
+                }),
             );
             if (requestId !== state.plotRequestId) {
                 return;
@@ -1599,14 +1635,14 @@
             const populatedSeries = seriesItems.filter((series) => series.points.length > 0).length;
             if (populatedSeries > 0) {
                 setPlotStatus(
-                    `Plot updated. ${populatedSeries} selected series currently contain trend data.`,
+                    `Plot updated for ${rangeOption.label.toLowerCase()}. ${populatedSeries} selected series currently contain trend data.`,
                     settings.quiet ? "muted" : "success",
                 );
             } else {
                 setPlotStatus(
                     runtimeOptions.length > 0
-                        ? "No plot data is available yet. Waiting for the first live device sample from the selected checkbox."
-                        : "No plot data is available for the selected values yet.",
+                        ? `No plot data is available yet for ${rangeOption.label.toLowerCase()}. Waiting for the first live device sample from the selected checkbox.`
+                        : `No plot data is available for the selected values in ${rangeOption.label.toLowerCase()}.`,
                     "muted",
                 );
             }
@@ -2029,6 +2065,7 @@
                     manualMode: state.manualMode,
                     selectedNodeId: state.selectedNodeId || null,
                     selectedPlotSeriesIds: Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : [],
+                    selectedPlotRangeId: normalizePlotRangeId(state.selectedPlotRangeId),
                 }),
             );
         } catch (_error) {
@@ -2532,6 +2569,9 @@
               .map((item) => asString(item, ""))
               .filter((item) => item && plotSeriesOptionMap.has(item))
         : [];
+    const restoredPlotRangeId = canRestorePersistedState
+        ? normalizePlotRangeId(persistedViewState?.selectedPlotRangeId)
+        : DEFAULT_PROCESS_PLOT_RANGE_ID;
 
     const state = {
         nodes,
@@ -2543,6 +2583,7 @@
         manualMode: Boolean(initialSelectionMode !== "recipe" && canRestorePersistedState && persistedViewState?.manualMode),
         selectedNodeId: restoredSelectedNodeId,
         selectedPlotSeriesIds: restoredPlotSeriesIds,
+        selectedPlotRangeId: restoredPlotRangeId,
         plotSeriesData: [],
         runtimePlotSeriesById: {},
         latestPlotTelemetryByNodeId: {},
@@ -2581,6 +2622,20 @@
             void loadPlotMeasurements({ quiet: true });
         }
     });
+
+    if (plotRangeSelect) {
+        plotRangeSelect.value = normalizePlotRangeId(state.selectedPlotRangeId);
+        plotRangeSelect.addEventListener("change", () => {
+            state.selectedPlotRangeId = normalizePlotRangeId(plotRangeSelect.value);
+            plotRangeSelect.value = state.selectedPlotRangeId;
+            persistViewState();
+            if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
+                void loadPlotMeasurements();
+                return;
+            }
+            renderPlotCharts(state.plotSeriesData);
+        });
+    }
 
     manualSettingsForm?.addEventListener("submit", (event) => {
         event.preventDefault();

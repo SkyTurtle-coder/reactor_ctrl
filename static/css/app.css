@@ -733,6 +733,23 @@ pre {
     min-width: 0;
 }
 
+.process-plot-chart-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    justify-content: space-between;
+    gap: 0.8rem;
+}
+
+.process-plot-chart-toolbar-copy {
+    display: grid;
+    gap: 0.22rem;
+}
+
+.process-plot-range-field {
+    min-width: min(100%, 14.5rem);
+}
+
 .process-plot-chart-stack {
     display: grid;
     gap: 0.9rem;
@@ -2438,6 +2455,10 @@ kbd {
         grid-template-columns: 1fr;
     }
 
+    .process-plot-chart-toolbar {
+        display: grid;
+    }
+
     .process-plot-summary {
         grid-template-columns: minmax(0, 1fr) auto;
     }
@@ -2448,6 +2469,10 @@ kbd {
 
     .process-plot-summary-meta {
         justify-self: start;
+    }
+
+    .process-plot-range-field {
+        min-width: 0;
     }
 
     .process-plot-selection {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hmac
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
@@ -277,6 +277,19 @@ def _parse_int(value: Any, *, field_name: str, min_value: int | None = None, max
     if max_value is not None and parsed > max_value:
         raise ValueError(f"Field '{field_name}' must be <= {max_value}.")
     return parsed
+
+
+def _downsample_measurements(items: list[Measurement], *, max_points: int) -> list[Measurement]:
+    if max_points <= 0 or len(items) <= max_points:
+        return items
+    if max_points == 1:
+        return [items[-1]]
+
+    last_index = len(items) - 1
+    selected_indexes = {0, last_index}
+    for step in range(1, max_points - 1):
+        selected_indexes.add(round(step * last_index / (max_points - 1)))
+    return [items[index] for index in sorted(selected_indexes)]
 
 
 def _parse_datetime(value: Any, *, field_name: str) -> datetime | None:
@@ -1391,6 +1404,18 @@ def list_device_measurements(device_id: int):
     try:
         limit_raw = request.args.get("limit", 100)
         limit = _parse_int(limit_raw, field_name="limit", min_value=1, max_value=1000)
+        since_minutes_raw = request.args.get("since_minutes")
+        since_minutes = (
+            _parse_int(since_minutes_raw, field_name="since_minutes", min_value=1, max_value=30 * 24 * 60)
+            if since_minutes_raw not in (None, "")
+            else None
+        )
+        max_points_raw = request.args.get("max_points")
+        max_points = (
+            _parse_int(max_points_raw, field_name="max_points", min_value=2, max_value=2000)
+            if max_points_raw not in (None, "")
+            else None
+        )
     except ValueError as exc:
         return _json_error(str(exc), 400)
 
@@ -1398,11 +1423,18 @@ def list_device_measurements(device_id: int):
     query = Measurement.query.filter_by(device_id=device.device_id)
     if channel_code:
         query = query.filter(Measurement.channel_code == channel_code)
-    items = (
-        query.order_by(Measurement.measured_at.desc(), Measurement.measurement_id.desc())
-        .limit(limit)
-        .all()
-    )
+    if since_minutes is not None:
+        cutoff = _now_utc() - timedelta(minutes=since_minutes)
+        query = query.filter(Measurement.measured_at >= cutoff)
+        items = query.order_by(Measurement.measured_at.asc(), Measurement.measurement_id.asc()).all()
+        if max_points is not None:
+            items = _downsample_measurements(items, max_points=max_points)
+    else:
+        items = (
+            query.order_by(Measurement.measured_at.desc(), Measurement.measurement_id.desc())
+            .limit(limit)
+            .all()
+        )
     return jsonify({"items": [_measurement_to_dict(item) for item in items]})
 
 

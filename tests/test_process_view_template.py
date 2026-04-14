@@ -44,6 +44,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-plot-panel", html)
         self.assertIn("process-plot-selection", html)
         self.assertIn("process-plot-chart-stack", html)
+        self.assertIn("process-plot-range-select", html)
         self.assertIn("process-plot-targets", html)
         self.assertIn("process-source-build-btn", html)
         self.assertIn("process-source-recipe-btn", html)
@@ -160,6 +161,10 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function buildPlotSeriesOptions(targets)", source)
         self.assertIn("function renderPlotSelection()", source)
         self.assertIn("function loadPlotMeasurements(options)", source)
+        self.assertIn('document.getElementById("process-plot-range-select")', source)
+        self.assertIn('params.set("since_minutes", String(rangeOption.sinceMinutes));', source)
+        self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
+        self.assertIn("selectedPlotRangeId", source)
         self.assertIn("renderPlotSelection();", source)
         self.assertIn("void loadPlotMeasurements({ quiet: true });", source)
 
