@@ -294,6 +294,17 @@ pre {
     text-decoration: none;
 }
 
+.nav-link--logout {
+    padding: 0.45rem 0.6rem;
+    margin-left: 0.25rem;
+    color: var(--muted);
+}
+
+.nav-link--logout:hover {
+    background: rgba(154, 47, 36, 0.1);
+    color: var(--danger);
+}
+
 .theme-switch {
     display: inline-flex;
     align-items: center;

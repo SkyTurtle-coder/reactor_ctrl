@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from flask import Flask
@@ -8,6 +9,7 @@ from sqlalchemy.exc import OperationalError, ProgrammingError, SQLAlchemyError
 from werkzeug.exceptions import HTTPException
 
 from .api import api_bp
+from .auth import auth_bp, require_login
 from .extensions import db
 from .services import start_device_manual_reconciler, start_recipe_program_reconciler
 from .web import web_bp
@@ -264,6 +266,14 @@ def create_app() -> Flask:
     )
     app.config.from_object("config.Config")
 
+    # Session security settings
+    session_hours = app.config.get("SESSION_LIFETIME_HOURS", 8)
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=session_hours)
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    if app.config.get("SESSION_COOKIE_SECURE", False):
+        app.config["SESSION_COOKIE_SECURE"] = True
+
     db.init_app(app)
 
     with app.app_context():
@@ -272,8 +282,10 @@ def create_app() -> Flask:
 
     _register_request_cleanup(app)
     _register_error_handlers(app)
+    app.register_blueprint(auth_bp)
     app.register_blueprint(api_bp)
     app.register_blueprint(web_bp)
+    app.before_request(require_login)
     start_device_manual_reconciler(app)
     start_recipe_program_reconciler(app)
 

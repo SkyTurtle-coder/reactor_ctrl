@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Login | Reactor Control</title>
+    {% include "partials/theme_init.html" %}
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ static_asset('css/app.css') }}">
+    <style>
+        .login-shell {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100dvh;
+            padding: 2rem 1rem;
+            background: var(--bg);
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 400px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-strong);
+            padding: 2.5rem 2rem 2rem;
+        }
+
+        .login-brand {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .login-brand .brand-kicker {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.09em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 0.2rem;
+        }
+
+        .login-brand .brand-name {
+            display: block;
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        .login-brand .brand-lock {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 3rem;
+            height: 3rem;
+            background: var(--accent-soft);
+            border-radius: 50%;
+            margin-bottom: 1rem;
+        }
+
+        .login-brand .brand-lock svg {
+            width: 1.35rem;
+            height: 1.35rem;
+            color: var(--accent-strong);
+        }
+
+        .login-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .login-field label {
+            font-size: 0.82rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .login-field input[type="password"],
+        .login-field input[type="text"] {
+            width: 100%;
+            box-sizing: border-box;
+            min-height: 2.8rem;
+            padding: 0.7rem 0.85rem;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--input-surface);
+            color: var(--text);
+            font: inherit;
+            font-size: 1rem;
+            transition: border-color 140ms ease;
+            outline: none;
+        }
+
+        .login-field input:focus {
+            border-color: var(--accent-strong);
+            box-shadow: 0 0 0 3px var(--accent-soft-strong);
+        }
+
+        .login-error {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.6rem;
+            padding: 0.75rem 1rem;
+            background: rgba(154, 47, 36, 0.08);
+            border: 1px solid rgba(154, 47, 36, 0.22);
+            border-radius: 8px;
+            color: var(--danger);
+            font-size: 0.875rem;
+            margin-bottom: 1.25rem;
+            line-height: 1.4;
+        }
+
+        .login-error svg {
+            flex-shrink: 0;
+            margin-top: 0.1rem;
+        }
+
+        .login-btn {
+            width: 100%;
+            min-height: 2.8rem;
+            padding: 0.75rem 1rem;
+            background: var(--accent);
+            color: var(--accent-strong);
+            border: 1px solid var(--accent);
+            border-radius: 8px;
+            font: inherit;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 140ms ease, border-color 140ms ease;
+        }
+
+        .login-btn:hover:not(:disabled) {
+            background: #e6d40e;
+            border-color: #e6d40e;
+        }
+
+        .login-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .login-footer {
+            text-align: center;
+            margin-top: 1.5rem;
+            font-size: 0.8rem;
+            color: var(--muted);
+        }
+
+        html[data-theme="dark"] .login-error {
+            background: rgba(240, 143, 132, 0.08);
+            border-color: rgba(240, 143, 132, 0.22);
+        }
+    </style>
+</head>
+<body>
+    <div class="login-shell">
+        <div class="login-card">
+            <div class="login-brand">
+                <div class="brand-lock" aria-hidden="true">
+                    <svg viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/>
+                    </svg>
+                </div>
+                <span class="brand-kicker">U1 Lab</span>
+                <span class="brand-name">Reactor Control</span>
+            </div>
+
+            {% if error %}
+            <div class="login-error" role="alert">
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                    <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                </svg>
+                {{ error }}
+            </div>
+            {% endif %}
+
+            <form method="post" action="{{ url_for('auth.login') }}{% if next_url %}?next={{ next_url | urlencode }}{% endif %}" autocomplete="on" novalidate>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <input type="hidden" name="next" value="{{ next_url }}">
+
+                <div class="login-field">
+                    <label for="password">Password</label>
+                    <input
+                        type="password"
+                        id="password"
+                        name="password"
+                        autocomplete="current-password"
+                        autofocus
+                        required
+                        {% if locked %}disabled{% endif %}
+                        placeholder="Enter password"
+                    >
+                </div>
+
+                <button type="submit" class="login-btn" {% if locked %}disabled{% endif %}>
+                    Sign in
+                </button>
+            </form>
+        </div>
+
+        <p class="login-footer">
+            Reactor Control System &mdash; restricted access
+        </p>
+    </div>
+    <script src="{{ static_asset('js/theme.js') }}"></script>
+</body>
+</html>
