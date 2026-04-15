@@ -12,12 +12,8 @@ over the complexity of a persistent lockout store.
 
 from __future__ import annotations
 
-import os
-import secrets
 import threading
 import time
-from datetime import timedelta
-from functools import wraps
 from urllib.parse import urlsplit
 
 from flask import (
@@ -29,6 +25,7 @@ from flask import (
     session,
     url_for,
 )
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash
 
 
@@ -127,6 +124,31 @@ def require_login() -> object | None:
 
 
 # ---------------------------------------------------------------------------
+# Stateless CSRF helpers (signed timestamp — no session cookie dependency)
+# ---------------------------------------------------------------------------
+
+_CSRF_MAX_AGE = 3600  # 1 hour
+
+
+def _csrf_serializer() -> URLSafeTimedSerializer:
+    return URLSafeTimedSerializer(current_app.config["SECRET_KEY"], salt="login-csrf")
+
+
+def _generate_csrf_token() -> str:
+    return _csrf_serializer().dumps("ok")
+
+
+def _validate_csrf_token(token: str) -> bool:
+    if not token:
+        return False
+    try:
+        _csrf_serializer().loads(token, max_age=_CSRF_MAX_AGE)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Login / logout views
 # ---------------------------------------------------------------------------
 
@@ -143,10 +165,9 @@ def login():
     lockout_minutes = (_remaining_lockout_seconds(ip) + 59) // 60  # round up
 
     if request.method == "POST":
-        # Validate CSRF token first
+        # Validate CSRF token first (stateless — no session cookie required)
         submitted_csrf = request.form.get("csrf_token", "")
-        expected_csrf = session.get("_login_csrf", "")
-        if not submitted_csrf or not secrets.compare_digest(submitted_csrf, expected_csrf):
+        if not _validate_csrf_token(submitted_csrf):
             error = "Invalid form submission. Please try again."
         elif locked:
             error = (
@@ -162,7 +183,7 @@ def login():
                     "No password has been configured on this server. "
                     "Set APP_PASSWORD_HASH in the .env file."
                 )
-            elif password_hash and check_password_hash(password_hash, password):
+            elif check_password_hash(password_hash, password):
                 _clear_failures(ip)
                 session.clear()
                 session["authenticated"] = True
@@ -187,16 +208,12 @@ def login():
                         f"{remaining} attempt(s) remaining before lockout."
                     )
 
-    # Refresh CSRF token on every GET (and after a failed POST)
-    if request.method == "GET" or error:
-        session["_login_csrf"] = secrets.token_hex(32)
-
     return render_template(
         "login.html",
         error=error,
         locked=locked,
         lockout_minutes=lockout_minutes,
-        csrf_token=session.get("_login_csrf", ""),
+        csrf_token=_generate_csrf_token(),
         next_url=request.args.get("next", ""),
     )
 
