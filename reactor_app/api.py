@@ -42,6 +42,7 @@ from .services import (
     stop_recipe_program,
     wait_for_manual_state_refresh,
 )
+from .services.activity_log import activity_log_item_to_dict, load_activity_logs, summarize_activity_logs
 from .services.measurement_plot import load_device_plot_series
 
 
@@ -634,6 +635,35 @@ def _measurement_to_dict(item: Measurement) -> dict[str, Any]:
         "raw_payload": item.raw_payload,
         "source": item.source,
     }
+
+
+@api_bp.get("/logs")
+def list_activity_logs():
+    try:
+        retention_days = max(1, int(current_app.config.get("ACTIVITY_LOG_RETENTION_DAYS", 7)))
+        days = _parse_int(
+            request.args.get("days", retention_days),
+            field_name="days",
+            min_value=1,
+            max_value=retention_days,
+        )
+        limit = _parse_int(
+            request.args.get("limit", 120),
+            field_name="limit",
+            min_value=1,
+            max_value=300,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    items = load_activity_logs(days=days, limit=limit)
+    return jsonify(
+        {
+            "items": [activity_log_item_to_dict(item) for item in items],
+            "summary": summarize_activity_logs(items),
+            "retention_days": retention_days,
+        }
+    )
 
 
 def _reactor_build_to_dict(item: ReactorBuild, *, include_definition: bool = True) -> dict[str, Any]:

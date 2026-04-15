@@ -11,22 +11,22 @@
 {% endblock %}
 
 {% block content %}
-<section class="metric-grid compact">
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Loaded logs</p><p class="metric-value">{{ log_summary.total }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Errors</p><p class="metric-value">{{ log_summary.errors }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Warnings</p><p class="metric-value">{{ log_summary.warnings }}</p></div></article>
-    <article class="card metric-card"><div class="card-body"><p class="metric-label">Retention</p><p class="metric-value">{{ retention_days }}d</p></div></article>
+<section class="metric-grid compact" id="logs-root" data-retention-days="{{ retention_days }}" data-limit="120">
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Loaded logs</p><p class="metric-value" id="logs-total">{{ log_summary.total }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Errors</p><p class="metric-value" id="logs-errors">{{ log_summary.errors }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Warnings</p><p class="metric-value" id="logs-warnings">{{ log_summary.warnings }}</p></div></article>
+    <article class="card metric-card"><div class="card-body"><p class="metric-label">Retention</p><p class="metric-value" id="logs-retention">{{ retention_days }}d</p></div></article>
 </section>
 
 <section class="card">
     <div class="card-header">
         <div>
             <h2>One-week activity timeline</h2>
-            <p class="muted">The timeline is assembled from actor command events, device responses, recipe program events, and current connection errors.</p>
+            <p class="muted">The timeline hides routine telemetry polling and focuses on operator commands, relevant device responses, recipe events, warnings, and errors.</p>
         </div>
+        <span class="logs-live-status" id="logs-live-status" aria-live="polite">Live update starting...</span>
     </div>
     <div class="card-body">
-        {% if activity_logs %}
         <div class="table-responsive">
             <table class="table log-table">
                 <thead>
@@ -40,9 +40,9 @@
                         <th>Details</th>
                     </tr>
                 </thead>
-                <tbody>
+                <tbody id="logs-table-body">
                     {% for item in activity_logs %}
-                    <tr class="log-row log-row-{{ item.severity }}">
+                    <tr class="log-row log-row-{{ item.severity }}" data-log-key="{{ item.event_key }}">
                         <td>{{ format_datetime(item.timestamp) }}</td>
                         <td><span class="badge {{ log_severity_badge_class(item.severity) }}">{{ item.severity }}</span></td>
                         <td>{{ item.category }}</td>
@@ -66,9 +66,11 @@
                 </tbody>
             </table>
         </div>
-        {% else %}
-        <p class="empty-state">No log entries in the configured retention window yet.</p>
-        {% endif %}
+        <p class="empty-state{% if activity_logs %} is-hidden{% endif %}" id="logs-empty">No log entries in the configured retention window yet.</p>
     </div>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_asset('js/logs.js') }}"></script>
 {% endblock %}

@@ -359,6 +359,13 @@ class ActivityLogTests(unittest.TestCase):
                 ControlCommandEvent(
                     command_event_id=2,
                     command_id=1,
+                    event_type="sent",
+                    event_payload={"sent_at": (now - timedelta(minutes=4, seconds=30)).isoformat()},
+                    created_at=now - timedelta(minutes=4, seconds=30),
+                ),
+                ControlCommandEvent(
+                    command_event_id=3,
+                    command_id=1,
                     event_type="response",
                     event_payload={"response_text": "500.0 4"},
                     created_at=now - timedelta(minutes=4),
@@ -382,13 +389,72 @@ class ActivityLogTests(unittest.TestCase):
             titles = [item.title for item in items]
             summary = summarize_activity_logs(items)
 
-        self.assertIn("Command queued", titles)
+        self.assertNotIn("Command queued", titles)
+        self.assertIn("Command sent", titles)
         self.assertIn("Device response", titles)
         self.assertIn("Recipe started", titles)
         self.assertIn("Connection error", titles)
         self.assertEqual(summary["total"], 4)
         self.assertEqual(summary["errors"], 1)
         self.assertGreaterEqual(summary["success"], 1)
+
+    def test_activity_log_hides_internal_telemetry_poll_noise(self):
+        now = datetime.now(timezone.utc)
+        with self.app.app_context():
+            device = Device(
+                device_id=3,
+                asset_serial="LOG-IKA-POLL",
+                manufacturer_serial="LOG-POLL-SN",
+                display_name="IKA Poll Test",
+                device_type="actuator",
+                protocol="ika_eurostar_60",
+                is_active=True,
+            )
+            command = ControlCommand(
+                command_id=3,
+                device_id=3,
+                request_uuid="00000000-0000-0000-0000-000000000003",
+                requested_by="manual_reconciler",
+                command_name="manual_text",
+                command_payload={"text": "IN_PV_4"},
+                status="acked",
+                requested_at=now - timedelta(seconds=6),
+                sent_at=now - timedelta(seconds=5),
+                ack_at=now - timedelta(seconds=4),
+                finished_at=now - timedelta(seconds=4),
+            )
+            db.session.add_all([device, command])
+            db.session.flush()
+            db.session.add_all(
+                [
+                    ControlCommandEvent(
+                        command_event_id=30,
+                        command_id=3,
+                        event_type="queued",
+                        event_payload={"requested_by": "manual_reconciler"},
+                        created_at=now - timedelta(seconds=6),
+                    ),
+                    ControlCommandEvent(
+                        command_event_id=31,
+                        command_id=3,
+                        event_type="sent",
+                        event_payload={},
+                        created_at=now - timedelta(seconds=5),
+                    ),
+                    ControlCommandEvent(
+                        command_event_id=32,
+                        command_id=3,
+                        event_type="response",
+                        event_payload={"response_text": "123.0 4"},
+                        created_at=now - timedelta(seconds=4),
+                    ),
+                ]
+            )
+            db.session.commit()
+
+            items = load_activity_logs(days=7, limit=20)
+
+        self.assertEqual(items, [])
 
     def test_logs_route_replaces_alerts_tab(self):
         with self.app.app_context():
@@ -402,6 +468,23 @@ class ActivityLogTests(unittest.TestCase):
         self.assertIn("OUT_SP_4 500", html)
         self.assertIn("Log Recipe", html)
         self.assertIn("connection refused", html)
+        self.assertIn('id="logs-table-body"', html)
+        self.assertIn("js/logs.js", html)
+
+    def test_logs_api_returns_filtered_live_payload(self):
+        with self.app.app_context():
+            self._seed_activity()
+
+        response = self.client.get("/api/logs?limit=20")
+        payload = response.get_json()
+        titles = [item["title"] for item in payload["items"]]
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("summary", payload)
+        self.assertIn("event_key", payload["items"][0])
+        self.assertNotIn("Command queued", titles)
+        self.assertIn("Command sent", titles)
+        self.assertIn("Device response", titles)
 
     def test_alerts_route_redirects_to_logs(self):
         response = self.client.get("/alerts")
@@ -445,7 +528,7 @@ class ActivityLogTests(unittest.TestCase):
             db.session.add_all(
                 [
                     ControlCommandEvent(
-                        command_event_id=3,
+                        command_event_id=10,
                         command_id=2,
                         event_type="queued",
                         event_payload={},

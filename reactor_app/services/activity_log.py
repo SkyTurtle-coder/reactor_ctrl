@@ -26,6 +26,7 @@ def activity_log_cutoff(days: int) -> datetime:
 
 @dataclass(frozen=True)
 class ActivityLogItem:
+    event_key: str
     timestamp: datetime
     severity: str
     category: str
@@ -48,6 +49,22 @@ def severity_badge_class(severity: str | None) -> str:
     if normalized == "info":
         return "badge-info"
     return "badge-muted"
+
+
+def activity_log_item_to_dict(item: ActivityLogItem) -> dict[str, Any]:
+    return {
+        "event_key": item.event_key,
+        "timestamp": item.timestamp.isoformat() if item.timestamp else None,
+        "severity": item.severity,
+        "severity_badge_class": severity_badge_class(item.severity),
+        "category": item.category,
+        "title": item.title,
+        "message": item.message,
+        "actor": item.actor,
+        "source": item.source,
+        "status": item.status,
+        "details": item.details,
+    }
 
 
 def _payload_text(payload: Any, key: str, default: str = "") -> str:
@@ -135,6 +152,28 @@ def _command_event_message(event: ControlCommandEvent) -> str:
     return f"{command_text}: {event.event_type}"
 
 
+def _is_read_command(command_text: str) -> bool:
+    return command_text.strip().upper().startswith("IN_")
+
+
+def _is_noisy_command_event(event: ControlCommandEvent) -> bool:
+    command = event.command
+    event_type = str(event.event_type or "").strip().lower()
+
+    if event_type == "queued":
+        return True
+    if event_type in {"failed", "timeout", "measurement_failed"}:
+        return False
+    if command is None:
+        return False
+
+    command_text = _command_text(command)
+    requested_by = str(command.requested_by or "").strip().lower()
+    if requested_by == "manual_reconciler" and _is_read_command(command_text):
+        return True
+    return False
+
+
 def _recipe_actor(event: RecipeProgramEvent) -> str:
     run = event.run
     if run is None:
@@ -205,9 +244,10 @@ def _manual_state_actor(state: DeviceManualState) -> str:
     return f"Device {state.device_id}"
 
 
-def load_activity_logs(*, days: int = 7, limit: int = 300) -> list[ActivityLogItem]:
+def load_activity_logs(*, days: int = 7, limit: int = 120) -> list[ActivityLogItem]:
     cutoff = activity_log_cutoff(days)
-    per_source_limit = max(limit, 50)
+    normalized_limit = max(1, int(limit))
+    per_source_limit = max(normalized_limit * 6, 200)
     items: list[ActivityLogItem] = []
 
     command_events = (
@@ -220,10 +260,14 @@ def load_activity_logs(*, days: int = 7, limit: int = 300) -> list[ActivityLogIt
         .all()
     )
     for event in command_events:
+        if _is_noisy_command_event(event):
+            continue
+
         command = event.command
         severity = _command_event_severity(event.event_type, command)
         items.append(
             ActivityLogItem(
+                event_key=f"command:{event.command_event_id}",
                 timestamp=event.created_at,
                 severity=severity,
                 category="Actor",
@@ -246,6 +290,7 @@ def load_activity_logs(*, days: int = 7, limit: int = 300) -> list[ActivityLogIt
     for event in recipe_events:
         items.append(
             ActivityLogItem(
+                event_key=f"recipe:{event.recipe_program_event_id}",
                 timestamp=event.created_at,
                 severity=_recipe_event_severity(event.event_type),
                 category="Recipe",
@@ -272,6 +317,7 @@ def load_activity_logs(*, days: int = 7, limit: int = 300) -> list[ActivityLogIt
         label = str(connection.connection_label or f"Port {connection.port_number}").strip()
         items.append(
             ActivityLogItem(
+                event_key=f"connection:{connection.connection_id}:{connection.updated_at.isoformat() if connection.updated_at else ''}",
                 timestamp=connection.updated_at,
                 severity="error",
                 category="Connection",
@@ -294,6 +340,7 @@ def load_activity_logs(*, days: int = 7, limit: int = 300) -> list[ActivityLogIt
     for state in manual_errors:
         items.append(
             ActivityLogItem(
+                event_key=f"manual:{state.device_id}:{state.updated_at.isoformat() if state.updated_at else ''}",
                 timestamp=state.updated_at,
                 severity="error",
                 category="Manual",
@@ -310,7 +357,7 @@ def load_activity_logs(*, days: int = 7, limit: int = 300) -> list[ActivityLogIt
         items,
         key=lambda item: item.timestamp or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
-    )[: max(1, int(limit))]
+    )[:normalized_limit]
 
 
 def summarize_activity_logs(items: list[ActivityLogItem]) -> dict[str, int]:

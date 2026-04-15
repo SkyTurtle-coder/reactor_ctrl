@@ -751,7 +751,7 @@ def logs_view() -> str:
     page_notice = None
     retention_days = max(1, int(current_app.config.get("ACTIVITY_LOG_RETENTION_DAYS", 7)))
     activity_logs, notice = _run_web_query(
-        lambda: load_activity_logs(days=retention_days, limit=300),
+        lambda: load_activity_logs(days=retention_days, limit=120),
         fallback=[],
         log_label="Logs activity query",
         notice="Logs could not be fully loaded. The page is available but no live data is shown.",

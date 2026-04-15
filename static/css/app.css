@@ -2365,8 +2365,34 @@ kbd {
     line-height: 1.45;
 }
 
+.logs-live-status {
+    align-self: flex-start;
+    border: 1px solid rgba(41, 93, 134, 0.24);
+    border-radius: 999px;
+    color: var(--info);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.35rem 0.72rem;
+    white-space: nowrap;
+}
+
+.logs-live-status.is-error {
+    border-color: rgba(154, 47, 36, 0.3);
+    color: var(--danger);
+}
+
+.logs-live-status.is-ok {
+    border-color: rgba(38, 104, 71, 0.28);
+    color: var(--success);
+}
+
 .log-row {
     border-left: 4px solid transparent;
+}
+
+.log-row.is-new {
+    animation: log-row-flash 1.8s ease-out;
 }
 
 .log-row-info {
@@ -2383,6 +2409,16 @@ kbd {
 
 .log-row-error {
     border-left-color: var(--danger);
+}
+
+@keyframes log-row-flash {
+    0% {
+        background: rgba(229, 208, 26, 0.22);
+    }
+
+    100% {
+        background: transparent;
+    }
 }
 
 .badge-row {
@@ -2477,6 +2513,10 @@ kbd {
 .empty-state {
     margin: 0;
     color: var(--muted);
+}
+
+.is-hidden {
+    display: none !important;
 }
 
 .error-text {
