@@ -30,8 +30,8 @@ class ThemeToggleTests(unittest.TestCase):
         app_config.Config.AUTO_CREATE_SCHEMA = cls._original_auto_create_schema
         app_config.Config.API_AUTH_REQUIRED = cls._original_api_auth_required
 
-    def test_theme_toggle_renders_on_shared_and_standalone_pages(self):
-        for route in ("/", "/reactor-control", "/infrared-camera", "/process"):
+    def test_theme_toggle_renders_on_app_pages(self):
+        for route in ("/process", "/recipes", "/logs", "/reactor-builder", "/data"):
             with self.subTest(route=route):
                 response = self.client.get(route)
                 self.assertEqual(response.status_code, 200)
@@ -39,6 +39,13 @@ class ThemeToggleTests(unittest.TestCase):
                 self.assertIn('data-theme-toggle', html)
                 self.assertIn("reactor_ctrl.theme.v1", html)
                 self.assertIn("js/theme.js", html)
+
+    def test_removed_landing_pages_redirect_to_process_view(self):
+        for route in ("/", "/reactor-control", "/reactor-control-system", "/infrared-camera"):
+            with self.subTest(route=route):
+                response = self.client.get(route)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/process", response.headers["Location"])
 
     def test_theme_assets_define_dark_mode_and_system_fallback(self):
         repo_root = Path(__file__).resolve().parents[1]

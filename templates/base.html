@@ -17,13 +17,12 @@
         <header class="site-header">
             <div class="container">
                 <div class="navbar">
-                    <a class="brand" href="{{ url_for('web.index') }}">
+                    <a class="brand" href="{{ url_for('web.process_view') }}">
                         <span class="brand-kicker">U1 Lab</span>
                         <strong>Reactor Control</strong>
                     </a>
                     <div class="navbar-actions">
                         <nav class="nav">
-                            <a class="nav-link" href="{{ url_for('web.software_portal') }}">Software Portal</a>
                             <a class="nav-link{% if active_page == 'process' %} active{% endif %}" href="{{ url_for('web.process_view') }}">View Process</a>
                             <a class="nav-link{% if active_page == 'recipes' %} active{% endif %}" href="{{ url_for('web.recipes_view') }}">Recipes</a>
                             <a class="nav-link{% if active_page == 'logs' %} active{% endif %}" href="{{ url_for('web.logs_view') }}">Logs</a>

@@ -407,99 +407,19 @@ def _append_notice(existing: str | None, addition: str | None) -> str | None:
 
 
 @web_bp.get("/")
-def software_portal() -> str:
-    software_tiles = [
-        {
-            "title": "Reactor Control System",
-            "href": url_for("web.index"),
-            "eyebrow": "Process Control",
-            "description": "Process control, monitoring, recipes, logs, and reactor builder.",
-            "stats": [
-                {"label": "Area", "value": "Reactor"},
-                {"label": "Mode", "value": "Control"},
-            ],
-            "cta": "Open software",
-        },
-        {
-            "title": "InfraredCamera",
-            "href": url_for("web.infrared_camera_home"),
-            "eyebrow": "Imaging",
-            "description": "Access the infrared camera software and thermal analysis.",
-            "stats": [
-                {"label": "Area", "value": "Camera"},
-                {"label": "Mode", "value": "Thermal"},
-            ],
-            "cta": "Open software",
-        },
-    ]
-    return render_template(
-        "software_portal.html",
-        active_page="software_portal",
-        software_tiles=software_tiles,
-    )
+def index():
+    return redirect(url_for("web.process_view"), code=302)
 
 
 @web_bp.get("/reactor-control-system")
 @web_bp.get("/reactor-control")
-def index() -> str:
-    summary = _control_summary()
-    feature_tiles = [
-        {
-            "title": "View Process",
-            "endpoint": "web.process_view",
-            "eyebrow": "Live",
-            "description": "Live process view with active reactors and current measurements.",
-            "stats": [
-                {"label": "Online", "value": summary["online_devices_total"]},
-                {"label": "Measurements", "value": summary["measurements_total"]},
-            ],
-        },
-        {
-            "title": "Recipes",
-            "endpoint": "web.recipes_view",
-            "eyebrow": "Process",
-            "description": "Manage and approve recipes for reproducible process execution.",
-            "stats": [
-                {"label": "Status", "value": "Library"},
-                {"label": "Scope", "value": "Batch"},
-            ],
-        },
-        {
-            "title": "Logs",
-            "endpoint": "web.logs_view",
-            "eyebrow": "Audit",
-            "description": "One-week activity log for commands, responses, recipes, and errors.",
-            "stats": [
-                {"label": "Errors", "value": summary["alerts_total"]},
-                {"label": "Retention", "value": "7 days"},
-            ],
-        },
-        {
-            "title": "Reactor Builder",
-            "endpoint": "web.reactor_builder_view",
-            "eyebrow": "Setup",
-            "description": "Configure reactors with actuators, sensors, ports, and communication mappings.",
-            "stats": [
-                {"label": "Reactors", "value": summary["reactors_total"]},
-                {"label": "Bindings", "value": summary["configured_bindings_total"]},
-            ],
-        },
-    ]
-    return render_template(
-        "index.html",
-        active_page="home",
-        summary=summary,
-        feature_tiles=feature_tiles,
-        **_base_context(),
-    )
+def legacy_reactor_control_home():
+    return redirect(url_for("web.process_view"), code=302)
 
 
 @web_bp.get("/infrared-camera")
-def infrared_camera_home() -> str:
-    return render_template(
-        "infrared_camera.html",
-        active_page="infrared_camera",
-    )
+def legacy_infrared_camera_home():
+    return redirect(url_for("web.process_view"), code=302)
 
 
 @web_bp.get("/process")
