@@ -2361,6 +2361,30 @@ kbd {
     text-transform: uppercase;
 }
 
+.log-table td {
+    line-height: 1.45;
+}
+
+.log-row {
+    border-left: 4px solid transparent;
+}
+
+.log-row-info {
+    border-left-color: var(--info);
+}
+
+.log-row-success {
+    border-left-color: var(--success);
+}
+
+.log-row-warning {
+    border-left-color: var(--warning);
+}
+
+.log-row-error {
+    border-left-color: var(--danger);
+}
+
 .badge-row {
     display: flex;
     flex-wrap: wrap;

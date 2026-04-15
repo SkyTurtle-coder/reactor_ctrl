@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, make_response, render_template, request, url_for
+from flask import Blueprint, current_app, jsonify, make_response, redirect, render_template, request, url_for
 from sqlalchemy import func, text
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -17,6 +17,7 @@ from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOP
 from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
 from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild, Recipe
+from .services.activity_log import load_activity_logs, severity_badge_class, summarize_activity_logs
 from .services.drivers import list_supported_protocol_options, list_supported_protocols, protocol_label
 
 
@@ -83,6 +84,7 @@ def inject_layout_helpers() -> dict[str, Any]:
         "format_datetime": _format_datetime,
         "status_badge_class": _status_badge_class,
         "bool_badge_class": _bool_badge_class,
+        "log_severity_badge_class": severity_badge_class,
         "format_protocol_label": protocol_label,
         "static_asset": static_asset,
     }
@@ -411,7 +413,7 @@ def software_portal() -> str:
             "title": "Reactor Control System",
             "href": url_for("web.index"),
             "eyebrow": "Process Control",
-            "description": "Process control, monitoring, recipes, alerts, and reactor builder.",
+            "description": "Process control, monitoring, recipes, logs, and reactor builder.",
             "stats": [
                 {"label": "Area", "value": "Reactor"},
                 {"label": "Mode", "value": "Control"},
@@ -463,13 +465,13 @@ def index() -> str:
             ],
         },
         {
-            "title": "Alerts",
-            "endpoint": "web.alerts_view",
-            "eyebrow": "Safety",
-            "description": "Active faults, communication errors, and command failures.",
+            "title": "Logs",
+            "endpoint": "web.logs_view",
+            "eyebrow": "Audit",
+            "description": "One-week activity log for commands, responses, recipes, and errors.",
             "stats": [
-                {"label": "Open", "value": summary["alerts_total"]},
-                {"label": "Focus", "value": "Live"},
+                {"label": "Errors", "value": summary["alerts_total"]},
+                {"label": "Retention", "value": "7 days"},
             ],
         },
         {
@@ -740,46 +742,31 @@ def recipes_view():
 
 
 @web_bp.get("/alerts")
-def alerts_view() -> str:
+def alerts_view():
+    return redirect(url_for("web.logs_view"), code=302)
+
+
+@web_bp.get("/logs")
+def logs_view() -> str:
     page_notice = None
-    command_alerts, notice = _run_web_query(
-        lambda: (
-            ControlCommand.query.options(joinedload(ControlCommand.device))
-            .filter(ControlCommand.status.in_(("failed", "timeout")))
-            .order_by(ControlCommand.requested_at.desc(), ControlCommand.command_id.desc())
-            .limit(20)
-            .all()
-        ),
+    retention_days = max(1, int(current_app.config.get("ACTIVITY_LOG_RETENTION_DAYS", 7)))
+    activity_logs, notice = _run_web_query(
+        lambda: load_activity_logs(days=retention_days, limit=300),
         fallback=[],
-        log_label="Alerts command query",
-        notice="Alerts could not be fully loaded. The page is available but no live data is shown.",
+        log_label="Logs activity query",
+        notice="Logs could not be fully loaded. The page is available but no live data is shown.",
     )
     if notice:
         page_notice = notice
 
-    connection_alerts, notice = _run_web_query(
-        lambda: (
-            DeviceConnection.query.options(
-                joinedload(DeviceConnection.device_server),
-                joinedload(DeviceConnection.current_binding).joinedload(DeviceBindingCurrent.device),
-            )
-            .filter(DeviceConnection.last_error.is_not(None))
-            .order_by(DeviceConnection.updated_at.desc(), DeviceConnection.connection_id.desc())
-            .limit(20)
-            .all()
-        ),
-        fallback=[],
-        log_label="Alerts connection query",
-        notice="Alerts could not be fully loaded. The page is available but no live data is shown.",
-    )
-    if notice:
-        page_notice = page_notice or notice
+    log_summary = summarize_activity_logs(activity_logs)
 
     return render_template(
-        "alerts.html",
-        active_page="alerts",
-        command_alerts=command_alerts,
-        connection_alerts=connection_alerts,
+        "logs.html",
+        active_page="logs",
+        activity_logs=activity_logs,
+        log_summary=log_summary,
+        retention_days=retention_days,
         page_notice=page_notice,
         page_notice_tone="error" if page_notice else None,
         summary=_control_summary(),

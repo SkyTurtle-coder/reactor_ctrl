@@ -42,14 +42,34 @@ _LEGACY_BINDING_TABLES = (
 
 _MEASUREMENT_INDEX_SPECS = (
     (
+        "measurement",
         "ix_measurement_device_channel_measured_at",
         "CREATE INDEX ix_measurement_device_channel_measured_at "
         "ON measurement (device_id, channel_code, measured_at)",
     ),
     (
+        "measurement",
         "ix_measurement_device_measured_at",
         "CREATE INDEX ix_measurement_device_measured_at "
         "ON measurement (device_id, measured_at)",
+    ),
+)
+
+_ACTIVITY_LOG_INDEX_SPECS = (
+    (
+        "control_command",
+        "ix_control_command_requested_at",
+        "CREATE INDEX ix_control_command_requested_at ON control_command (requested_at)",
+    ),
+    (
+        "control_command_event",
+        "ix_control_command_event_created_at",
+        "CREATE INDEX ix_control_command_event_created_at ON control_command_event (created_at)",
+    ),
+    (
+        "recipe_program_run",
+        "ix_recipe_program_run_finished_started",
+        "CREATE INDEX ix_recipe_program_run_finished_started ON recipe_program_run (finished_at, started_at)",
     ),
 )
 
@@ -113,14 +133,19 @@ def _archive_legacy_binding_tables(app: Flask) -> None:
             )
 
 
-def _ensure_measurement_indexes(app: Flask) -> None:
+def _ensure_named_indexes(app: Flask, specs: tuple[tuple[str, str, str], ...], *, label: str) -> None:
     inspector = inspect(db.engine)
-    if "measurement" not in inspector.get_table_names():
-        return
-
-    existing_indexes = {index["name"] for index in inspector.get_indexes("measurement")}
+    existing_tables = set(inspector.get_table_names())
+    indexes_by_table: dict[str, set[str]] = {}
     created_indexes: list[str] = []
-    for index_name, create_sql in _MEASUREMENT_INDEX_SPECS:
+
+    for table_name, index_name, create_sql in specs:
+        if table_name not in existing_tables:
+            continue
+        existing_indexes = indexes_by_table.get(table_name)
+        if existing_indexes is None:
+            existing_indexes = {index["name"] for index in inspector.get_indexes(table_name)}
+            indexes_by_table[table_name] = existing_indexes
         if index_name in existing_indexes:
             continue
         try:
@@ -138,7 +163,15 @@ def _ensure_measurement_indexes(app: Flask) -> None:
             raise
 
     if created_indexes:
-        app.logger.info("Created measurement index(es): %s", ", ".join(created_indexes))
+        app.logger.info("Created %s index(es): %s", label, ", ".join(created_indexes))
+
+
+def _ensure_measurement_indexes(app: Flask) -> None:
+    _ensure_named_indexes(app, _MEASUREMENT_INDEX_SPECS, label="measurement")
+
+
+def _ensure_activity_log_indexes(app: Flask) -> None:
+    _ensure_named_indexes(app, _ACTIVITY_LOG_INDEX_SPECS, label="activity log")
 
 
 def _initialize_database_schema(app: Flask) -> None:
@@ -150,6 +183,7 @@ def _initialize_database_schema(app: Flask) -> None:
         _archive_legacy_binding_tables(app)
         db.create_all()
         _ensure_measurement_indexes(app)
+        _ensure_activity_log_indexes(app)
         db.session.execute(text(_LATEST_MEASUREMENT_VIEW_SQL))
         db.session.commit()
     except Exception:
