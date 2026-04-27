@@ -1,17 +1,12 @@
 from __future__ import annotations
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverNotFoundError, DriverValidationError
-from .generic_text import GenericTextDriver
 from .ika_eurostar import IkaEurostarDriver
 
 
-_DRIVER_TYPES = (GenericTextDriver, IkaEurostarDriver)
+_DRIVER_TYPES = (IkaEurostarDriver,)
 _PROTOCOL_LABELS = {
-    "ascii_text": "ASCII Text",
-    "generic_text": "Generic Text",
     "ika_eurostar_60": "IKA 60",
-    "line_text": "Line Text",
-    "rs232_text": "RS-232 Text",
 }
 
 
@@ -49,7 +44,6 @@ __all__ = [
     "DriverError",
     "DriverNotFoundError",
     "DriverValidationError",
-    "GenericTextDriver",
     "IkaEurostarDriver",
     "get_driver",
     "list_supported_protocol_options",
