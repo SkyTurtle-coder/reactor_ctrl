@@ -16,7 +16,7 @@ from .device_runtime import DeviceCommandError, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
-_DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for new active IKA devices
+_DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for newly active supported devices
 
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle. channel_code values are part of the
@@ -25,6 +25,11 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_rpm", "channel_code": "ika_setpoint_rpm", "display_name": "Setpoint RPM", "unit": "rpm"},
     {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
+)
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
+_HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
+    {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
+    {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Actual Temperature", "unit": "degC"},
 )
 _IKA_TELEMETRY_MEASUREMENT_SOURCE = "poller"
 
@@ -134,7 +139,16 @@ def _parse_ika_numeric_response(text: str | None) -> float | None:
 
 
 def _supports_manual_runtime(device: Device | None) -> bool:
+    protocol = str(getattr(device, "protocol", "") or "").strip().lower()
+    return protocol == "ika_eurostar_60" or protocol in _HUBER_PROTOCOLS
+
+
+def _is_ika_device(device: Device | None) -> bool:
     return str(getattr(device, "protocol", "") or "").strip().lower() == "ika_eurostar_60"
+
+
+def _is_huber_device(device: Device | None) -> bool:
+    return str(getattr(device, "protocol", "") or "").strip().lower() in _HUBER_PROTOCOLS
 
 
 def _load_ika_measurement_channels(device_id: int) -> dict[str, MeasurementChannel]:
@@ -150,11 +164,24 @@ def _load_ika_measurement_channels(device_id: int) -> dict[str, MeasurementChann
     }
 
 
-def _ensure_ika_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
-    existing_channels = _load_ika_measurement_channels(device.device_id)
+def _load_measurement_channels(device_id: int, specs: tuple[dict, ...]) -> dict[str, MeasurementChannel]:
+    channel_codes = [spec["channel_code"] for spec in specs]
+    return {
+        channel.channel_code: channel
+        for channel in db.session.query(MeasurementChannel)
+        .filter(
+            MeasurementChannel.device_id == device_id,
+            MeasurementChannel.channel_code.in_(channel_codes),
+        )
+        .all()
+    }
+
+
+def _ensure_measurement_channels(device: Device, specs: tuple[dict, ...]) -> dict[str, MeasurementChannel]:
+    existing_channels = _load_measurement_channels(device.device_id, specs)
     needs_flush = False
 
-    for spec in _IKA_TELEMETRY_CHANNELS:
+    for spec in specs:
         channel = existing_channels.get(spec["channel_code"])
         if channel is None:
             channel = MeasurementChannel(
@@ -187,6 +214,14 @@ def _ensure_ika_measurement_channels(device: Device) -> dict[str, MeasurementCha
         db.session.flush()
 
     return existing_channels
+
+
+def _ensure_ika_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
+    return _ensure_measurement_channels(device, _IKA_TELEMETRY_CHANNELS)
+
+
+def _ensure_huber_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
+    return _ensure_measurement_channels(device, _HUBER_TELEMETRY_CHANNELS)
 
 
 def _ensure_manual_state(device: Device) -> DeviceManualState:
@@ -332,6 +367,23 @@ def _run_logged_manual_command(device: Device, command_text: str) -> str | None:
     return execution.result.response_text
 
 
+def _run_logged_driver_command(device: Device, command_name: str, payload: dict[str, Any] | None = None) -> Any:
+    try:
+        execution = execute_device_command(
+            device,
+            command_name=command_name,
+            payload=payload or {},
+            requested_by="manual_reconciler",
+        )
+    except DeviceCommandError as exc:
+        if exc.command is not None:
+            db.session.commit()
+        raise
+
+    db.session.commit()
+    return execution.result.metadata.get("value")
+
+
 def _read_ika_status(device: Device) -> dict[str, float | None]:
     setpoint_response = _run_logged_manual_command(device, "IN_SP_4")
     actual_response = _run_logged_manual_command(device, "IN_PV_4")
@@ -361,6 +413,19 @@ def _read_ika_status(device: Device) -> dict[str, float | None]:
     }
 
 
+def _read_huber_status(device: Device) -> dict[str, float | None]:
+    setpoint = _run_logged_driver_command(device, "get_setpoint")
+    actual = _run_logged_driver_command(device, "get_internal_temp")
+    setpoint_c = None if setpoint is None else float(setpoint)
+    actual_temp_c = None if actual is None else float(actual)
+    if setpoint_c is None and actual_temp_c is None:
+        raise RuntimeError("Huber returned no valid data for setpoint or actual temperature.")
+    return {
+        "setpoint_C": setpoint_c,
+        "actual_temp_C": actual_temp_c,
+    }
+
+
 def _refresh_state_from_telemetry(state: DeviceManualState, telemetry: dict[str, float | None]) -> None:
     now = _now_utc()
     setpoint = telemetry.get("setpoint_rpm")
@@ -377,25 +442,31 @@ def _refresh_state_from_telemetry(state: DeviceManualState, telemetry: dict[str,
         state.desired_speed = state.reported_setpoint_rpm or 0
 
 
-def _persist_ika_telemetry_as_measurements(
+def _refresh_state_from_huber_telemetry(state: DeviceManualState) -> None:
+    state.last_reported_at = _now_utc()
+    if state.desired_version == 0:
+        state.applied_version = 0
+
+
+def _persist_telemetry_as_measurements(
     device: Device,
     telemetry: dict[str, float | None],
     measured_at: datetime,
+    *,
+    specs: tuple[dict, ...],
+    channels: dict[str, MeasurementChannel],
 ) -> None:
-    """Write IKA telemetry values to the measurement table.
+    """Write telemetry values to the measurement table.
 
     Called after every successful telemetry poll so that the complete
-    history of actual and setpoint RPM plus torque is stored and
-    available for the process-view plot and the Data export.
+    history is available for the process-view plot and the Data export.
     """
-    existing_channels = _ensure_ika_measurement_channels(device)
-
-    for spec in _IKA_TELEMETRY_CHANNELS:
+    for spec in specs:
         value = telemetry.get(spec["key"])
         if value is None:
             continue
 
-        channel = existing_channels.get(spec["channel_code"])
+        channel = channels.get(spec["channel_code"])
         if channel is None:
             continue
 
@@ -411,6 +482,36 @@ def _persist_ika_telemetry_as_measurements(
         ))
 
     db.session.flush()
+
+
+def _persist_ika_telemetry_as_measurements(
+    device: Device,
+    telemetry: dict[str, float | None],
+    measured_at: datetime,
+) -> None:
+    channels = _ensure_ika_measurement_channels(device)
+    _persist_telemetry_as_measurements(
+        device,
+        telemetry,
+        measured_at,
+        specs=_IKA_TELEMETRY_CHANNELS,
+        channels=channels,
+    )
+
+
+def _persist_huber_telemetry_as_measurements(
+    device: Device,
+    telemetry: dict[str, float | None],
+    measured_at: datetime,
+) -> None:
+    channels = _ensure_huber_measurement_channels(device)
+    _persist_telemetry_as_measurements(
+        device,
+        telemetry,
+        measured_at,
+        specs=_HUBER_TELEMETRY_CHANNELS,
+        channels=channels,
+    )
 
 
 def _persist_ika_telemetry_as_measurements_best_effort(
@@ -432,6 +533,27 @@ def _persist_ika_telemetry_as_measurements_best_effort(
     except Exception:
         app.logger.warning(
             "Measurement persistence failed for device %s; keeping live manual-state update and retrying history on the next poll.",
+            device.device_id,
+            exc_info=True,
+        )
+
+
+def _persist_huber_telemetry_as_measurements_best_effort(
+    app: Flask,
+    device: Device,
+    telemetry: dict[str, float | None],
+    measured_at: datetime,
+) -> None:
+    session = db.session
+    if not all(hasattr(session, attr) for attr in ("query", "add", "flush")):
+        return
+
+    try:
+        with session.begin_nested():
+            _persist_huber_telemetry_as_measurements(device, telemetry, measured_at)
+    except Exception:
+        app.logger.warning(
+            "Measurement persistence failed for Huber device %s; keeping live state update and retrying history on the next poll.",
             device.device_id,
             exc_info=True,
         )
@@ -478,8 +600,8 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
     time.sleep(0.5)
 
 
-def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
-    """Create DeviceManualState rows for active IKA devices that have no state row yet.
+def _ensure_manual_states_for_active_devices(app: Flask) -> None:
+    """Create DeviceManualState rows for active supported devices that have no state row yet.
 
     This seeds background telemetry polling for devices that have never been
     accessed through the Process UI, so measurements are stored continuously
@@ -491,7 +613,7 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
     """
     active_devices = (
         db.session.query(Device)
-        .filter(Device.protocol == "ika_eurostar_60", Device.is_active.is_(True))
+        .filter(Device.protocol.in_(("ika_eurostar_60", *_HUBER_PROTOCOLS)), Device.is_active.is_(True))
         .all()
     )
     seeded_states = 0
@@ -510,9 +632,15 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
                     )
                 )
                 added_state = True
-            existing_channels = _load_ika_measurement_channels(device.device_id)
-            _ensure_ika_measurement_channels(device)
-            added_channels = max(0, len(_IKA_TELEMETRY_CHANNELS) - len(existing_channels))
+            if _is_huber_device(device):
+                specs = _HUBER_TELEMETRY_CHANNELS
+                ensure_channels = _ensure_huber_measurement_channels
+            else:
+                specs = _IKA_TELEMETRY_CHANNELS
+                ensure_channels = _ensure_ika_measurement_channels
+            existing_channels = _load_measurement_channels(device.device_id, specs)
+            ensure_channels(device)
+            added_channels = max(0, len(specs) - len(existing_channels))
             db.session.commit()  # Commit individually to survive multi-worker races
             if added_state:
                 seeded_states += 1
@@ -529,10 +657,14 @@ def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
             )
     if seeded_states or seeded_channels:
         app.logger.info(
-            "Measurement poller: seeded %d manual-state row(s) and %d measurement channel(s) for active IKA device(s).",
+            "Measurement poller: seeded %d manual-state row(s) and %d measurement channel(s) for active supported device(s).",
             seeded_states,
             seeded_channels,
         )
+
+
+def _ensure_manual_states_for_active_ika_devices(app: Flask) -> None:
+    _ensure_manual_states_for_active_devices(app)
 
 
 def _release_manual_state_lease(state: DeviceManualState, *, status: str) -> None:
@@ -574,6 +706,26 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
 
     processed_version = int(state.desired_version or 0)
     try:
+        if _is_huber_device(device):
+            if desired_pending:
+                raise RuntimeError("Queued manual-state writes are not supported for Huber devices.")
+            telemetry = _read_huber_status(device)
+            state = db.session.get(DeviceManualState, device_id)
+            if state is None:
+                db.session.rollback()
+                return
+
+            _refresh_state_from_huber_telemetry(state)
+            _persist_huber_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
+            state.last_error = None
+            if watch_active:
+                state.next_poll_at = _now_utc() + _manual_poll_interval(app)
+            else:
+                state.next_poll_at = _now_utc() + bg_interval
+            _release_manual_state_lease(state, status="idle")
+            db.session.commit()
+            return
+
         if desired_pending:
             _apply_desired_ika_state(device, state)
 
@@ -708,7 +860,7 @@ def _reconciler_loop(app: Flask, worker_id: str) -> None:
                 now_ts = time.monotonic()
                 if now_ts - last_discovery_at >= _DEVICE_DISCOVERY_INTERVAL_SECONDS:
                     try:
-                        _ensure_manual_states_for_active_ika_devices(app)
+                        _ensure_manual_states_for_active_devices(app)
                     except Exception:
                         app.logger.exception("Device discovery failed; will retry on next cycle.")
                     finally:

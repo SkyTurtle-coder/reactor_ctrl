@@ -288,6 +288,35 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 ["ika_actual_rpm", "ika_setpoint_rpm", "ika_torque_ncm"],
             )
 
+    def test_active_huber_discovery_seeds_manual_state_and_measurement_channels(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="HUBER-DISCOVERY-001",
+                manufacturer_serial="SN-HUBER-001",
+                display_name="Huber Discovery Test",
+                device_type="thermostat",
+                protocol="huber_unistat_430",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.commit()
+
+            device_manual_runtime._ensure_manual_states_for_active_devices(self.app)
+
+            state = db.session.get(DeviceManualState, device.device_id)
+            channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == device.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+
+            self.assertIsNotNone(state)
+            self.assertEqual(
+                [channel.channel_code for channel in channels],
+                ["actual_temp_C", "setpoint_C"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

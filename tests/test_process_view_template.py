@@ -207,6 +207,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("def _default_measurement_plot_channels_for_target", source)
         self.assertIn('"channel_code": "ika_actual_rpm"', source)
         self.assertIn('"channel_code": "ika_torque_ncm"', source)
+        self.assertIn('"channel_code": "setpoint_C"', source)
+        self.assertIn('"channel_code": "actual_temp_C"', source)
         self.assertIn('"data_source": "measurement"', source)
 
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):

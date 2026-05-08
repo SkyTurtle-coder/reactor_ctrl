@@ -159,6 +159,25 @@ def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: s
                 "data_source": "measurement",
             },
         ]
+    if normalized_symbol_id == "hc_system" and normalized_protocol in {"huber_unistat_430", "huber_pilot_one"}:
+        return [
+            {
+                "channel_id": None,
+                "channel_code": "setpoint_C",
+                "display_name": "Setpoint",
+                "unit": "degC",
+                "value_type": "float",
+                "data_source": "measurement",
+            },
+            {
+                "channel_id": None,
+                "channel_code": "actual_temp_C",
+                "display_name": "Actual Temperature",
+                "unit": "degC",
+                "value_type": "float",
+                "data_source": "measurement",
+            },
+        ]
     return []
 
 
