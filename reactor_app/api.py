@@ -55,7 +55,16 @@ _MAX_REACTOR_BUILD_ANCHORS_PER_NODE = 64
 _MAX_REACTOR_BUILD_ROUTE_POINTS = 64
 _INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _REQUESTED_BY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,100}$")
-_PROCESS_MANUAL_ALLOWED_COMMANDS = {"manual_text"}
+_PROCESS_MANUAL_ALLOWED_COMMANDS = {
+    "manual_text",
+    "get_setpoint",
+    "set_setpoint",
+    "get_internal_temp",
+    "get_process_temp",
+    "get_status",
+    "start",
+    "stop",
+}
 _PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS = {
     "text",
     "command_text",
@@ -65,6 +74,16 @@ _PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS = {
     "expect_response",
     "strip_response",
     "max_response_bytes",
+    "response_timeout_ms",
+    "write_timeout_ms",
+    "connect_timeout_ms",
+    "recv_size",
+}
+_PROCESS_MANUAL_ALLOWED_DRIVER_PAYLOAD_FIELDS = {
+    "temp_c",
+    "temperature_c",
+    "min_setpoint_c",
+    "max_setpoint_c",
     "response_timeout_ms",
     "write_timeout_ms",
     "connect_timeout_ms",
@@ -339,6 +358,33 @@ def _validate_process_manual_command_payload(command_name: str, payload: dict[st
     if normalized_command not in _PROCESS_MANUAL_ALLOWED_COMMANDS:
         allowed = ", ".join(sorted(_PROCESS_MANUAL_ALLOWED_COMMANDS))
         raise ValueError(f"Process manual control may only execute these command names: {allowed}.")
+
+    if normalized_command != "manual_text":
+        unexpected_fields = sorted(set(payload) - _PROCESS_MANUAL_ALLOWED_DRIVER_PAYLOAD_FIELDS)
+        if unexpected_fields:
+            field_list = ", ".join(unexpected_fields)
+            raise ValueError(f"Process manual payload contains unsupported fields: {field_list}.")
+
+        sanitized = dict(payload)
+        for field_name in ("temp_c", "temperature_c", "min_setpoint_c", "max_setpoint_c"):
+            if field_name in sanitized:
+                sanitized[field_name] = _parse_float(sanitized[field_name], field_name=f"payload.{field_name}")
+
+        bounded_int_fields = {
+            "response_timeout_ms": (100, 60000),
+            "write_timeout_ms": (100, 60000),
+            "connect_timeout_ms": (100, 60000),
+            "recv_size": (1, 65536),
+        }
+        for field_name, bounds in bounded_int_fields.items():
+            if field_name in sanitized:
+                sanitized[field_name] = _parse_int(
+                    sanitized[field_name],
+                    field_name=f"payload.{field_name}",
+                    min_value=bounds[0],
+                    max_value=bounds[1],
+                )
+        return sanitized
 
     unexpected_fields = sorted(set(payload) - _PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS)
     if unexpected_fields:

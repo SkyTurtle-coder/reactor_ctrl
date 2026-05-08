@@ -226,12 +226,12 @@
         <section class="process-manual-controls" id="process-manual-controls">
             <div class="process-manual-controls-header">
                 <span class="section-label">Device Settings</span>
-                <h3>IKA Stirrer</h3>
+                <h3 id="process-manual-device-heading">IKA Stirrer</h3>
             </div>
 
             <form class="process-manual-settings-form" id="process-manual-settings-form">
                 <label class="process-select-field process-manual-state-field">
-                    <span>State</span>
+                    <span id="process-manual-state-label">State</span>
                     <select id="process-manual-state-input">
                         <option value="off">Off</option>
                         <option value="on">On</option>
@@ -239,7 +239,7 @@
                 </label>
 
                 <label class="process-select-field process-manual-speed-field">
-                    <span>RPM</span>
+                    <span id="process-manual-value-label">RPM</span>
                     <input
                         id="process-manual-speed-input"
                         type="number"
@@ -254,11 +254,11 @@
 
             <dl class="process-manual-live-metrics" id="process-manual-live-metrics">
                 <div>
-                    <dt>Actual RPM</dt>
+                    <dt id="process-manual-primary-metric-label">Actual RPM</dt>
                     <dd id="process-manual-actual-rpm">-</dd>
                 </div>
                 <div>
-                    <dt>Torque (Ncm)</dt>
+                    <dt id="process-manual-secondary-metric-label">Torque (Ncm)</dt>
                     <dd id="process-manual-torque-ncm">-</dd>
                 </div>
             </dl>

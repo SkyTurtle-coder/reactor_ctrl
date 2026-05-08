@@ -37,9 +37,14 @@
     const manualTargetSubtitle = document.getElementById("process-manual-target-subtitle");
     const manualControls = document.getElementById("process-manual-controls");
     const manualSettingsForm = document.getElementById("process-manual-settings-form");
+    const manualDeviceHeading = document.getElementById("process-manual-device-heading");
+    const manualStateLabel = document.getElementById("process-manual-state-label");
+    const manualValueLabel = document.getElementById("process-manual-value-label");
     const manualStateInput = document.getElementById("process-manual-state-input");
     const manualSpeedInput = document.getElementById("process-manual-speed-input");
     const manualSubmitButton = document.getElementById("process-manual-submit-button");
+    const manualPrimaryMetricLabel = document.getElementById("process-manual-primary-metric-label");
+    const manualSecondaryMetricLabel = document.getElementById("process-manual-secondary-metric-label");
     const manualActualRpm = document.getElementById("process-manual-actual-rpm");
     const manualTorqueNcm = document.getElementById("process-manual-torque-ncm");
     const manualPort = document.getElementById("process-manual-port");
@@ -130,6 +135,23 @@
             nextValue = Math.min(nextValue, maxValue);
         }
         return nextValue;
+    }
+
+    function boundedNumberInputValue(inputElement, fallback) {
+        const element = inputElement;
+        if (!element) {
+            return fallback;
+        }
+        const minValue = Number(element.min);
+        const maxValue = Number(element.max);
+        let nextValue = asNumber(element.value, fallback);
+        if (Number.isFinite(minValue)) {
+            nextValue = Math.max(nextValue, minValue);
+        }
+        if (Number.isFinite(maxValue)) {
+            nextValue = Math.min(nextValue, maxValue);
+        }
+        return Math.round(nextValue * 100) / 100;
     }
 
     function formatRoundedMetric(value, unit, digits) {
@@ -1998,6 +2020,16 @@
             return "";
         }
 
+        if (telemetry.kind === "huber") {
+            const setpoint = telemetry.setpointC == null ? null : Number(telemetry.setpointC);
+            const isOn = telemetry.isOn == null ? null : Boolean(telemetry.isOn);
+            const stateText = isOn == null ? "" : isOn ? "ON" : "OFF";
+            if (setpoint != null && Number.isFinite(setpoint)) {
+                return stateText ? `${stateText} | setpoint ${setpoint.toFixed(2)} °C` : `setpoint ${setpoint.toFixed(2)} °C`;
+            }
+            return stateText;
+        }
+
         const actualRpm = telemetry.actualRpm == null ? null : Math.max(0, Math.round(telemetry.actualRpm));
         const setpointRpm = telemetry.setpointRpm == null ? null : Math.max(0, Math.round(telemetry.setpointRpm));
         if (actualRpm != null && actualRpm > 0) {
@@ -2107,6 +2139,16 @@
         return protocol === "ika_eurostar_60" && symbolId === "motor";
     }
 
+    function isHuberThermostatTarget(node, target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
+        return (protocol === "huber_unistat_430" || protocol === "huber_pilot_one") && symbolId === "hc_system";
+    }
+
+    function isSupportedManualTarget(node, target) {
+        return isIkaMotorTarget(node, target) || isHuberThermostatTarget(node, target);
+    }
+
     function syncManualControlsEnabled(enabled) {
         const allow = enabled && !state.isSending;
         if (manualStateInput) {
@@ -2144,12 +2186,67 @@
 
     function renderOperatorControls(node, target, options) {
         const opts = options || {};
-        const enabled = isIkaMotorTarget(node, target);
+        const enabled = isSupportedManualTarget(node, target);
         manualControls?.classList.toggle("is-hidden", !enabled);
         if (!enabled) {
             return;
         }
 
+        if (isHuberThermostatTarget(node, target)) {
+            if (manualDeviceHeading) {
+                manualDeviceHeading.textContent = "Thermostat";
+            }
+            if (manualStateLabel) {
+                manualStateLabel.textContent = "Status";
+            }
+            if (manualValueLabel) {
+                manualValueLabel.textContent = "Setpoint °C";
+            }
+            if (manualPrimaryMetricLabel) {
+                manualPrimaryMetricLabel.textContent = "Setpoint";
+            }
+            if (manualSecondaryMetricLabel) {
+                manualSecondaryMetricLabel.textContent = "Status";
+            }
+            if (manualSpeedInput) {
+                manualSpeedInput.min = "-40";
+                manualSpeedInput.max = "150";
+                manualSpeedInput.step = "0.5";
+                manualSpeedInput.inputMode = "decimal";
+            }
+            if (!opts.preserveInputs) {
+                const targetTemp = asNumber(node?.control?.config?.target_temp, 25);
+                if (manualSpeedInput) {
+                    manualSpeedInput.value = String(targetTemp);
+                }
+                if (manualStateInput) {
+                    manualStateInput.value = Boolean(node?.control?.config?.is_on) ? "on" : "off";
+                }
+            }
+            return;
+        }
+
+        if (manualDeviceHeading) {
+            manualDeviceHeading.textContent = "IKA Stirrer";
+        }
+        if (manualStateLabel) {
+            manualStateLabel.textContent = "State";
+        }
+        if (manualValueLabel) {
+            manualValueLabel.textContent = "RPM";
+        }
+        if (manualPrimaryMetricLabel) {
+            manualPrimaryMetricLabel.textContent = "Actual RPM";
+        }
+        if (manualSecondaryMetricLabel) {
+            manualSecondaryMetricLabel.textContent = "Torque (Ncm)";
+        }
+        if (manualSpeedInput) {
+            manualSpeedInput.min = "0";
+            manualSpeedInput.max = "2000";
+            manualSpeedInput.step = "10";
+            manualSpeedInput.inputMode = "numeric";
+        }
         if (!opts.preserveInputs) {
             const speed = Math.max(0, Math.round(asNumber(node?.control?.config?.speed, 0)));
             if (manualSpeedInput) {
@@ -2180,6 +2277,18 @@
     }
 
     function updateManualLiveMetrics(telemetry) {
+        if (telemetry?.kind === "huber") {
+            if (manualActualRpm) {
+                manualActualRpm.textContent = telemetry.setpointC == null
+                    ? "-"
+                    : formatRoundedMetric(Number(telemetry.setpointC), "°C", 2);
+            }
+            if (manualTorqueNcm) {
+                manualTorqueNcm.textContent = telemetry.isOn == null ? "-" : telemetry.isOn ? "ON" : "OFF";
+            }
+            return;
+        }
+
         if (manualActualRpm) {
             manualActualRpm.textContent = telemetry?.actualRpm == null
                 ? "-"
@@ -2190,6 +2299,29 @@
                 ? "-"
                 : formatRoundedMetric(telemetry.torqueNcm, "Ncm", 2);
         }
+    }
+
+    function manualCommandHeaders() {
+        const headers = { "Content-Type": "application/json" };
+        if (metaData.manualWriteToken) {
+            headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
+        }
+        return headers;
+    }
+
+    async function executeDeviceCommand(target, commandName, payload, options) {
+        const settings = options || {};
+        const response = await fetchJson(`/api/devices/${target.device_id}/commands`, {
+            method: "POST",
+            headers: manualCommandHeaders(),
+            timeoutMs: settings.timeoutMs || 12000,
+            body: JSON.stringify({
+                requested_by: "process_manual",
+                command_name: commandName,
+                payload: payload || {},
+            }),
+        });
+        return response?.result?.metadata?.value;
     }
 
     function canLoadIkaSettings(node, target) {
@@ -2211,6 +2343,63 @@
             isOn: desired.is_on == null ? null : coerceBoolean(desired.is_on, false),
             speed: desired.speed == null ? null : Math.max(0, Math.round(optionalNumber(desired.speed) ?? 0)),
         };
+    }
+
+    async function loadHuberStateSnapshot(nodeId, options) {
+        const settings = options || {};
+        const node = getNodeById(nodeId);
+        const target = manualTargets[nodeId] || null;
+        if (!node || !target || !target.is_resolved || !target.device_id || !isHuberThermostatTarget(node, target)) {
+            return;
+        }
+
+        const requestId = state.manualRequestId + 1;
+        state.manualRequestId = requestId;
+        state.isManualBusy = true;
+        if (!settings.quiet) {
+            setManualStatus("Loading current thermostat state...", "muted");
+        }
+
+        try {
+            const [setpointValue, statusValue] = await Promise.all([
+                executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 }),
+                executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 }),
+            ]);
+            if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+                return;
+            }
+
+            const setpointC = optionalNumber(setpointValue);
+            const isOn = statusValue && typeof statusValue === "object"
+                ? Boolean(statusValue.temperature_control_active)
+                : null;
+            node.control = {
+                profile_id: node.control?.profile_id || "hc_system_temperature",
+                config: {
+                    ...(node.control?.config || {}),
+                    target_temp: setpointC ?? asNumber(node.control?.config?.target_temp, 25),
+                    is_on: isOn == null ? Boolean(node.control?.config?.is_on) : isOn,
+                },
+            };
+
+            const telemetry = { kind: "huber", setpointC, isOn };
+            updateManualLiveMetrics(telemetry);
+            updateManualDeviceStatus(target, telemetry);
+            renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
+            syncManualControlsEnabled(Boolean(target?.device_id) && isHuberThermostatTarget(node, target));
+            if (!settings.skipStatus) {
+                setManualStatus("Thermostat state loaded.", settings.quiet ? "muted" : "success");
+            }
+        } catch (error) {
+            if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+                return;
+            }
+            setManualStatus(error?.message || "Current thermostat state could not be loaded.", "error");
+        } finally {
+            if (requestId === state.manualRequestId && state.selectedNodeId === nodeId) {
+                state.isManualBusy = false;
+            }
+        }
     }
 
     function applyManualStateSnapshot(nodeId, target, snapshot, options) {
@@ -2255,6 +2444,10 @@
         const settings = options || {};
         const node = getNodeById(nodeId);
         const target = manualTargets[nodeId] || null;
+        if (isHuberThermostatTarget(node, target)) {
+            await loadHuberStateSnapshot(nodeId, settings);
+            return;
+        }
         if (!canLoadIkaSettings(node, target)) {
             return;
         }
@@ -2361,9 +2554,13 @@
         }
 
         renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(node.id) });
-        syncManualControlsEnabled(Boolean(target.device_id) && isIkaMotorTarget(node, target));
+        syncManualControlsEnabled(Boolean(target.device_id) && isSupportedManualTarget(node, target));
         if (isIkaMotorTarget(node, target)) {
             setManualStatus("Set On/Off and RPM, then submit the change.", "muted");
+            return;
+        }
+        if (isHuberThermostatTarget(node, target)) {
+            setManualStatus("Set Status and Setpoint °C, then submit the change.", "muted");
             return;
         }
         setManualStatus("A simplified operator panel is not available for this actuator yet.", "muted");
@@ -2561,13 +2758,61 @@
         event.preventDefault();
         const node = getNodeById(state.selectedNodeId);
         const target = selectedTarget();
-        const speed = boundedIntegerInputValue(manualSpeedInput, 0);
         const nextState = asString(manualStateInput?.value, "off").toLowerCase() === "on";
 
-        if (!node || !target || !isIkaMotorTarget(node, target)) {
-            setManualStatus("Select a mapped IKA stirrer first.", "error");
+        if (!node || !target || !isSupportedManualTarget(node, target)) {
+            setManualStatus("Select a mapped actuator first.", "error");
             return;
         }
+
+        if (isHuberThermostatTarget(node, target)) {
+            const setpointC = boundedNumberInputValue(manualSpeedInput, 25);
+            if (manualSpeedInput) {
+                manualSpeedInput.value = String(setpointC);
+            }
+            if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
+                setManualStatus("No valid manual-control token is available for this page.", "error");
+                return;
+            }
+
+            state.manualRequestId += 1;
+            state.isManualBusy = false;
+            state.isSending = true;
+            syncManualControlsEnabled(true);
+            setManualStatus("Submitting thermostat settings...", "muted");
+
+            void (async () => {
+                await executeDeviceCommand(target, "set_setpoint", { temp_c: setpointC }, { timeoutMs: 12000 });
+                await executeDeviceCommand(target, nextState ? "start" : "stop", {}, { timeoutMs: 12000 });
+                node.control = {
+                    profile_id: node.control?.profile_id || "hc_system_temperature",
+                    config: {
+                        ...(node.control?.config || {}),
+                        target_temp: setpointC,
+                        is_on: nextState,
+                    },
+                };
+                clearManualInputsDirty(node.id);
+                updateManualLiveMetrics({ kind: "huber", setpointC, isOn: nextState });
+                updateManualDeviceStatus(target, { kind: "huber", setpointC, isOn: nextState });
+                setManualStatus(`Thermostat ${nextState ? "started" : "stopped"} at ${setpointC.toFixed(2)} °C setpoint.`, "success");
+                if (state.manualMode && state.selectedNodeId === node.id) {
+                    void loadManualStateSnapshot(node.id, { quiet: true });
+                }
+            })()
+                .catch((error) => {
+                    setManualStatus(error?.message || "Thermostat settings could not be applied.", "error");
+                })
+                .finally(() => {
+                    state.isSending = false;
+                    const currentNode = getNodeById(state.selectedNodeId);
+                    const currentTarget = selectedTarget();
+                    syncManualControlsEnabled(Boolean(currentTarget?.device_id) && isSupportedManualTarget(currentNode, currentTarget));
+                });
+            return;
+        }
+
+        const speed = boundedIntegerInputValue(manualSpeedInput, 0);
 
         if (manualSpeedInput) {
             manualSpeedInput.value = String(speed);
@@ -2646,7 +2891,7 @@
                 state.isSending = false;
                 const currentNode = getNodeById(state.selectedNodeId);
                 const currentTarget = selectedTarget();
-                syncManualControlsEnabled(Boolean(currentTarget?.device_id) && isIkaMotorTarget(currentNode, currentTarget));
+                syncManualControlsEnabled(Boolean(currentTarget?.device_id) && isSupportedManualTarget(currentNode, currentTarget));
             });
     });
 
