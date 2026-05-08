@@ -10,6 +10,39 @@ import urllib.request
 from typing import Any
 
 
+_DEVICE_PRESETS = {
+    "generic": {},
+    "huber_unistat_430": {
+        "baud_rate": 9600,
+        "data_bits": 8,
+        "parity": "N",
+        "stop_bits": 1,
+        "flow_control": "none",
+        "read_timeout_ms": 1500,
+        "write_timeout_ms": 1500,
+        "notes": "Huber Unistat/Pilot ONE PB over RS-232: 9600 baud, 8N1, no handshake.",
+    },
+    "huber_pilot_one": {
+        "baud_rate": 9600,
+        "data_bits": 8,
+        "parity": "N",
+        "stop_bits": 1,
+        "flow_control": "none",
+        "read_timeout_ms": 1500,
+        "write_timeout_ms": 1500,
+        "notes": "Huber Unistat/Pilot ONE PB over RS-232: 9600 baud, 8N1, no handshake.",
+    },
+    "ika_eurostar_60": {
+        "baud_rate": 9600,
+        "data_bits": 7,
+        "parity": "E",
+        "stop_bits": 1,
+        "flow_control": "none",
+        "notes": "IKA EUROSTAR 60 RS-232: 9600 baud, 7E1, no flow control.",
+    },
+}
+
+
 def _request_json(
     *,
     base_url: str,
@@ -112,6 +145,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial-standard", default="rs232", choices=("rs232", "rs422", "rs485"))
     parser.add_argument("--port-count", type=int, default=8, help="Number of serial channels to provision.")
     parser.add_argument(
+        "--only-port",
+        action="append",
+        type=int,
+        help="Provision only this serial port number. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--device-preset",
+        default="generic",
+        choices=tuple(sorted(_DEVICE_PRESETS)),
+        help="Apply known serial settings before explicit CLI overrides.",
+    )
+    parser.add_argument(
         "--transport-type",
         default="tcp_socket",
         choices=("tcp_socket",),
@@ -141,9 +186,44 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_device_preset(args: argparse.Namespace, argv: list[str]) -> None:
+    preset = _DEVICE_PRESETS[args.device_preset]
+    explicit_options = set()
+    for item in argv:
+        if item.startswith("--"):
+            explicit_options.add(item.split("=", 1)[0])
+
+    option_to_attr = {
+        "--baud-rate": "baud_rate",
+        "--data-bits": "data_bits",
+        "--parity": "parity",
+        "--stop-bits": "stop_bits",
+        "--flow-control": "flow_control",
+        "--read-timeout-ms": "read_timeout_ms",
+        "--write-timeout-ms": "write_timeout_ms",
+        "--notes": "notes",
+    }
+    for option, attr in option_to_attr.items():
+        if option not in explicit_options and attr in preset:
+            setattr(args, attr, preset[attr])
+
+
+def _selected_ports(args: argparse.Namespace) -> list[int]:
+    if not args.only_port:
+        return list(range(1, args.port_count + 1))
+    ports = sorted(set(args.only_port))
+    invalid = [port for port in ports if port < 1 or port > args.port_count]
+    if invalid:
+        raise RuntimeError(
+            f"--only-port must be between 1 and --port-count ({args.port_count}); got {invalid}."
+        )
+    return ports
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    _apply_device_preset(args, sys.argv[1:])
 
     if not args.api_token:
         raise RuntimeError("API token is required. Pass --api-token or set API_AUTH_TOKEN in the environment.")
@@ -211,6 +291,7 @@ def main() -> int:
     updated = 0
     unchanged = 0
     probed = 0
+    selected_ports = _selected_ports(args)
 
     connection_fields = [
         "connection_label",
@@ -228,7 +309,7 @@ def main() -> int:
         "is_enabled",
     ]
 
-    for port_number in range(1, args.port_count + 1):
+    for port_number in selected_ports:
         desired_connection = _connection_payload(
             args,
             device_server_id=server["device_server_id"],
@@ -290,7 +371,7 @@ def main() -> int:
     print("3. Zusammenfassung")
     print(f"   Server-Code: {server['server_code']}")
     print(f"   Host: {server['host']}")
-    print(f"   Ports provisioniert: {args.port_count}")
+    print(f"   Ports provisioniert: {', '.join(str(port) for port in selected_ports)}")
     print(f"   Connections erstellt: {created}")
     print(f"   Connections aktualisiert: {updated}")
     print(f"   Connections unveraendert: {unchanged}")

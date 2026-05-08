@@ -294,6 +294,58 @@ python configure_moxa_nport.py `
   --probe
 ```
 
+## Huber Unistat / Pilot ONE ueber RS-232
+
+Fuer Huber Unistat / Pilot ONE wird das Huber PB-Protokoll verwendet. Laut Huber-Datenkommunikationshandbuch sind die RS-232-Parameter:
+
+- `Baud rate = 9600`
+- `Data bits = 8`
+- `Parity = None`
+- `Stop bits = 1`
+- `Handshake = None`
+- `Encoding = ascii`
+- `Line ending = CRLF`
+
+Moxa-Port fuer Huber entsprechend provisionieren:
+
+```powershell
+python configure_moxa_nport.py `
+  --base-url http://127.0.0.1:5000 `
+  --api-token <token> `
+  --host 10.90.95.178 `
+  --server-code MOXA-01 `
+  --display-name "Moxa NPort 5610-8-DT" `
+  --device-preset huber_unistat_430 `
+  --only-port 1 `
+  --probe
+```
+
+Falls nur ein einzelner Huber-Port getestet werden soll, zuerst die Moxa-Weboberflaeche fuer diesen Port auf `TCP Server`, `RS-232`, `9600 / 8N1`, `Flow control = None` setzen. Danach kann ohne Datenbank/API ein Lesetest gemacht werden:
+
+```powershell
+python run_huber_smoke_test.py --host 10.90.95.178 --port 4001 --command get_internal_temp
+```
+
+Der Smoke-Test sendet nur ein PB-Lesekommando, z. B. `{M01****<CR><LF>`, und erwartet eine Antwort wie `{S0109C4<CR><LF>`. `09C4` entspricht `25.00 C`.
+
+Unterstuetzte Huber-Kommandos im App-Treiber:
+
+- `get_setpoint`
+- `get_internal_temp`
+- `get_return_temp`
+- `get_pump_pressure`
+- `get_process_temp`
+- `get_error`
+- `get_warning`
+- `get_status`
+- `set_setpoint`
+- `start`
+- `stop`
+- `set_circulation`
+- `clear_error`
+- `clear_warning`
+- `read_var` / `write_var` fuer rohe PB-Adressen
+
 ## Validierter IKA EUROSTAR 60 Betrieb
 
 Die erste reale Inbetriebnahme wurde erfolgreich mit einem `IKA EUROSTAR 60` ueber `MOXA-01 / Port 1 / TCP 4001` verifiziert.
