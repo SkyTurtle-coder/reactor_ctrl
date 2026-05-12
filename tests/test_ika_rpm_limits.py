@@ -93,6 +93,42 @@ class IkaRpmLimitTests(unittest.TestCase):
 
         self.assertEqual(snapshot["steps"][0]["rpm"], IKA_EUROSTAR_60_MAX_RPM)
 
+    def test_recipe_runtime_accepts_motor_step_with_zero_temp_and_pressure(self):
+        recipe = Recipe(
+            recipe_id=1,
+            title="IKA zero fields test",
+            operator_name="tester",
+        )
+        recipe.steps_json = [
+            {
+                "actor": "Stirrer_01",
+                "task": "Start",
+                "delta_time": 0,
+                "rpm": 500,
+                "temp": 0,
+                "pressure": 0.0,
+            }
+        ]
+        build = ReactorBuild(
+            reactor_build_id=1,
+            build_name="Test Build",
+            definition_json={},
+        )
+        binding = {
+            "actor": "Stirrer_01",
+            "is_resolved": True,
+            "device_id": 1,
+            "profile_id": "motor_rpm",
+            "protocol": "ika_eurostar_60",
+        }
+
+        with patch.object(recipe_program_runtime, "_build_target_lookup", return_value={"Stirrer_01": binding}):
+            snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, build)
+
+        self.assertEqual(snapshot["steps"][0]["rpm"], 500)
+        self.assertIsNone(snapshot["steps"][0]["temp"])
+        self.assertIsNone(snapshot["steps"][0]["pressure"])
+
 
 class IkaDeviceClampingDetectionTests(unittest.TestCase):
     """Tests for device-level speed clamping detection in the manual reconciler."""

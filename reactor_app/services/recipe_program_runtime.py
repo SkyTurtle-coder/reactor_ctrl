@@ -160,15 +160,29 @@ def _interpolate_targets(
     return current_targets
 
 
+def _parse_numeric_field(payload: dict, field: str) -> float | None:
+    value = payload.get(field)
+    if value in (None, ""):
+        return None
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        raise ValueError(f"Recipe step field '{field}' must be a number, got: {value!r}")
+
+
 def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
     payload = raw_step if isinstance(raw_step, dict) else {}
+    try:
+        delta_time = round(float(payload.get("delta_time") or 0.0), 2)
+    except (TypeError, ValueError):
+        raise ValueError(f"Recipe step field 'delta_time' must be a number, got: {payload.get('delta_time')!r}")
     return {
         "actor": str(payload.get("actor") or "").strip(),
         "task": str(payload.get("task") or "").strip(),
-        "delta_time": round(float(payload.get("delta_time") or 0.0), 2),
-        "temp": None if payload.get("temp") in (None, "") else round(float(payload.get("temp")), 2),
-        "pressure": None if payload.get("pressure") in (None, "") else round(float(payload.get("pressure")), 2),
-        "rpm": None if payload.get("rpm") in (None, "") else round(float(payload.get("rpm")), 2),
+        "delta_time": delta_time,
+        "temp": _parse_numeric_field(payload, "temp"),
+        "pressure": _parse_numeric_field(payload, "pressure"),
+        "rpm": _parse_numeric_field(payload, "rpm"),
     }
 
 
