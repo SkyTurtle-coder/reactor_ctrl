@@ -32,6 +32,7 @@
     const programProgressLabel = document.getElementById("process-program-progress-label");
     const programTargetList = document.getElementById("process-program-target-list");
     const programStatus = document.getElementById("process-program-status");
+    const programStopDialog = document.getElementById("process-program-stop-dialog");
     const manualCard = document.getElementById("process-manual-card");
     const manualTargetTitle = document.getElementById("process-manual-target-title");
     const manualTargetSubtitle = document.getElementById("process-manual-target-subtitle");
@@ -1777,7 +1778,11 @@
         }
 
         if (programProgressFill) {
-            const progressPercent = Math.round(clamp(asNumber(program?.step_progress, 0), 0, 1) * 100);
+            const progressPercent = isProgramRunning
+                ? Math.round(clamp(asNumber(program?.step_progress, 0), 0, 1) * 100)
+                : programStatusValue === "completed"
+                    ? 100
+                    : 0;
             programProgressFill.style.width = `${progressPercent}%`;
         }
 
@@ -1899,15 +1904,54 @@
         }
     }
 
+    function normalizeStoppedProgramPayload(program) {
+        const payload = program && typeof program === "object" ? { ...program } : {};
+        payload.status = "stopped";
+        payload.active_step_index = null;
+        payload.active_step_number = null;
+        payload.active_step = null;
+        payload.next_step = null;
+        payload.step_started_at = null;
+        payload.step_duration_seconds = 0;
+        payload.step_elapsed_seconds = 0;
+        payload.step_remaining_seconds = 0;
+        payload.step_progress = 0;
+        payload.current_targets = [];
+        return payload;
+    }
+
+    function confirmRecipeProgramStop() {
+        if (!programStopDialog || typeof programStopDialog.showModal !== "function") {
+            return Promise.resolve(window.confirm("Are You sure?"));
+        }
+        if (programStopDialog.open) {
+            return Promise.resolve(false);
+        }
+
+        return new Promise((resolve) => {
+            programStopDialog.returnValue = "";
+            const onClose = () => {
+                resolve(programStopDialog.returnValue === "yes");
+            };
+            programStopDialog.addEventListener("close", onClose, { once: true });
+            programStopDialog.showModal();
+        });
+    }
+
     async function stopActiveRecipeProgram() {
         if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
             setProgramStatus("No valid process token is available for this page.", "error");
             return;
         }
+        const confirmed = await confirmRecipeProgramStop();
+        if (!confirmed) {
+            setProgramStatus("Stop cancelled.", "muted");
+            return;
+        }
 
         state.isProgramBusy = true;
         updateProgramCard();
-        setProgramStatus("Stopping recipe program...", "muted");
+        setProgramStatus("Stopping recipe program and applying safe state...", "muted");
 
         const headers = { "Content-Type": "application/json" };
         if (metaData.manualWriteToken) {
@@ -1921,8 +1965,14 @@
                 timeoutMs: 12000,
                 body: JSON.stringify({ requested_by: "process_recipe" }),
             });
-            state.programData = payload?.program || null;
-            setProgramStatus("Recipe program stopped.", "success");
+            const stoppedProgram = payload?.program || null;
+            if (asString(stoppedProgram?.status, "") === "error") {
+                state.programData = stoppedProgram;
+                setProgramStatus(asString(stoppedProgram?.last_error, "Safe stop failed."), "error");
+            } else {
+                state.programData = normalizeStoppedProgramPayload(stoppedProgram);
+                setProgramStatus("Recipe program stopped.", "success");
+            }
         } catch (error) {
             setProgramStatus(error?.message || "Recipe program could not be stopped.", "error");
         } finally {

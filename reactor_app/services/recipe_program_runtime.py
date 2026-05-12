@@ -37,6 +37,7 @@ _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
 _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
 _HUBER_MIN_SETPOINT_C = -40.0
 _HUBER_MAX_SETPOINT_C = 150.0
+_SAFE_HUBER_SETPOINT_C = 20.0
 
 
 def _now_utc() -> datetime:
@@ -760,6 +761,24 @@ def recipe_program_state_to_dict(item: RecipeProgramState | None) -> dict[str, A
         now=_now_utc(),
     )
     payload["total_steps"] = int(evaluation.get("total_steps") or 0)
+
+    if payload["status"] in _TERMINAL_STATUSES:
+        payload["active_step_index"] = None
+        payload["active_step_number"] = None
+        payload["active_step"] = None
+        payload["next_step"] = None
+        payload["step_started_at"] = None
+        payload["step_duration_seconds"] = 0.0
+        payload["step_elapsed_seconds"] = 0.0
+        payload["step_remaining_seconds"] = 0.0
+        payload["step_progress"] = 1.0 if payload["status"] == "completed" else 0.0
+        payload["current_targets"] = (
+            _current_targets_payload(evaluation.get("current_targets") or {}, snapshot=snapshot)
+            if payload["status"] == "completed"
+            else []
+        )
+        return payload
+
     if not evaluation.get("completed"):
         active_step_index = int(evaluation.get("active_step_index") or 0)
         payload["active_step_index"] = active_step_index
@@ -771,10 +790,6 @@ def recipe_program_state_to_dict(item: RecipeProgramState | None) -> dict[str, A
         payload["step_elapsed_seconds"] = round(float(evaluation.get("step_elapsed_seconds") or 0.0), 3)
         payload["step_remaining_seconds"] = round(float(evaluation.get("step_remaining_seconds") or 0.0), 3)
         payload["step_progress"] = round(float(evaluation.get("step_progress") or 0.0), 4)
-    elif payload["status"] in _TERMINAL_STATUSES:
-        payload["active_step_index"] = None
-        payload["active_step_number"] = None
-        payload["current_targets"] = _current_targets_payload(evaluation.get("current_targets") or {}, snapshot=snapshot)
 
     if not payload["current_targets"]:
         payload["current_targets"] = _current_targets_payload(evaluation.get("current_targets") or {}, snapshot=snapshot)
@@ -887,27 +902,68 @@ def _load_binding_device(binding: dict[str, Any], actor: str) -> Device:
     return device
 
 
-def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
-    state = _ensure_program_state()
-    run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
-    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
-    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+def _manual_text_payload(command_text: str) -> dict[str, Any]:
+    return {
+        "text": command_text,
+        "encoding": "ascii",
+        "line_ending": "space_crlf",
+        "response_terminator": "none",
+        "expect_response": False,
+        "strip_response": True,
+    }
 
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            continue
-        actor = str(binding.get("actor") or "").strip()
-        if not actor:
-            continue
+
+def _apply_safe_stop_to_binding(
+    app: Flask,
+    binding: dict[str, Any],
+    *,
+    requested_by: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    actor = str(binding.get("actor") or "").strip()
+    if not actor:
+        return None, ["A recipe binding without an actor could not be stopped."]
+
+    errors: list[str] = []
+    try:
         device = _load_binding_device(binding, actor)
-        if _is_huber_temperature_binding(binding):
-            execute_device_command(
-                device,
-                command_name="stop",
-                payload={},
-                requested_by=requested_by,
-            )
-        else:
+    except Exception as exc:
+        return None, [str(exc)]
+
+    profile_id = _profile_id_for_binding(binding)
+    safe_target: dict[str, Any] = {
+        "actor": actor,
+        "device_id": device.device_id,
+        "device_display_name": device.display_name,
+        "profile_id": profile_id,
+    }
+
+    if _is_huber_temperature_binding(binding):
+        safe_target.update({"temp": _SAFE_HUBER_SETPOINT_C, "is_on": False})
+        for command_name, payload in (
+            (
+                "set_setpoint",
+                {
+                    "temp_c": _SAFE_HUBER_SETPOINT_C,
+                    "min_setpoint_c": _HUBER_MIN_SETPOINT_C,
+                    "max_setpoint_c": _HUBER_MAX_SETPOINT_C,
+                },
+            ),
+            ("stop", {}),
+        ):
+            try:
+                execute_device_command(
+                    device,
+                    command_name=command_name,
+                    payload=payload,
+                    requested_by=requested_by,
+                )
+            except Exception as exc:
+                errors.append(f"{actor}: {command_name} failed: {exc}")
+        return safe_target, errors
+
+    if _is_ika_motor_binding(binding):
+        safe_target.update({"rpm": 0, "is_on": False})
+        try:
             queue_manual_state_update(
                 app,
                 device,
@@ -915,29 +971,78 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
                 desired_speed=0,
                 requested_by=requested_by,
             )
+        except Exception as exc:
+            errors.append(f"{actor}: queue safe stirrer state failed: {exc}")
+
+        for command_text in ("OUT_SP_4 0", "STOP_4"):
+            try:
+                execute_device_command(
+                    device,
+                    command_name="manual_text",
+                    payload=_manual_text_payload(command_text),
+                    requested_by=requested_by,
+                )
+            except Exception as exc:
+                errors.append(f"{actor}: {command_text} failed: {exc}")
+        return safe_target, errors
+
+    safe_target.update({"is_on": False})
+    try:
+        queue_manual_state_update(
+            app,
+            device,
+            desired_is_on=False,
+            desired_speed=0,
+            requested_by=requested_by,
+        )
+        safe_target["rpm"] = 0
+    except Exception as exc:
+        errors.append(f"{actor}: queue safe state failed: {exc}")
+    return safe_target, errors
+
+
+def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
+    state = _ensure_program_state()
+    run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    safe_targets: dict[str, dict[str, Any]] = {}
+    safe_errors: list[str] = []
+
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        safe_target, errors = _apply_safe_stop_to_binding(app, binding, requested_by=requested_by)
+        if isinstance(safe_target, dict) and safe_target.get("actor"):
+            safe_targets[str(safe_target["actor"])] = safe_target
+        safe_errors.extend(errors)
 
     now = _now_utc()
-    state.status = "stopped"
+    error_message = "; ".join(safe_errors) if safe_errors else None
+    state.status = "error" if error_message else "stopped"
     state.requested_by = requested_by
     state.stop_requested = False
     state.finished_at = now
     state.last_progress_at = now
-    state.last_error = None
-    state.last_applied_targets_json = {}
+    state.last_error = error_message
+    state.last_applied_targets_json = safe_targets
     state.lease_owner = None
     state.lease_expires_at = None
     if run is not None:
-        run.status = "stopped"
+        run.status = state.status
         run.requested_by = requested_by
         run.finished_at = now
         run.last_progress_at = now
-        run.last_error = None
+        run.last_error = error_message
         _record_program_event(
             run,
-            "stopped",
+            "error" if error_message else "stopped",
             state=state,
             evaluation=_evaluate_state_snapshot(state, now=now),
-            payload={"applied_targets": _applied_targets_payload(state.last_applied_targets_json)},
+            payload={
+                "error": error_message,
+                "applied_targets": _applied_targets_payload(safe_targets),
+            } if error_message else {"applied_targets": _applied_targets_payload(safe_targets)},
         )
     db.session.flush()
     return state

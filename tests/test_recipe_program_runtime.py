@@ -1,7 +1,8 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from reactor_app.services.recipe_program_runtime import _evaluate_program_timeline
+from reactor_app.models import RecipeProgramState
+from reactor_app.services.recipe_program_runtime import _evaluate_program_timeline, recipe_program_state_to_dict
 
 
 class RecipeProgramRuntimeTests(unittest.TestCase):
@@ -81,6 +82,31 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         self.assertEqual(evaluation["active_step"]["actor"], "Huber_01")
         self.assertAlmostEqual(evaluation["current_targets"]["Huber_01"]["temp"], 30.0)
         self.assertAlmostEqual(evaluation["step_progress"], 0.5)
+
+    def test_stopped_program_payload_resets_active_progress_and_targets(self):
+        started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState(
+            recipe_program_state_id=1,
+            status="stopped",
+            active_step_index=0,
+            step_started_at=started_at,
+        )
+        state.snapshot_json = {
+            "steps": [
+                {"actor": "Stirrer_01", "task": "Ramp", "delta_time": 5, "rpm": 500},
+            ],
+            "bindings": [
+                {"actor": "Stirrer_01", "profile_id": "motor_rpm", "protocol": "ika_eurostar_60"},
+            ],
+        }
+
+        payload = recipe_program_state_to_dict(state)
+
+        self.assertEqual(payload["status"], "stopped")
+        self.assertIsNone(payload["active_step"])
+        self.assertIsNone(payload["active_step_number"])
+        self.assertEqual(payload["step_progress"], 0.0)
+        self.assertEqual(payload["current_targets"], [])
 
 
 if __name__ == "__main__":

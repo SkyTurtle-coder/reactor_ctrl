@@ -764,6 +764,45 @@ pre {
     font-size: 0.88rem;
 }
 
+.process-confirm-dialog {
+    width: min(420px, calc(100vw - 2rem));
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+}
+
+.process-confirm-dialog::backdrop {
+    background: var(--overlay);
+}
+
+.process-confirm-dialog-body {
+    display: grid;
+    gap: 0.85rem;
+    padding: 1.1rem;
+}
+
+.process-confirm-dialog-body h2,
+.process-confirm-dialog-body p {
+    margin: 0;
+}
+
+.process-confirm-dialog-body h2 {
+    font-size: 1.15rem;
+}
+
+.process-confirm-dialog-body p {
+    color: var(--muted);
+}
+
+.process-confirm-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+}
+
 .process-plot-panel {
     margin-top: 0.9rem;
     overflow: hidden;

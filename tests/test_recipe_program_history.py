@@ -494,8 +494,9 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 db.session.commit()
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=stopped_at):
-                recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
-                db.session.commit()
+                with patch.object(recipe_program_runtime, "execute_device_command"):
+                    recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
+                    db.session.commit()
 
             run = RecipeProgramRun.query.one()
             events = RecipeProgramEvent.query.order_by(RecipeProgramEvent.recipe_program_event_id.asc()).all()

@@ -52,6 +52,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-program-card", html)
         self.assertIn("process-program-start-button", html)
         self.assertIn("process-program-stop-button", html)
+        self.assertIn("process-program-stop-dialog", html)
 
         forbidden_strings = (
             "Status lesen",
@@ -122,6 +123,10 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('document.getElementById("process-recipe-select")', source)
         self.assertIn('document.getElementById("process-program-start-button")', source)
         self.assertIn('document.getElementById("process-program-stop-button")', source)
+        self.assertIn('document.getElementById("process-program-stop-dialog")', source)
+        self.assertIn('function confirmRecipeProgramStop()', source)
+        self.assertIn('window.confirm("Are You sure?")', source)
+        self.assertIn('normalizeStoppedProgramPayload', source)
         self.assertIn('fetchJson("/api/process-program"', source)
         self.assertIn('fetchJson("/api/process-program/start"', source)
         self.assertIn('fetchJson("/api/process-program/stop"', source)

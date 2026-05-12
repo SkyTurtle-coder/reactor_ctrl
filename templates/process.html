@@ -166,6 +166,19 @@
     </div>
 </section>
 
+<dialog class="process-confirm-dialog" id="process-program-stop-dialog" aria-labelledby="process-program-stop-dialog-title">
+    <form method="dialog" class="process-confirm-dialog-body">
+        <h2 id="process-program-stop-dialog-title">Are You sure?</h2>
+        <p>
+            This will set connected thermostats to 20 &deg;C and stop them, and set stirrers to 0 RPM.
+        </p>
+        <div class="process-confirm-dialog-actions">
+            <button class="btn" id="process-program-stop-cancel-button" type="submit" value="no">No</button>
+            <button class="btn btn-primary" id="process-program-stop-confirm-button" type="submit" value="yes">Yes</button>
+        </div>
+    </form>
+</dialog>
+
 <details class="card process-plot-panel ui-collapsible-details" id="process-plot-panel">
     <summary class="process-plot-summary ui-collapsible-summary">
         <div class="process-plot-summary-copy">
