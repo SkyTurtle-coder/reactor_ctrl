@@ -134,6 +134,34 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(safe_target["temp"], 20.0)
         self.assertFalse(safe_target["is_on"])
 
+    def test_huber_safe_stop_collects_error_when_stop_command_fails(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+
+        def raise_on_stop(*args, **kwargs):
+            if kwargs.get("command_name") == "stop":
+                raise RuntimeError("Connection lost")
+
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+            with patch.object(recipe_program_runtime, "execute_device_command", side_effect=raise_on_stop):
+                safe_target, errors = recipe_program_runtime._apply_safe_stop_to_binding(
+                    app,
+                    self._binding(),
+                    requested_by="integration_stop",
+                )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn("stop", errors[0])
+        self.assertIn("Connection lost", errors[0])
+        self.assertEqual(safe_target["temp"], 20.0)
+        self.assertFalse(safe_target["is_on"])
+
     def test_ika_safe_stop_sets_zero_rpm_and_sends_stop(self):
         app = Flask(__name__)
         device = Device(
