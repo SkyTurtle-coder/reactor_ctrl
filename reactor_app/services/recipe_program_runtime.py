@@ -26,6 +26,7 @@ from ..models import (
     ReactorBuild,
 )
 from .device_manual_runtime import queue_manual_state_update
+from .device_runtime import execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "recipe_program_reconciler_thread"
@@ -33,6 +34,9 @@ _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
+_HUBER_MIN_SETPOINT_C = -40.0
+_HUBER_MAX_SETPOINT_C = 150.0
 
 
 def _now_utc() -> datetime:
@@ -370,34 +374,67 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
         if not binding.get("is_resolved") or not binding.get("device_id"):
             raise ValueError(f"Actor '{actor}' is not mapped to a controllable device.")
         profile_id = str(binding.get("profile_id") or "").strip()
-        if profile_id != "motor_rpm":
-            raise ValueError(
-                f"Actor '{actor}' uses profile '{profile_id or 'unknown'}'. Recipe runtime currently supports Motor actors only."
-            )
         protocol = _normalized_lookup_value(binding.get("protocol"))
-        if protocol != "ika_eurostar_60":
+        if profile_id == "motor_rpm":
+            if protocol != "ika_eurostar_60":
+                raise ValueError(
+                    f"Actor '{actor}' is mapped to protocol '{binding.get('protocol') or 'unknown'}'. "
+                    "Motor recipe actors require IKA stirrer devices."
+                )
+        elif profile_id == "hc_system_temperature":
+            if protocol not in _HUBER_PROTOCOLS:
+                raise ValueError(
+                    f"Actor '{actor}' is mapped to protocol '{binding.get('protocol') or 'unknown'}'. "
+                    "H/C recipe actors require Huber Unistat/Pilot ONE devices."
+                )
+        else:
             raise ValueError(
-                f"Actor '{actor}' is mapped to protocol '{binding.get('protocol') or 'unknown'}'. "
-                "Recipe runtime currently supports IKA stirrer devices only."
+                f"Actor '{actor}' uses profile '{profile_id or 'unknown'}'. "
+                "Recipe runtime currently supports Motor and H/C temperature actors."
             )
         bindings.append(binding)
 
+    huber_temp_initialized: set[str] = set()
     for index, step in enumerate(steps, start=1):
         actor = str(step.get("actor") or "").strip()
         binding = next((item for item in bindings if item["actor"] == actor), None)
         if binding is None:
             raise ValueError(f"Step {index} references unknown actor '{actor}'.")
-        if step.get("temp") is not None or step.get("pressure") is not None:
-            raise ValueError(
-                f"Step {index} contains Temp/Pressure values for actor '{actor}'. "
-                "Recipe runtime currently applies RPM-controlled motor steps only."
-            )
-        rpm = step.get("rpm")
-        if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
-            raise ValueError(
-                f"Step {index} requests {rpm:g} rpm for actor '{actor}'. "
-                f"IKA EUROSTAR 60 supports up to {IKA_EUROSTAR_60_MAX_RPM} rpm."
-            )
+        profile_id = str(binding.get("profile_id") or "").strip()
+        if profile_id == "motor_rpm":
+            if step.get("temp") is not None or step.get("pressure") is not None:
+                raise ValueError(
+                    f"Step {index} contains Temp/Pressure values for actor '{actor}'. "
+                    "Motor recipe actors support RPM values only."
+                )
+            rpm = step.get("rpm")
+            if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
+                raise ValueError(
+                    f"Step {index} requests {rpm:g} rpm for actor '{actor}'. "
+                    f"IKA EUROSTAR 60 supports up to {IKA_EUROSTAR_60_MAX_RPM} rpm."
+                )
+            continue
+
+        if profile_id == "hc_system_temperature":
+            if step.get("rpm") is not None or step.get("pressure") is not None:
+                raise ValueError(
+                    f"Step {index} contains RPM/Pressure values for actor '{actor}'. "
+                    "H/C recipe actors support temperature values only."
+                )
+            temp = step.get("temp")
+            if temp is None:
+                if actor not in huber_temp_initialized:
+                    raise ValueError(
+                        f"Step {index} for H/C actor '{actor}' must define a temperature before it can hold or ramp."
+                    )
+                continue
+            temp_value = float(temp)
+            if temp_value < _HUBER_MIN_SETPOINT_C or temp_value > _HUBER_MAX_SETPOINT_C:
+                raise ValueError(
+                    f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
+                    f"Huber setpoints are limited to {_HUBER_MIN_SETPOINT_C:g}..{_HUBER_MAX_SETPOINT_C:g} degC."
+                )
+            huber_temp_initialized.add(actor)
 
     return {
         "recipe_id": recipe.recipe_id,
@@ -451,18 +488,46 @@ def _binding_summary_from_snapshot(snapshot: dict[str, Any]) -> list[dict[str, A
                 "device_id": binding.get("device_id"),
                 "device_display_name": str(binding.get("device_display_name") or "").strip(),
                 "label": str(binding.get("label") or "").strip(),
+                "profile_id": str(binding.get("profile_id") or "").strip(),
                 "protocol": str(binding.get("protocol") or "").strip(),
             }
         )
     return payload
 
 
-def _current_targets_payload(targets: dict[str, dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _binding_lookup_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    bindings = snapshot.get("bindings") if isinstance(snapshot, dict) and isinstance(snapshot.get("bindings"), list) else []
+    return {
+        str(binding.get("actor") or "").strip(): binding
+        for binding in bindings
+        if isinstance(binding, dict) and str(binding.get("actor") or "").strip()
+    }
+
+
+def _target_fields_for_profile(profile_id: str | None) -> tuple[str, ...]:
+    normalized = str(profile_id or "").strip()
+    if normalized == "motor_rpm":
+        return ("rpm",)
+    if normalized == "hc_system_temperature":
+        return ("temp",)
+    return _NUMERIC_FIELDS
+
+
+def _current_targets_payload(
+    targets: dict[str, dict[str, Any]] | None,
+    *,
+    snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
+    binding_lookup = _binding_lookup_from_snapshot(snapshot)
     for actor in sorted((targets or {}).keys(), key=lambda value: value.lower()):
         actor_targets = targets.get(actor) if isinstance(targets.get(actor), dict) else {}
+        binding = binding_lookup.get(actor) or {}
+        profile_id = str(binding.get("profile_id") or "").strip()
         row = {"actor": actor}
-        for field_name in _NUMERIC_FIELDS:
+        if profile_id:
+            row["profile_id"] = profile_id
+        for field_name in _target_fields_for_profile(profile_id):
             raw_value = actor_targets.get(field_name)
             if raw_value in (None, ""):
                 row[field_name] = 0.0
@@ -479,20 +544,32 @@ def _applied_targets_payload(applied_targets: dict[str, dict[str, Any]] | None) 
     payload: list[dict[str, Any]] = []
     for actor in sorted((applied_targets or {}).keys(), key=lambda value: value.lower()):
         actor_targets = applied_targets.get(actor) if isinstance(applied_targets.get(actor), dict) else {}
-        raw_rpm = actor_targets.get("rpm")
-        rpm = 0
-        if raw_rpm not in (None, ""):
+        row: dict[str, Any] = {"actor": actor}
+        profile_id = str(actor_targets.get("profile_id") or "").strip()
+        if profile_id:
+            row["profile_id"] = profile_id
+        if "rpm" in actor_targets:
+            raw_rpm = actor_targets.get("rpm")
+            rpm = 0
+            if raw_rpm not in (None, ""):
+                try:
+                    rpm = max(0, int(round(float(raw_rpm))))
+                except (TypeError, ValueError):
+                    rpm = 0
+            row["rpm"] = rpm
+        if "temp" in actor_targets:
             try:
-                rpm = max(0, int(round(float(raw_rpm))))
+                row["temp"] = round(float(actor_targets.get("temp") or 0.0), 2)
             except (TypeError, ValueError):
-                rpm = 0
-        payload.append(
-            {
-                "actor": actor,
-                "rpm": rpm,
-                "is_on": bool(actor_targets.get("is_on")),
-            }
-        )
+                row["temp"] = 0.0
+        if "pressure" in actor_targets:
+            try:
+                row["pressure"] = round(float(actor_targets.get("pressure") or 0.0), 2)
+            except (TypeError, ValueError):
+                row["pressure"] = 0.0
+        if "is_on" in actor_targets:
+            row["is_on"] = bool(actor_targets.get("is_on"))
+        payload.append(row)
     return payload
 
 
@@ -521,7 +598,7 @@ def _evaluation_payload(
         "step_elapsed_seconds": round(float(evaluation.get("step_elapsed_seconds") or 0.0), 3),
         "step_remaining_seconds": round(float(evaluation.get("step_remaining_seconds") or 0.0), 3),
         "step_progress": round(float(evaluation.get("step_progress") or 0.0), 4),
-        "current_targets": _current_targets_payload(evaluation.get("current_targets") or {}),
+        "current_targets": _current_targets_payload(evaluation.get("current_targets") or {}, snapshot=snapshot),
     }
     if include_bindings:
         payload["bindings"] = _binding_summary_from_snapshot(snapshot)
@@ -670,22 +747,10 @@ def recipe_program_state_to_dict(item: RecipeProgramState | None) -> dict[str, A
     elif payload["status"] in _TERMINAL_STATUSES:
         payload["active_step_index"] = None
         payload["active_step_number"] = None
-        payload["current_targets"] = [
-            {"actor": actor, **targets}
-            for actor, targets in sorted(
-                (evaluation.get("current_targets") or {}).items(),
-                key=lambda entry: entry[0].lower(),
-            )
-        ]
+        payload["current_targets"] = _current_targets_payload(evaluation.get("current_targets") or {}, snapshot=snapshot)
 
     if not payload["current_targets"]:
-        payload["current_targets"] = [
-            {"actor": actor, **targets}
-            for actor, targets in sorted(
-                (evaluation.get("current_targets") or {}).items(),
-                key=lambda entry: entry[0].lower(),
-            )
-        ]
+        payload["current_targets"] = _current_targets_payload(evaluation.get("current_targets") or {}, snapshot=snapshot)
 
     return payload
 
@@ -769,6 +834,32 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
     return state
 
 
+def _profile_id_for_binding(binding: dict[str, Any] | None) -> str:
+    return str((binding or {}).get("profile_id") or "").strip()
+
+
+def _protocol_for_binding(binding: dict[str, Any] | None) -> str:
+    return _normalized_lookup_value((binding or {}).get("protocol"))
+
+
+def _is_huber_temperature_binding(binding: dict[str, Any] | None) -> bool:
+    return _profile_id_for_binding(binding) == "hc_system_temperature" and _protocol_for_binding(binding) in _HUBER_PROTOCOLS
+
+
+def _is_ika_motor_binding(binding: dict[str, Any] | None) -> bool:
+    return _profile_id_for_binding(binding) == "motor_rpm" and _protocol_for_binding(binding) == "ika_eurostar_60"
+
+
+def _load_binding_device(binding: dict[str, Any], actor: str) -> Device:
+    device_id = binding.get("device_id")
+    if device_id in (None, ""):
+        raise RuntimeError(f"Actor '{actor}' is no longer mapped to a device.")
+    device = db.session.get(Device, int(device_id))
+    if device is None:
+        raise RuntimeError(f"Device {device_id} for actor '{actor}' was not found.")
+    return device
+
+
 def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     state = _ensure_program_state()
     run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
@@ -776,19 +867,27 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
 
     for binding in bindings:
-        device_id = binding.get("device_id")
-        if device_id in (None, ""):
+        if not isinstance(binding, dict):
             continue
-        device = db.session.get(Device, int(device_id))
-        if device is None:
+        actor = str(binding.get("actor") or "").strip()
+        if not actor:
             continue
-        queue_manual_state_update(
-            app,
-            device,
-            desired_is_on=False,
-            desired_speed=0,
-            requested_by=requested_by,
-        )
+        device = _load_binding_device(binding, actor)
+        if _is_huber_temperature_binding(binding):
+            execute_device_command(
+                device,
+                command_name="stop",
+                payload={},
+                requested_by=requested_by,
+            )
+        else:
+            queue_manual_state_update(
+                app,
+                device,
+                desired_is_on=False,
+                desired_speed=0,
+                requested_by=requested_by,
+            )
 
     now = _now_utc()
     state.status = "stopped"
@@ -838,42 +937,94 @@ def _apply_current_targets(
         if binding is None:
             continue
 
-        device_id = binding.get("device_id")
-        if device_id in (None, ""):
-            raise RuntimeError(f"Actor '{actor}' is no longer mapped to a device.")
-        device = db.session.get(Device, int(device_id))
-        if device is None:
-            raise RuntimeError(f"Device {device_id} for actor '{actor}' was not found.")
+        device = _load_binding_device(binding, actor)
+        previous_payload = applied_lookup.get(actor) if isinstance(applied_lookup.get(actor), dict) else {}
 
-        rounded_rpm = max(0, int(round(float((targets or {}).get("rpm") or 0.0))))
-        desired_is_on = rounded_rpm > 0
-        next_payload = {
-            "rpm": rounded_rpm,
-            "is_on": desired_is_on,
-        }
-        if next_applied_lookup.get(actor) == next_payload:
+        if _is_ika_motor_binding(binding):
+            rounded_rpm = max(0, int(round(float((targets or {}).get("rpm") or 0.0))))
+            desired_is_on = rounded_rpm > 0
+            next_payload = {
+                "profile_id": "motor_rpm",
+                "rpm": rounded_rpm,
+                "is_on": desired_is_on,
+            }
+            if next_applied_lookup.get(actor) == next_payload:
+                continue
+
+            queue_manual_state_update(
+                app,
+                device,
+                desired_is_on=desired_is_on,
+                desired_speed=rounded_rpm,
+                requested_by="recipe_program",
+            )
+            next_applied_lookup[actor] = next_payload
+            applied_changes.append(
+                {
+                    "actor": actor,
+                    "device_id": device.device_id,
+                    "device_display_name": device.display_name,
+                    "previous": {
+                        "profile_id": "motor_rpm",
+                        "rpm": max(0, int(round(float(previous_payload.get("rpm") or 0.0)))) if previous_payload else 0,
+                        "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
+                    },
+                    "current": deepcopy(next_payload),
+                }
+            )
             continue
 
-        queue_manual_state_update(
-            app,
-            device,
-            desired_is_on=desired_is_on,
-            desired_speed=rounded_rpm,
-            requested_by="recipe_program",
-        )
-        previous_payload = applied_lookup.get(actor) if isinstance(applied_lookup.get(actor), dict) else {}
-        next_applied_lookup[actor] = next_payload
-        applied_changes.append(
-            {
-                "actor": actor,
-                "device_id": device.device_id,
-                "device_display_name": device.display_name,
-                "previous": {
-                    "rpm": max(0, int(round(float(previous_payload.get("rpm") or 0.0)))) if previous_payload else 0,
-                    "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
-                },
-                "current": deepcopy(next_payload),
+        if _is_huber_temperature_binding(binding):
+            temp_c = round(float((targets or {}).get("temp") or 0.0), 2)
+            if temp_c < _HUBER_MIN_SETPOINT_C or temp_c > _HUBER_MAX_SETPOINT_C:
+                raise RuntimeError(
+                    f"Recipe target {temp_c:g} degC for actor '{actor}' is outside the "
+                    f"Huber safety range {_HUBER_MIN_SETPOINT_C:g}..{_HUBER_MAX_SETPOINT_C:g} degC."
+                )
+            next_payload = {
+                "profile_id": "hc_system_temperature",
+                "temp": temp_c,
+                "is_on": True,
             }
+            if next_applied_lookup.get(actor) == next_payload:
+                continue
+
+            execute_device_command(
+                device,
+                command_name="set_setpoint",
+                payload={
+                    "temp_c": temp_c,
+                    "min_setpoint_c": _HUBER_MIN_SETPOINT_C,
+                    "max_setpoint_c": _HUBER_MAX_SETPOINT_C,
+                },
+                requested_by="recipe_program",
+            )
+            if not bool(previous_payload.get("is_on")):
+                execute_device_command(
+                    device,
+                    command_name="start",
+                    payload={},
+                    requested_by="recipe_program",
+                )
+            next_applied_lookup[actor] = next_payload
+            applied_changes.append(
+                {
+                    "actor": actor,
+                    "device_id": device.device_id,
+                    "device_display_name": device.display_name,
+                    "previous": {
+                        "profile_id": "hc_system_temperature",
+                        "temp": round(float(previous_payload.get("temp") or 0.0), 2) if previous_payload else 0.0,
+                        "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
+                    },
+                    "current": deepcopy(next_payload),
+                }
+            )
+            continue
+
+        raise RuntimeError(
+            f"Actor '{actor}' uses unsupported recipe binding "
+            f"'{_profile_id_for_binding(binding) or 'unknown'}' / '{binding.get('protocol') or 'unknown'}'."
         )
 
     state.last_applied_targets_json = next_applied_lookup

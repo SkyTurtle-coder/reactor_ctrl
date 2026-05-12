@@ -1894,6 +1894,8 @@ def delete_device_connection(connection_id: int):
 _RECIPE_ALLOWED_STATUSES = {"draft", "approved", "archived"}
 _RECIPE_MAX_STEPS = 500
 _RECIPE_STEP_NUMERIC_FIELDS = ("delta_time", "temp", "pressure", "rpm")
+_RECIPE_MIN_TEMP_C = -40.0
+_RECIPE_MAX_TEMP_C = 150.0
 
 
 def _normalized_recipe_actor_key(value: Any) -> str:
@@ -1975,7 +1977,13 @@ def _parse_recipe_step(raw: Any, index: int) -> dict[str, Any]:
             normalized[field] = None
         else:
             parsed = _parse_float(raw_val, field_name=f"steps[{index}].{field}")
-            if parsed < 0:
+            if field == "temp":
+                if parsed < _RECIPE_MIN_TEMP_C or parsed > _RECIPE_MAX_TEMP_C:
+                    raise ValueError(
+                        f"Field 'steps[{index}].temp' must be between "
+                        f"{_RECIPE_MIN_TEMP_C:g} and {_RECIPE_MAX_TEMP_C:g}."
+                    )
+            elif parsed < 0:
                 raise ValueError(f"Field 'steps[{index}].{field}' must be >= 0.")
             normalized[field] = round(parsed, 2)
     return normalized
@@ -2176,6 +2184,8 @@ def stop_process_program():
 
     try:
         item = stop_recipe_program(current_app, requested_by=requested_by)
+    except DeviceCommandError as exc:
+        return _json_error(str(exc), exc.status_code, str(exc.details) if exc.details else None)
     except ValueError as exc:
         return _json_error(str(exc), 400)
 

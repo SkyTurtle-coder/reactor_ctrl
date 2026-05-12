@@ -62,6 +62,26 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         self.assertEqual(evaluation["active_step_index"], 2)
         self.assertAlmostEqual(evaluation["current_targets"]["Stirrer_01"]["rpm"], 0.0)
 
+    def test_temperature_step_ramps_from_previous_temperature_target(self):
+        started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
+        steps = [
+            {"actor": "Huber_01", "task": "Set initial temperature", "delta_time": 0, "temp": 20},
+            {"actor": "Huber_01", "task": "Ramp temperature", "delta_time": 2, "temp": 40},
+        ]
+
+        evaluation = _evaluate_program_timeline(
+            steps,
+            active_step_index=0,
+            step_started_at=started_at,
+            now=started_at + timedelta(seconds=60),
+        )
+
+        self.assertFalse(evaluation["completed"])
+        self.assertEqual(evaluation["active_step_index"], 1)
+        self.assertEqual(evaluation["active_step"]["actor"], "Huber_01")
+        self.assertAlmostEqual(evaluation["current_targets"]["Huber_01"]["temp"], 30.0)
+        self.assertAlmostEqual(evaluation["step_progress"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()
