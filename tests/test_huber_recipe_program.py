@@ -48,8 +48,8 @@ class HuberRecipeProgramTests(unittest.TestCase):
     def test_huber_temperature_actor_is_allowed_in_recipe_snapshot(self):
         recipe = self._recipe(
             [
-                {"actor": "Huber_01", "task": "Set cold", "delta_time": 0, "temp": -10},
-                {"actor": "Huber_01", "task": "Ramp warm", "delta_time": 2, "temp": 25},
+                {"actor": "Huber_01", "task": "Set cold", "delta_time": 0, "temp": -10, "rpm": 0},
+                {"actor": "Huber_01", "task": "Ramp warm", "delta_time": 2, "temp": 25, "pressure": 0},
             ]
         )
 
@@ -63,6 +63,8 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(snapshot["bindings"][0]["profile_id"], "hc_system_temperature")
         self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_unistat_430")
         self.assertEqual(snapshot["steps"][0]["temp"], -10)
+        self.assertIsNone(snapshot["steps"][0]["rpm"])
+        self.assertIsNone(snapshot["steps"][1]["pressure"])
 
     def test_huber_recipe_actor_rejects_rpm_values(self):
         recipe = self._recipe(

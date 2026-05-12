@@ -172,6 +172,15 @@ def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
     }
 
 
+def _has_nonzero_numeric_value(value: Any) -> bool:
+    if value in (None, ""):
+        return False
+    try:
+        return abs(float(value)) > 0.000001
+    except (TypeError, ValueError):
+        return True
+
+
 def _evaluate_program_timeline(
     steps: list[dict[str, Any]],
     *,
@@ -402,11 +411,13 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             raise ValueError(f"Step {index} references unknown actor '{actor}'.")
         profile_id = str(binding.get("profile_id") or "").strip()
         if profile_id == "motor_rpm":
-            if step.get("temp") is not None or step.get("pressure") is not None:
+            if _has_nonzero_numeric_value(step.get("temp")) or _has_nonzero_numeric_value(step.get("pressure")):
                 raise ValueError(
                     f"Step {index} contains Temp/Pressure values for actor '{actor}'. "
                     "Motor recipe actors support RPM values only."
                 )
+            step["temp"] = None
+            step["pressure"] = None
             rpm = step.get("rpm")
             if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
                 raise ValueError(
@@ -416,11 +427,13 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             continue
 
         if profile_id == "hc_system_temperature":
-            if step.get("rpm") is not None or step.get("pressure") is not None:
+            if _has_nonzero_numeric_value(step.get("rpm")) or _has_nonzero_numeric_value(step.get("pressure")):
                 raise ValueError(
                     f"Step {index} contains RPM/Pressure values for actor '{actor}'. "
                     "H/C recipe actors support temperature values only."
                 )
+            step["rpm"] = None
+            step["pressure"] = None
             temp = step.get("temp")
             if temp is None:
                 if actor not in huber_temp_initialized:
