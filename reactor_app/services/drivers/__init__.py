@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverNotFoundError, DriverValidationError
+from .huber_cc230 import HuberCC230Client, HuberCC230Driver, HuberCC230MockDriver
 from .huber_unistat import HuberUnistatDriver, HuberUnistatTCP
 from .ika_eurostar import IkaEurostarDriver
 
 
-_DRIVER_TYPES = (HuberUnistatDriver, IkaEurostarDriver)
+_DRIVER_TYPES = (HuberUnistatDriver, HuberCC230Driver, HuberCC230MockDriver, IkaEurostarDriver)
 _PROTOCOL_LABELS = {
+    "huber_cc230": "Huber CC230",
+    "huber_cc230_mock": "Huber CC230 Mock",
     "huber_pilot_one": "Huber Pilot ONE",
     "huber_unistat_430": "Huber Unistat 430",
     "ika_eurostar_60": "IKA 60",
@@ -47,6 +50,9 @@ __all__ = [
     "DriverError",
     "DriverNotFoundError",
     "DriverValidationError",
+    "HuberCC230Client",
+    "HuberCC230Driver",
+    "HuberCC230MockDriver",
     "HuberUnistatDriver",
     "HuberUnistatTCP",
     "IkaEurostarDriver",

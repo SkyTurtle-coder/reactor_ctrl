@@ -398,7 +398,7 @@ def execute_device_command(
         driver = get_driver(device.protocol)
     except DriverNotFoundError as exc:
         raise DeviceCommandError(str(exc), status_code=400) from exc
-    transport_config = _build_transport_config(connection, payload)
+    transport_config = _build_transport_config(connection, payload) if driver.uses_transport else None
 
     command = ControlCommand(
         device_id=device.device_id,
@@ -416,11 +416,18 @@ def execute_device_command(
     sent_at = _now_utc()
 
     try:
-        with TcpSocketTransport(transport_config) as transport:
+        if driver.uses_transport:
+            assert transport_config is not None
+            with TcpSocketTransport(transport_config) as transport:
+                command.status = "sent"
+                command.sent_at = sent_at
+                _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
+                result = driver.execute(transport=transport, request=request)
+        else:
             command.status = "sent"
             command.sent_at = sent_at
             _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
-            result = driver.execute(transport=transport, request=request)
+            result = driver.execute(transport=None, request=request)
     except socket.timeout as exc:
         _fail_command(command, status="timeout", message=str(exc), connection=connection, binding=binding)
         raise DeviceCommandError("Timed out while waiting for a device response.", status_code=504, command=command) from exc

@@ -45,6 +45,12 @@ class HuberRecipeProgramTests(unittest.TestCase):
             "protocol": "huber_unistat_430",
         }
 
+    def _cc230_binding(self):
+        binding = self._binding()
+        binding["device_display_name"] = "Huber CC230"
+        binding["protocol"] = "huber_cc230"
+        return binding
+
     def _motor_binding(self):
         return {
             "actor": "Stirrer_01",
@@ -89,6 +95,38 @@ class HuberRecipeProgramTests(unittest.TestCase):
             return_value={"Huber_01": self._binding()},
         ):
             with self.assertRaisesRegex(ValueError, "temperature values only"):
+                recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
+
+    def test_cc230_recipe_actor_uses_wider_temperature_range(self):
+        recipe = self._recipe(
+            [
+                {"actor": "Huber_01", "task": "High setpoint", "delta_time": 0, "temp": 180},
+            ]
+        )
+
+        with patch.object(
+            recipe_program_runtime,
+            "_build_target_lookup",
+            return_value={"Huber_01": self._cc230_binding()},
+        ):
+            snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
+
+        self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_cc230")
+        self.assertEqual(snapshot["steps"][0]["temp"], 180)
+
+    def test_unistat_recipe_actor_keeps_existing_temperature_range(self):
+        recipe = self._recipe(
+            [
+                {"actor": "Huber_01", "task": "Too high", "delta_time": 0, "temp": 180},
+            ]
+        )
+
+        with patch.object(
+            recipe_program_runtime,
+            "_build_target_lookup",
+            return_value={"Huber_01": self._binding()},
+        ):
+            with self.assertRaisesRegex(ValueError, "limited to -40..150"):
                 recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
 
     def test_multi_actor_step_keeps_relevant_values_for_each_actor(self):
@@ -148,6 +186,32 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(state.last_applied_targets_json["Huber_01"]["temp"], 21.25)
         self.assertTrue(state.last_applied_targets_json["Huber_01"]["is_on"])
         self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
+
+    def test_cc230_current_target_uses_cc230_setpoint_limits(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="CC230-7",
+            display_name="Huber CC230",
+            device_type="thermostat",
+            protocol="huber_cc230",
+        )
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._cc230_binding()]}
+        state.last_applied_targets_json = {}
+
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                recipe_program_runtime._apply_current_targets(
+                    app,
+                    state,
+                    {"Huber_01": {"temp": 180, "pressure": 0, "rpm": 0}},
+                )
+
+        payload = execute_command.call_args_list[0].kwargs["payload"]
+        self.assertEqual(payload["temp_c"], 180)
+        self.assertEqual(payload["min_setpoint_c"], -50.0)
+        self.assertEqual(payload["max_setpoint_c"], 200.0)
 
     def test_huber_safe_stop_sets_twenty_degrees_before_stop(self):
         app = Flask(__name__)

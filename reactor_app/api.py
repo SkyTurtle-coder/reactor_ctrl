@@ -62,6 +62,7 @@ _PROCESS_MANUAL_ALLOWED_COMMANDS = {
     "get_internal_temp",
     "get_process_temp",
     "get_status",
+    "detect_protocol",
     "start",
     "stop",
 }
@@ -84,6 +85,10 @@ _PROCESS_MANUAL_ALLOWED_DRIVER_PAYLOAD_FIELDS = {
     "temperature_c",
     "min_setpoint_c",
     "max_setpoint_c",
+    "line_ending",
+    "max_retries",
+    "protocol_variant",
+    "cc230_protocol",
     "response_timeout_ms",
     "write_timeout_ms",
     "connect_timeout_ms",
@@ -369,8 +374,14 @@ def _validate_process_manual_command_payload(command_name: str, payload: dict[st
         for field_name in ("temp_c", "temperature_c", "min_setpoint_c", "max_setpoint_c"):
             if field_name in sanitized:
                 sanitized[field_name] = _parse_float(sanitized[field_name], field_name=f"payload.{field_name}")
+        for field_name in ("line_ending", "protocol_variant", "cc230_protocol"):
+            if field_name in sanitized:
+                sanitized[field_name] = _clean_string(sanitized[field_name], field_name=f"payload.{field_name}")
+                if sanitized[field_name] is not None and len(str(sanitized[field_name])) > 32:
+                    raise ValueError(f"Field 'payload.{field_name}' must not exceed 32 characters.")
 
         bounded_int_fields = {
+            "max_retries": (0, 5),
             "response_timeout_ms": (100, 60000),
             "write_timeout_ms": (100, 60000),
             "connect_timeout_ms": (100, 60000),

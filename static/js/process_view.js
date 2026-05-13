@@ -2215,7 +2215,12 @@
     function isHuberThermostatTarget(node, target) {
         const protocol = normalizedProtocolName(target?.protocol);
         const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
-        return (protocol === "huber_unistat_430" || protocol === "huber_pilot_one") && symbolId === "hc_system";
+        return (
+            protocol === "huber_unistat_430"
+            || protocol === "huber_pilot_one"
+            || protocol === "huber_cc230"
+            || protocol === "huber_cc230_mock"
+        ) && symbolId === "hc_system";
     }
 
     function isSupportedManualTarget(node, target) {

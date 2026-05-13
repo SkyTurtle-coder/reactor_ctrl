@@ -34,9 +34,15 @@ _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
-_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_cc230_mock"}
 _HUBER_MIN_SETPOINT_C = -40.0
 _HUBER_MAX_SETPOINT_C = 150.0
+_HUBER_SETPOINT_LIMITS_BY_PROTOCOL = {
+    "huber_unistat_430": (-40.0, 150.0),
+    "huber_pilot_one": (-40.0, 150.0),
+    "huber_cc230": (-50.0, 200.0),
+    "huber_cc230_mock": (-50.0, 200.0),
+}
 _SAFE_HUBER_SETPOINT_C = 20.0
 
 
@@ -74,6 +80,13 @@ def _is_mysql_record_changed_error(exc: OperationalError) -> bool:
 
 def _normalized_lookup_value(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _huber_setpoint_limits(protocol: Any) -> tuple[float, float]:
+    return _HUBER_SETPOINT_LIMITS_BY_PROTOCOL.get(
+        _normalized_lookup_value(protocol),
+        (_HUBER_MIN_SETPOINT_C, _HUBER_MAX_SETPOINT_C),
+    )
 
 
 def _recipe_program_loop_sleep(app: Flask) -> float:
@@ -464,7 +477,7 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             if protocol not in _HUBER_PROTOCOLS:
                 raise ValueError(
                     f"Actor '{actor}' is mapped to protocol '{binding.get('protocol') or 'unknown'}'. "
-                    "H/C recipe actors require Huber Unistat/Pilot ONE devices."
+                    "H/C recipe actors require supported Huber thermostat devices."
                 )
         else:
             raise ValueError(
@@ -481,12 +494,14 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
         # Used to distinguish "irrelevant zero" from "relevant field for another actor".
         step_relevant_fields: set[str] = set()
         step_actor_profiles: dict[str, str] = {}
+        step_actor_protocols: dict[str, str] = {}
         for actor in step_actor_ids:
             binding = next((item for item in bindings if item["actor"] == actor), None)
             if binding is None:
                 raise ValueError(f"Step {index} references unknown actor '{actor}'.")
             profile_id = str(binding.get("profile_id") or "").strip()
             step_actor_profiles[actor] = profile_id
+            step_actor_protocols[actor] = _protocol_for_binding(binding)
             if profile_id == "motor_rpm":
                 step_relevant_fields.add("rpm")
             elif profile_id == "hc_system_temperature":
@@ -524,10 +539,11 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                         )
                     continue
                 temp_value = float(temp)
-                if temp_value < _HUBER_MIN_SETPOINT_C or temp_value > _HUBER_MAX_SETPOINT_C:
+                min_setpoint, max_setpoint = _huber_setpoint_limits(step_actor_protocols.get(actor))
+                if temp_value < min_setpoint or temp_value > max_setpoint:
                     raise ValueError(
                         f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
-                        f"Huber setpoints are limited to {_HUBER_MIN_SETPOINT_C:g}..{_HUBER_MAX_SETPOINT_C:g} degC."
+                        f"Huber setpoints are limited to {min_setpoint:g}..{max_setpoint:g} degC."
                     )
                 huber_temp_initialized.add(actor)
 
@@ -1011,14 +1027,15 @@ def _apply_safe_stop_to_binding(
     }
 
     if _is_huber_temperature_binding(binding):
+        min_setpoint, max_setpoint = _huber_setpoint_limits(binding.get("protocol"))
         safe_target.update({"temp": _SAFE_HUBER_SETPOINT_C, "is_on": False})
         for command_name, payload in (
             (
                 "set_setpoint",
                 {
                     "temp_c": _SAFE_HUBER_SETPOINT_C,
-                    "min_setpoint_c": _HUBER_MIN_SETPOINT_C,
-                    "max_setpoint_c": _HUBER_MAX_SETPOINT_C,
+                    "min_setpoint_c": min_setpoint,
+                    "max_setpoint_c": max_setpoint,
                 },
             ),
             ("stop", {}),
@@ -1191,10 +1208,11 @@ def _apply_current_targets(
 
         if _is_huber_temperature_binding(binding):
             temp_c = round(float((targets or {}).get("temp") or 0.0), 2)
-            if temp_c < _HUBER_MIN_SETPOINT_C or temp_c > _HUBER_MAX_SETPOINT_C:
+            min_setpoint, max_setpoint = _huber_setpoint_limits(binding.get("protocol"))
+            if temp_c < min_setpoint or temp_c > max_setpoint:
                 raise RuntimeError(
                     f"Recipe target {temp_c:g} degC for actor '{actor}' is outside the "
-                    f"Huber safety range {_HUBER_MIN_SETPOINT_C:g}..{_HUBER_MAX_SETPOINT_C:g} degC."
+                    f"Huber safety range {min_setpoint:g}..{max_setpoint:g} degC."
                 )
             next_payload = {
                 "profile_id": "hc_system_temperature",
@@ -1209,8 +1227,8 @@ def _apply_current_targets(
                 command_name="set_setpoint",
                 payload={
                     "temp_c": temp_c,
-                    "min_setpoint_c": _HUBER_MIN_SETPOINT_C,
-                    "max_setpoint_c": _HUBER_MAX_SETPOINT_C,
+                    "min_setpoint_c": min_setpoint,
+                    "max_setpoint_c": max_setpoint,
                 },
                 requested_by="recipe_program",
             )

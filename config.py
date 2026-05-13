@@ -28,6 +28,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value.strip())
+    except ValueError:
+        return default
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-change-me")
     SQLALCHEMY_DATABASE_URI = os.getenv(
@@ -71,6 +81,11 @@ class Config:
     MEASUREMENT_RETENTION_BATCH_SIZE = _env_int("MEASUREMENT_RETENTION_BATCH_SIZE", 10_000)
     MEASUREMENT_RETENTION_MAX_BATCHES_PER_RUN = _env_int("MEASUREMENT_RETENTION_MAX_BATCHES_PER_RUN", 50)
     MEASUREMENT_RETENTION_DRY_RUN = _env_bool("MEASUREMENT_RETENTION_DRY_RUN", False)
+    HUBER_CC230_DEFAULT_PORT = _env_int("HUBER_CC230_DEFAULT_PORT", 4001)
+    HUBER_CC230_LINE_ENDING = os.getenv("HUBER_CC230_LINE_ENDING", "cr")
+    HUBER_CC230_MAX_RETRIES = _env_int("HUBER_CC230_MAX_RETRIES", 2)
+    HUBER_CC230_MIN_SETPOINT_C = _env_float("HUBER_CC230_MIN_SETPOINT_C", -50.0)
+    HUBER_CC230_MAX_SETPOINT_C = _env_float("HUBER_CC230_MAX_SETPOINT_C", 200.0)
     ACTIVITY_LOG_RETENTION_ENABLED = _env_bool("ACTIVITY_LOG_RETENTION_ENABLED", True)
     ACTIVITY_LOG_RETENTION_DAYS = _env_int("ACTIVITY_LOG_RETENTION_DAYS", 7)
     ACTIVITY_LOG_RETENTION_BATCH_SIZE = _env_int("ACTIVITY_LOG_RETENTION_BATCH_SIZE", 5_000)

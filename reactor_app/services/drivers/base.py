@@ -35,7 +35,8 @@ class DriverNotFoundError(DriverError):
 
 class DeviceDriver(ABC):
     protocol_names: tuple[str, ...] = ()
+    uses_transport: bool = True
 
     @abstractmethod
-    def execute(self, *, transport: TcpSocketTransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+    def execute(self, *, transport: TcpSocketTransport | None, request: DeviceCommandRequest) -> DeviceCommandResult:
         raise NotImplementedError
