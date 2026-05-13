@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from ..extensions import db
 from ..models import ControlCommand, ControlCommandEvent, Device, Measurement, MeasurementChannel
 from .drivers import DeviceCommandRequest, DeviceCommandResult, DriverError, DriverNotFoundError, DriverValidationError, get_driver
@@ -65,6 +67,50 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
     )
 
 
+def _mark_connection_success(connection_id: int, *, timestamp: datetime) -> None:
+    db.session.execute(
+        text(
+            "UPDATE device_connection "
+            "SET last_seen_at=:ts, last_error=NULL, updated_at=:ts "
+            "WHERE connection_id=:cid"
+        ),
+        {"ts": timestamp, "cid": connection_id},
+    )
+
+
+def _mark_connection_failure(connection_id: int, *, message: str, timestamp: datetime) -> None:
+    db.session.execute(
+        text(
+            "UPDATE device_connection "
+            "SET last_error=:msg, updated_at=:ts "
+            "WHERE connection_id=:cid"
+        ),
+        {"msg": message, "ts": timestamp, "cid": connection_id},
+    )
+
+
+def _mark_binding_online(device_id: int, *, connection_id: int, timestamp: datetime) -> None:
+    db.session.execute(
+        text(
+            "UPDATE device_binding_current "
+            "SET last_seen_at=:ts, is_online=1 "
+            "WHERE device_id=:did AND connection_id=:cid"
+        ),
+        {"ts": timestamp, "did": device_id, "cid": connection_id},
+    )
+
+
+def _mark_binding_offline(device_id: int, *, connection_id: int) -> None:
+    db.session.execute(
+        text(
+            "UPDATE device_binding_current "
+            "SET is_online=0 "
+            "WHERE device_id=:did AND connection_id=:cid"
+        ),
+        {"did": device_id, "cid": connection_id},
+    )
+
+
 def _build_transport_config(connection, payload: dict[str, Any]) -> TcpSocketConfig:
     read_timeout_ms = _parse_optional_int(payload.get("response_timeout_ms"), field_name="response_timeout_ms")
     write_timeout_ms = _parse_optional_int(payload.get("write_timeout_ms"), field_name="write_timeout_ms")
@@ -87,9 +133,15 @@ def _fail_command(command: ControlCommand, *, status: str, message: str, connect
     command.error_message = message
     command.finished_at = finished_at
 
-    connection.last_error = message
+    # These runtime telemetry fields can be touched by the recipe and manual
+    # reconcilers at the same time. Keep them out of ORM dirty tracking to avoid
+    # MySQL error 1020 on stale row snapshots; last writer wins is acceptable
+    # for connection health metadata.
+    _mark_connection_failure(connection.connection_id, message=message, timestamp=finished_at)
+    db.session.expire(connection, ["last_error", "updated_at"])
     if binding is not None:
-        binding.is_online = False
+        _mark_binding_offline(binding.device_id, connection_id=binding.connection_id)
+        db.session.expire(binding, ["is_online"])
 
     _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
 
@@ -385,10 +437,13 @@ def execute_device_command(
     command.finished_at = finished_at
     command.error_message = None
 
-    connection.last_seen_at = finished_at
-    connection.last_error = None
-    binding.last_seen_at = finished_at
-    binding.is_online = True
+    # See _fail_command for why these telemetry fields are written outside ORM
+    # dirty tracking. The binding update is guarded by connection_id so a stale
+    # in-flight command cannot mark a newly rebound device online.
+    _mark_connection_success(connection.connection_id, timestamp=finished_at)
+    _mark_binding_online(binding.device_id, connection_id=binding.connection_id, timestamp=finished_at)
+    db.session.expire(connection, ["last_seen_at", "last_error", "updated_at"])
+    db.session.expire(binding, ["last_seen_at", "is_online"])
 
     _add_command_event(
         command,
