@@ -139,9 +139,10 @@ def _fail_command(command: ControlCommand, *, status: str, message: str, connect
     # connection health metadata.
     try:
         with db.session.begin_nested():
-            _mark_connection_failure(connection.connection_id, message=message, timestamp=finished_at)
-            if binding is not None:
-                _mark_binding_offline(binding.device_id, connection_id=binding.connection_id)
+            with db.session.no_autoflush:
+                _mark_connection_failure(connection.connection_id, message=message, timestamp=finished_at)
+                if binding is not None:
+                    _mark_binding_offline(binding.device_id, connection_id=binding.connection_id)
     except Exception:
         pass
     db.session.expire(connection, ["last_error", "updated_at"])
@@ -454,8 +455,9 @@ def execute_device_command(
     # in-flight command cannot mark a newly rebound device online.
     try:
         with db.session.begin_nested():
-            _mark_connection_success(connection.connection_id, timestamp=finished_at)
-            _mark_binding_online(binding.device_id, connection_id=binding.connection_id, timestamp=finished_at)
+            with db.session.no_autoflush:
+                _mark_connection_success(connection.connection_id, timestamp=finished_at)
+                _mark_binding_online(binding.device_id, connection_id=binding.connection_id, timestamp=finished_at)
     except Exception:
         pass
     db.session.expire(connection, ["last_seen_at", "last_error", "updated_at"])

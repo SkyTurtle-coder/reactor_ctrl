@@ -377,7 +377,13 @@ def _run_logged_driver_command(device: Device, command_name: str, payload: dict[
         )
     except DeviceCommandError as exc:
         if exc.command is not None:
-            db.session.commit()
+            try:
+                db.session.commit()
+            except Exception:
+                # A MySQL deadlock can silently roll back the outer transaction,
+                # leaving the session with references to rows that no longer exist.
+                # Rolling back here ensures a clean session for the next operation.
+                db.session.rollback()
         raise
 
     db.session.commit()

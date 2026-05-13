@@ -69,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float,
                    default=_env_float("HUBER_CC230_TIMEOUT_S", DEFAULT_TIMEOUT_S),
                    help="Read timeout in seconds (default 2.0).")
-    p.add_argument("--line-ending", default=os.getenv("HUBER_CC230_LINE_ENDING", "cr"),
+    p.add_argument("--line-ending", default=os.getenv("HUBER_CC230_LINE_ENDING", "crlf"),
                    choices=("cr", "crlf", "lf"),
                    help="Command terminator sent to device (default: cr = \\r).")
     p.add_argument("--max-retries", type=int,

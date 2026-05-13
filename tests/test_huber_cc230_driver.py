@@ -237,7 +237,7 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertIsInstance(get_driver("huber_cc230"), HuberCC230Driver)
         self.assertIsInstance(get_driver("huber_cc230_mock"), HuberCC230MockDriver)
 
-    def test_get_internal_temp_uses_cr_by_default(self):
+    def test_get_internal_temp_uses_crlf_by_default(self):
         transport = _FakeTransport([b"+23.40\r\n"])
         result = HuberCC230Driver().execute(
             transport=transport,
@@ -246,7 +246,7 @@ class HuberCC230DriverTests(unittest.TestCase):
                 payload={},
             ),
         )
-        self.assertEqual(transport.sent, [b"IN_PV_00\r"])
+        self.assertEqual(transport.sent, [b"IN_PV_00\r\n"])
         self.assertAlmostEqual(result.metadata["value"], 23.40)
         self.assertEqual(result.metadata["protocol"], "namur")
 

@@ -852,7 +852,7 @@ class HuberCC230Driver(DeviceDriver):
         return response
 
     def _line_ending(self, payload: dict[str, Any]) -> str:
-        value = payload.get("line_ending") or os.getenv("HUBER_CC230_LINE_ENDING", "cr")
+        value = payload.get("line_ending") or os.getenv("HUBER_CC230_LINE_ENDING", "crlf")
         try:
             return normalize_line_ending(value, field_name="payload.line_ending")
         except ValueError as exc:
