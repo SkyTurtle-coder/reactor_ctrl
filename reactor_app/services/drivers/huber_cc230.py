@@ -20,7 +20,7 @@ NO_RESPONSE_MESSAGE = (
 )
 DEFAULT_MOXA_PORT = 4001
 DEFAULT_TIMEOUT_S = 2.0
-DEFAULT_LINE_ENDING = "\r"
+DEFAULT_LINE_ENDING = "\n"
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_MIN_SETPOINT_C = -50.0
 DEFAULT_MAX_SETPOINT_C = 200.0
@@ -178,10 +178,12 @@ def parse_numeric_response(response: str | None, *, field_name: str = "response"
     matches = _NUMERIC_RE.findall(text)
     if not matches:
         raise HuberCC230Error(f"Could not parse numeric {field_name} from Huber CC230 response: {text!r}.")
-    # Huber/LAI/NAMUR replies often echo the command first, e.g.
-    # "IN_PV_00 25.12". Use the last numeric token so the channel suffix "00"
-    # is not mistaken for the measurement.
-    token = matches[-1].replace(",", ".")
+    # This device returns "value status_code", e.g. "25.12 0" where 0 = no error.
+    # Some firmware instead echoes the command first: "IN_PV_00 25.12".
+    # In both cases the measurement is the last token that contains a decimal point.
+    # Fallback to the last token for integer-only responses.
+    decimal_matches = [m for m in matches if "." in m or "," in m]
+    token = (decimal_matches[-1] if decimal_matches else matches[-1]).replace(",", ".")
     return float(token)
 
 
@@ -481,13 +483,23 @@ class HuberCC230Client:
                 if data:
                     raise HuberCC230Error(f"Incomplete Huber CC230 response before connection closed: {bytes(data)!r}.")
                 raise HuberCC230NoResponseError(NO_RESPONSE_MESSAGE)
-            data.extend(chunk)
-            if chunk in (b"\r", b"\n"):
+            if chunk == b"\r":
+                # Consume optional trailing \n so CRLF-terminated responses
+                # don't leave a stale byte in the buffer for the next query.
+                try:
+                    next_byte = self.sock.recv(1)
+                    if next_byte and next_byte != b"\n":
+                        data.extend(next_byte)
+                except socket.timeout:
+                    pass
                 break
+            if chunk == b"\n":
+                break
+            data.extend(chunk)
         else:
             raise HuberCC230Error("Huber CC230 response exceeded maximum response length.")
 
-        response = bytes(data).decode("ascii", errors="replace").rstrip("\r\n")
+        response = bytes(data).decode("ascii", errors="replace")
         if not response:
             raise HuberCC230Error("Huber CC230 returned an empty response.")
         return response
@@ -581,9 +593,10 @@ class _TransportHuberCC230Session:
 
 def _detect_protocol_with_session(session: Any) -> dict[str, Any]:
     original_line_ending = normalize_line_ending(getattr(session, "line_ending", DEFAULT_LINE_ENDING))
-    candidate_endings = [original_line_ending]
-    if original_line_ending != "\r\n":
-        candidate_endings.append("\r\n")
+    # Try \n first (confirmed working with CC230 on MOXA NPort), then \r\n, then original.
+    candidate_endings = ["\n", "\r\n"]
+    if original_line_ending not in candidate_endings:
+        candidate_endings.append(original_line_ending)
 
     probes = [
         ("namur", "get_temp"),
@@ -717,7 +730,7 @@ class HuberCC230Driver(DeviceDriver):
         )
 
     def _line_ending(self, payload: dict[str, Any]) -> str:
-        value = payload.get("line_ending") or os.getenv("HUBER_CC230_LINE_ENDING", "cr")
+        value = payload.get("line_ending") or os.getenv("HUBER_CC230_LINE_ENDING", "lf")
         try:
             return normalize_line_ending(value, field_name="payload.line_ending")
         except ValueError as exc:

@@ -81,8 +81,8 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertIsInstance(get_driver("huber_cc230"), HuberCC230Driver)
         self.assertIsInstance(get_driver("huber_cc230_mock"), HuberCC230MockDriver)
 
-    def test_get_internal_temp_uses_namur_ascii_with_cr_by_default(self):
-        transport = _FakeTransport([b"IN_PV_00 23.40\r"])
+    def test_get_internal_temp_uses_namur_ascii_with_lf_by_default(self):
+        transport = _FakeTransport([b"IN_PV_00 23.40\r\n"])
         result = HuberCC230Driver().execute(
             transport=transport,
             request=DeviceCommandRequest(
@@ -91,7 +91,7 @@ class HuberCC230DriverTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(transport.sent, [b"IN_PV_00\r"])
+        self.assertEqual(transport.sent, [b"IN_PV_00\n"])
         self.assertEqual(result.metadata["value"], 23.4)
         self.assertEqual(result.metadata["protocol"], "namur")
 
@@ -110,13 +110,13 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], 24.1)
 
     def test_detect_protocol_stores_first_plausible_reply(self):
-        transport = _FakeTransport([b"21.50\r"])
+        transport = _FakeTransport([b"21.50\r\n"])
         result = HuberCC230Driver().execute(
             transport=transport,
             request=DeviceCommandRequest(command_name="detect_protocol", payload={}),
         )
 
-        self.assertEqual(transport.sent, [b"IN_PV_00\r"])
+        self.assertEqual(transport.sent, [b"IN_PV_00\n"])
         self.assertEqual(result.metadata["protocol"], "namur")
         self.assertEqual(result.metadata["response"], "21.50")
 
