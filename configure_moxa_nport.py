@@ -12,6 +12,23 @@ from typing import Any
 
 _DEVICE_PRESETS = {
     "generic": {},
+    "huber_cc230": {
+        "baud_rate": 9600,
+        "data_bits": 8,
+        "parity": "N",
+        "stop_bits": 1,
+        "flow_control": "none",
+        "read_timeout_ms": 2000,
+        "write_timeout_ms": 2000,
+        "device_protocol": "huber_cc230",
+        "device_type": "thermostat",
+        "notes": "Huber CC230 over MOXA TCP-to-RS232: 9600 baud, 8N1, no handshake. Start with CR line ending.",
+    },
+    "huber_cc230_mock": {
+        "device_protocol": "huber_cc230_mock",
+        "device_type": "thermostat",
+        "notes": "Huber CC230 mock device for UI and recipe testing without real hardware.",
+    },
     "huber_unistat_430": {
         "baud_rate": 9600,
         "data_bits": 8,
@@ -20,6 +37,8 @@ _DEVICE_PRESETS = {
         "flow_control": "none",
         "read_timeout_ms": 1500,
         "write_timeout_ms": 1500,
+        "device_protocol": "huber_unistat_430",
+        "device_type": "thermostat",
         "notes": "Huber Unistat/Pilot ONE PB over RS-232: 9600 baud, 8N1, no handshake.",
     },
     "huber_pilot_one": {
@@ -30,6 +49,8 @@ _DEVICE_PRESETS = {
         "flow_control": "none",
         "read_timeout_ms": 1500,
         "write_timeout_ms": 1500,
+        "device_protocol": "huber_pilot_one",
+        "device_type": "thermostat",
         "notes": "Huber Unistat/Pilot ONE PB over RS-232: 9600 baud, 8N1, no handshake.",
     },
     "ika_eurostar_60": {
@@ -38,6 +59,8 @@ _DEVICE_PRESETS = {
         "parity": "E",
         "stop_bits": 1,
         "flow_control": "none",
+        "device_protocol": "ika_eurostar_60",
+        "device_type": "actuator",
         "notes": "IKA EUROSTAR 60 RS-232: 9600 baud, 7E1, no flow control.",
     },
 }
@@ -100,6 +123,54 @@ def _connection_payload(args: argparse.Namespace, *, device_server_id: int, port
         "reconnect_delay_ms": args.reconnect_delay_ms,
         "is_enabled": True,
     }
+
+
+def _default_device_protocol(args: argparse.Namespace) -> str:
+    preset = _DEVICE_PRESETS.get(args.device_preset) or {}
+    return str(args.device_protocol or preset.get("device_protocol") or "").strip()
+
+
+def _default_device_type(args: argparse.Namespace) -> str:
+    preset = _DEVICE_PRESETS.get(args.device_preset) or {}
+    return str(args.device_type or preset.get("device_type") or "actuator").strip()
+
+
+def _default_device_asset_serial(args: argparse.Namespace, *, port_number: int, protocol: str) -> str:
+    protocol_token = re.sub(r"[^A-Za-z0-9]+", "-", protocol.strip()).strip("-").upper() or "DEVICE"
+    return f"{args.server_code}-P{port_number}-{protocol_token}"
+
+
+def _default_device_display_name(args: argparse.Namespace, *, port_number: int, protocol: str) -> str:
+    if args.device_display_name:
+        return args.device_display_name
+    labels = {
+        "huber_cc230": "Huber CC230",
+        "huber_cc230_mock": "Huber CC230 Mock",
+        "huber_unistat_430": "Huber Unistat 430",
+        "huber_pilot_one": "Huber Pilot ONE",
+        "ika_eurostar_60": "IKA EUROSTAR 60",
+    }
+    return f"{labels.get(protocol, protocol or 'Device')} Port {port_number}"
+
+
+def _device_payload(args: argparse.Namespace, *, port_number: int) -> dict[str, Any]:
+    protocol = _default_device_protocol(args)
+    if not protocol:
+        raise RuntimeError("--bind-device requires --device-protocol or a non-generic --device-preset.")
+
+    payload: dict[str, Any] = {
+        "asset_serial": args.device_asset_serial
+        or _default_device_asset_serial(args, port_number=port_number, protocol=protocol),
+        "display_name": _default_device_display_name(args, port_number=port_number, protocol=protocol),
+        "device_type": _default_device_type(args),
+        "protocol": protocol,
+        "is_active": True,
+    }
+    if args.manufacturer_serial:
+        payload["manufacturer_serial"] = args.manufacturer_serial
+    if args.firmware_version:
+        payload["firmware_version"] = args.firmware_version
+    return payload
 
 
 def _server_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -179,6 +250,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label-prefix", default="Port", help="Connection label prefix, for example 'Port'.")
     parser.add_argument("--notes", help="Optional notes stored on the device server record.")
     parser.add_argument(
+        "--bind-device",
+        action="store_true",
+        help="Create/update one device and bind it to the selected MOXA port. Requires exactly one --only-port.",
+    )
+    parser.add_argument(
+        "--device-protocol",
+        choices=("huber_cc230", "huber_cc230_mock", "huber_unistat_430", "huber_pilot_one", "ika_eurostar_60"),
+        help="Protocol for --bind-device. Defaults to the selected device preset when available.",
+    )
+    parser.add_argument("--device-asset-serial", help="Stable internal asset serial for --bind-device.")
+    parser.add_argument("--device-display-name", help="Display name for --bind-device.")
+    parser.add_argument("--device-type", help="Device type for --bind-device, defaults to preset device type.")
+    parser.add_argument("--manufacturer-serial", help="Optional manufacturer serial for --bind-device.")
+    parser.add_argument("--firmware-version", help="Optional firmware version for --bind-device.")
+    parser.add_argument("--binding-quality-state", default="configured", help="Quality state stored on the binding.")
+    parser.add_argument("--binding-online", action="store_true", help="Mark the initial binding online.")
+    parser.add_argument(
         "--probe",
         action="store_true",
         help="Probe every provisioned TCP endpoint after create or update.",
@@ -202,6 +290,8 @@ def _apply_device_preset(args: argparse.Namespace, argv: list[str]) -> None:
         "--read-timeout-ms": "read_timeout_ms",
         "--write-timeout-ms": "write_timeout_ms",
         "--notes": "notes",
+        "--device-protocol": "device_protocol",
+        "--device-type": "device_type",
     }
     for option, attr in option_to_attr.items():
         if option not in explicit_options and attr in preset:
@@ -220,6 +310,97 @@ def _selected_ports(args: argparse.Namespace) -> list[int]:
     return ports
 
 
+def _find_existing_device(devices: list[dict[str, Any]], desired_device: dict[str, Any]) -> dict[str, Any] | None:
+    asset_serial = str(desired_device.get("asset_serial") or "").strip()
+    if asset_serial:
+        match = next((item for item in devices if str(item.get("asset_serial") or "").strip() == asset_serial), None)
+        if match is not None:
+            return match
+
+    manufacturer_serial = str(desired_device.get("manufacturer_serial") or "").strip()
+    protocol = str(desired_device.get("protocol") or "").strip()
+    if manufacturer_serial and protocol:
+        return next(
+            (
+                item for item in devices
+                if str(item.get("manufacturer_serial") or "").strip() == manufacturer_serial
+                and str(item.get("protocol") or "").strip() == protocol
+            ),
+            None,
+        )
+    return None
+
+
+def _provision_bound_device(
+    *,
+    base_url: str,
+    token: str,
+    args: argparse.Namespace,
+    port_number: int,
+    connection: dict[str, Any],
+) -> dict[str, Any]:
+    desired_device = _device_payload(args, port_number=port_number)
+    _, devices_payload = _request_json(base_url=base_url, path="/api/devices", token=token)
+    devices = devices_payload["items"]
+    device = _find_existing_device(devices, desired_device)
+    device_fields = [
+        "asset_serial",
+        "display_name",
+        "device_type",
+        "protocol",
+        "manufacturer_serial",
+        "firmware_version",
+        "is_active",
+    ]
+
+    if device is None:
+        print(
+            f"   Lege Device {desired_device['display_name']} "
+            f"({desired_device['protocol']}, asset_serial={desired_device['asset_serial']}) an."
+        )
+        _, device = _request_json(
+            base_url=base_url,
+            path="/api/devices",
+            method="POST",
+            token=token,
+            payload=desired_device,
+        )
+    else:
+        changed_fields = _diff_keys(device, desired_device, keys=device_fields)
+        if changed_fields:
+            print(f"   Aktualisiere Device {device['device_id']} ({', '.join(changed_fields)}).")
+            _, device = _request_json(
+                base_url=base_url,
+                path=f"/api/devices/{device['device_id']}",
+                method="PATCH",
+                token=token,
+                payload=desired_device,
+            )
+        else:
+            print(f"   Device {device['device_id']} ist bereits passend konfiguriert.")
+
+    current_binding = device.get("current_binding") if isinstance(device.get("current_binding"), dict) else None
+    connection_id = int(connection["connection_id"])
+    if not current_binding or int(current_binding.get("connection_id") or 0) != connection_id:
+        print(f"   Binde Device {device['device_id']} an Connection {connection_id}.")
+        _, device = _request_json(
+            base_url=base_url,
+            path=f"/api/devices/{device['device_id']}/binding",
+            method="PUT",
+            token=token,
+            payload={
+                "connection_id": connection_id,
+                "quality_state": args.binding_quality_state,
+                "is_online": bool(args.binding_online),
+                "reason": "moxa_provisioning",
+            },
+        )
+    else:
+        print(f"   Binding Device {device['device_id']} -> Connection {connection_id} existiert bereits.")
+
+    return device
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -230,6 +411,9 @@ def main() -> int:
 
     args.server_code = args.server_code or _normalize_server_code(args.host)
     args.parity = args.parity.upper()
+    selected_ports = _selected_ports(args)
+    if args.bind_device and len(selected_ports) != 1:
+        raise RuntimeError("--bind-device requires exactly one selected port. Pass exactly one --only-port.")
 
     print("1. Lade Device-Server ...")
     _, servers_payload = _request_json(base_url=args.base_url, path="/api/device-servers", token=args.api_token)
@@ -291,7 +475,7 @@ def main() -> int:
     updated = 0
     unchanged = 0
     probed = 0
-    selected_ports = _selected_ports(args)
+    bound_device = None
 
     connection_fields = [
         "connection_label",
@@ -368,6 +552,15 @@ def main() -> int:
             )
             probed += 1
 
+        if args.bind_device:
+            bound_device = _provision_bound_device(
+                base_url=args.base_url,
+                token=args.api_token,
+                args=args,
+                port_number=port_number,
+                connection=current,
+            )
+
     print("3. Zusammenfassung")
     print(f"   Server-Code: {server['server_code']}")
     print(f"   Host: {server['host']}")
@@ -375,6 +568,22 @@ def main() -> int:
     print(f"   Connections erstellt: {created}")
     print(f"   Connections aktualisiert: {updated}")
     print(f"   Connections unveraendert: {unchanged}")
+    if bound_device is not None:
+        current_binding = (
+            bound_device.get("current_binding") if isinstance(bound_device.get("current_binding"), dict) else {}
+        )
+        binding_connection = (
+            current_binding.get("connection") if isinstance(current_binding.get("connection"), dict) else {}
+        )
+        binding_label = binding_connection.get("connection_label") or f"{args.label_prefix} {selected_ports[0]}"
+        print(
+            f"   Device gebunden: id={bound_device['device_id']} "
+            f"name={bound_device['display_name']} protocol={bound_device['protocol']}"
+        )
+        print("   Flowsheet-Zuordnung fuer Reactor Builder:")
+        print(f"      device_server_code = {server['server_code']}")
+        print(f"      connection_label   = {binding_label}")
+        print(f"      protocol           = {bound_device['protocol']}")
     if args.probe:
         print(f"   Connections geprueft: {probed}")
     print("Provisionierung abgeschlossen.")

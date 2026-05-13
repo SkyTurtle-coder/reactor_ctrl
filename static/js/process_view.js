@@ -2227,6 +2227,15 @@
         return isIkaMotorTarget(node, target) || isHuberThermostatTarget(node, target);
     }
 
+
+    function huberSetpointLimits(target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        if (protocol === "huber_cc230" || protocol === "huber_cc230_mock") {
+            return { min: -50, max: 200 };
+        }
+        return { min: -40, max: 150 };
+    }
+
     function syncManualControlsEnabled(enabled) {
         const allow = enabled && !state.isSending;
         if (manualStateInput) {
@@ -2271,6 +2280,7 @@
         }
 
         if (isHuberThermostatTarget(node, target)) {
+            const limits = huberSetpointLimits(target);
             if (manualDeviceHeading) {
                 manualDeviceHeading.textContent = "Thermostat";
             }
@@ -2287,8 +2297,8 @@
                 manualSecondaryMetricLabel.textContent = "Status";
             }
             if (manualSpeedInput) {
-                manualSpeedInput.min = "-40";
-                manualSpeedInput.max = "150";
+                manualSpeedInput.min = String(limits.min);
+                manualSpeedInput.max = String(limits.max);
                 manualSpeedInput.step = "0.5";
                 manualSpeedInput.inputMode = "decimal";
             }
@@ -2844,6 +2854,7 @@
         }
 
         if (isHuberThermostatTarget(node, target)) {
+            const limits = huberSetpointLimits(target);
             const setpointC = boundedNumberInputValue(manualSpeedInput, 25);
             if (manualSpeedInput) {
                 manualSpeedInput.value = String(setpointC);
@@ -2860,7 +2871,12 @@
             setManualStatus("Submitting thermostat settings...", "muted");
 
             void (async () => {
-                await executeDeviceCommand(target, "set_setpoint", { temp_c: setpointC }, { timeoutMs: 12000 });
+                await executeDeviceCommand(
+                    target,
+                    "set_setpoint",
+                    { temp_c: setpointC, min_setpoint_c: limits.min, max_setpoint_c: limits.max },
+                    { timeoutMs: 12000 },
+                );
                 await executeDeviceCommand(target, nextState ? "start" : "stop", {}, { timeoutMs: 12000 });
                 node.control = {
                     profile_id: node.control?.profile_id || "hc_system_temperature",
