@@ -870,7 +870,7 @@
 
     function renderNodes() {
         nodeLayer.innerHTML = "";
-        const activeProgramActor = asString(state.programData?.active_step?.actor, "");
+        const activeProgramActors = new Set(programActiveActors(state.programData));
 
         for (const node of state.nodes) {
             const element = document.createElement("article");
@@ -878,7 +878,7 @@
             if (state.selectedNodeId === node.id) {
                 element.classList.add("is-selected");
             }
-            if (activeProgramActor && node.instance_id === activeProgramActor) {
+            if (activeProgramActors.has(asString(node.instance_id))) {
                 element.classList.add("is-program-active");
                 element.title = `${node.instance_id || node.label}: current recipe step`;
             }
@@ -1607,6 +1607,29 @@
         return state.programData && asString(state.programData.status, "idle") === "running" ? state.programData : null;
     }
 
+    function programActiveActors(program) {
+        const activeStep = program?.active_step;
+        const actors = Array.isArray(activeStep?.actors)
+            ? activeStep.actors.map((item) => asString(item?.actor || item)).filter(Boolean)
+            : [];
+        const fallbackActor = asString(activeStep?.actor, "");
+        if (fallbackActor && !actors.includes(fallbackActor)) {
+            actors.unshift(fallbackActor);
+        }
+        return actors;
+    }
+
+    function formatProgramStepActors(program) {
+        const actors = programActiveActors(program);
+        if (!actors.length) {
+            return "";
+        }
+        if (actors.length <= 2) {
+            return actors.join(" + ");
+        }
+        return `${actors.slice(0, 2).join(" + ")} +${actors.length - 2}`;
+    }
+
     function programStatusBadgeClass(status) {
         const normalized = asString(status, "idle").toLowerCase();
         if (normalized === "running") {
@@ -1758,7 +1781,7 @@
         if (programStepLabel) {
             if (isProgramRunning && program?.active_step_number) {
                 const task = asString(program?.active_step?.task, "");
-                const actor = asString(program?.active_step?.actor, "");
+                const actor = formatProgramStepActors(program);
                 programStepLabel.textContent = `#${program.active_step_number}${task ? ` | ${task}` : actor ? ` | ${actor}` : ""}`;
             } else if (programStatusValue === "completed") {
                 programStepLabel.textContent = "Completed";
@@ -1788,7 +1811,7 @@
 
         if (programProgressLabel) {
             if (sameRecipeRunning) {
-                const actor = asString(program?.active_step?.actor, "");
+                const actor = formatProgramStepActors(program);
                 const task = asString(program?.active_step?.task, "");
                 programProgressLabel.textContent = task
                     ? `${task}${actor ? ` | ${actor}` : ""}`

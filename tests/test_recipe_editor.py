@@ -4,6 +4,7 @@ from pathlib import Path
 import config as app_config
 
 from reactor_app import create_app
+from reactor_app import api as recipe_api
 
 
 class RecipeEditorTests(unittest.TestCase):
@@ -55,25 +56,73 @@ class RecipeEditorTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "static" / "js" / "recipes.js").read_text(encoding="utf-8")
 
         self.assertIn('document.getElementById("recipe-build-select")', source)
-        self.assertIn("function makeActorSelect(value, rowIndex, isEmpty, disabled)", source)
+        self.assertIn("function makeActorPicker(step, rowIndex, isEmpty, disabled)", source)
         self.assertIn("function actorOptionsForBuild(buildData)", source)
+        self.assertIn("function normalizeActorRefs(rawActors, fallbackActor = \"\")", source)
+        self.assertIn("recipe-actor-chip", source)
         self.assertIn('fetchJson(`/api/reactor-builds/${state.reactorBuildId}`)', source)
         self.assertIn("Select a flowsheet before adding steps.", source)
-        self.assertIn("Actor must be set from the selected flowsheet for every step before saving.", source)
+        self.assertIn("At least one actor from the selected flowsheet is required for every step before saving.", source)
 
     def test_recipe_api_requires_build_and_valid_actor(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")
 
         self.assertIn("def _recipe_allowed_actor_instance_ids", source)
+        self.assertIn("def _recipe_allowed_actor_lookup", source)
         self.assertIn("Field 'reactor_build_id' is required.", source)
-        self.assertIn("must match an actuator instance_id from the selected flowsheet.", source)
+        self.assertIn("must match actuator instance_ids from the selected flowsheet.", source)
         self.assertIn("The selected flowsheet does not contain any actors.", source)
+
+    def test_recipe_api_accepts_multi_actor_steps_and_preserves_legacy_actor(self):
+        allowed = {
+            "Huber_01": {"actor": "Huber_01", "profile_id": "hc_system_temperature", "symbol_id": "hc_system"},
+            "Stirrer_01": {"actor": "Stirrer_01", "profile_id": "motor_rpm", "symbol_id": "motor"},
+        }
+
+        steps = recipe_api._validate_recipe_steps(
+            [
+                {
+                    "actors": [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+                    "task": "Heat and stir",
+                    "delta_time": 5,
+                    "temp": 35,
+                    "rpm": 300,
+                },
+                {"actor": "Huber_01", "task": "Hold", "delta_time": 5, "temp": 35},
+            ],
+            allowed_actor_lookup=allowed,
+        )
+
+        self.assertEqual(steps[0]["actor"], "Huber_01")
+        self.assertEqual(steps[0]["actors"][1], {"actor": "Stirrer_01", "priority": 2})
+        self.assertEqual(steps[1]["actors"], [{"actor": "Huber_01", "priority": None}])
+
+    def test_recipe_api_requires_initial_parameter_for_each_selected_actor(self):
+        allowed = {
+            "Huber_01": {"actor": "Huber_01", "profile_id": "hc_system_temperature", "symbol_id": "hc_system"},
+            "Stirrer_01": {"actor": "Stirrer_01", "profile_id": "motor_rpm", "symbol_id": "motor"},
+        }
+
+        with self.assertRaisesRegex(ValueError, "Stirrer_01.*rpm"):
+            recipe_api._validate_recipe_steps(
+                [
+                    {
+                        "actors": [{"actor": "Huber_01"}, {"actor": "Stirrer_01"}],
+                        "task": "Missing stirrer rpm",
+                        "delta_time": 5,
+                        "temp": 35,
+                    },
+                ],
+                allowed_actor_lookup=allowed,
+            )
 
     def test_recipe_styles_cover_actor_dropdown_and_hint(self):
         source = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
 
         self.assertIn(".recipe-col-actor", source)
         self.assertIn(".recipe-actor-select", source)
+        self.assertIn(".recipe-actor-chip", source)
+        self.assertIn(".recipe-num-input-inactive", source)
         self.assertIn(".recipe-cell-required", source)
         self.assertIn(".recipe-no-flowsheet-hint", source)
 

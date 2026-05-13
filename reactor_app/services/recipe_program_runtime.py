@@ -121,23 +121,72 @@ def _copy_global_targets(targets: dict[str, dict[str, float]] | None) -> dict[st
                     next_payload[field_name] = round(float(raw_value), 2)
                 except (TypeError, ValueError):
                     continue
+            if "_priority" in payload:
+                try:
+                    next_payload["_priority"] = int(payload.get("_priority"))
+                except (TypeError, ValueError):
+                    pass
         result[actor_key] = next_payload
     return result
 
 
+def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_refs = step.get("actors")
+    refs: list[dict[str, Any]] = []
+    if isinstance(raw_refs, list):
+        for raw_ref in raw_refs:
+            if isinstance(raw_ref, str):
+                actor = str(raw_ref or "").strip()
+                priority = None
+            elif isinstance(raw_ref, dict):
+                actor = str(raw_ref.get("actor") or "").strip()
+                raw_priority = raw_ref.get("priority")
+                try:
+                    priority = None if raw_priority in (None, "") else int(raw_priority)
+                except (TypeError, ValueError):
+                    priority = None
+            else:
+                continue
+            if actor:
+                refs.append({"actor": actor, "priority": priority})
+
+    if not refs:
+        actor = str(step.get("actor") or "").strip()
+        if actor:
+            refs.append({"actor": actor, "priority": None})
+
+    deduplicated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for ref in refs:
+        key = _normalized_lookup_value(ref.get("actor"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(ref)
+    return deduplicated
+
+
+def _step_actor_ids(step: dict[str, Any]) -> list[str]:
+    return [ref["actor"] for ref in _step_actor_refs(step)]
+
+
 def _step_actor_target(base_targets: dict[str, dict[str, float]], step: dict[str, Any]) -> dict[str, dict[str, float]]:
     next_targets = _copy_global_targets(base_targets)
-    actor = str(step.get("actor") or "").strip()
-    if not actor:
+    actor_refs = _step_actor_refs(step)
+    if not actor_refs:
         return next_targets
 
-    actor_targets = deepcopy(next_targets.get(actor) or _actor_baseline_state())
-    for field_name in _NUMERIC_FIELDS:
-        raw_value = step.get(field_name)
-        if raw_value in (None, ""):
-            continue
-        actor_targets[field_name] = round(float(raw_value), 2)
-    next_targets[actor] = actor_targets
+    for actor_ref in actor_refs:
+        actor = actor_ref["actor"]
+        actor_targets = deepcopy(next_targets.get(actor) or _actor_baseline_state())
+        for field_name in _NUMERIC_FIELDS:
+            raw_value = step.get(field_name)
+            if raw_value in (None, ""):
+                continue
+            actor_targets[field_name] = round(float(raw_value), 2)
+        if actor_ref.get("priority") is not None:
+            actor_targets["_priority"] = int(actor_ref["priority"])
+        next_targets[actor] = actor_targets
     return next_targets
 
 
@@ -145,19 +194,22 @@ def _interpolate_targets(
     start_targets: dict[str, dict[str, float]],
     end_targets: dict[str, dict[str, float]],
     *,
-    actor: str,
+    actors: list[str],
     progress: float,
 ) -> dict[str, dict[str, float]]:
     ratio = min(1.0, max(0.0, float(progress)))
     current_targets = _copy_global_targets(start_targets)
-    current_actor_targets = deepcopy(current_targets.get(actor) or _actor_baseline_state())
-    end_actor_targets = deepcopy(end_targets.get(actor) or _actor_baseline_state())
-    start_actor_targets = deepcopy(start_targets.get(actor) or _actor_baseline_state())
-    for field_name in _NUMERIC_FIELDS:
-        start_value = float(start_actor_targets.get(field_name) or 0.0)
-        end_value = float(end_actor_targets.get(field_name) or 0.0)
-        current_actor_targets[field_name] = round(start_value + ((end_value - start_value) * ratio), 2)
-    current_targets[actor] = current_actor_targets
+    for actor in actors:
+        current_actor_targets = deepcopy(current_targets.get(actor) or _actor_baseline_state())
+        end_actor_targets = deepcopy(end_targets.get(actor) or _actor_baseline_state())
+        start_actor_targets = deepcopy(start_targets.get(actor) or _actor_baseline_state())
+        for field_name in _NUMERIC_FIELDS:
+            start_value = float(start_actor_targets.get(field_name) or 0.0)
+            end_value = float(end_actor_targets.get(field_name) or 0.0)
+            current_actor_targets[field_name] = round(start_value + ((end_value - start_value) * ratio), 2)
+        if "_priority" in end_actor_targets:
+            current_actor_targets["_priority"] = end_actor_targets["_priority"]
+        current_targets[actor] = current_actor_targets
     return current_targets
 
 
@@ -177,8 +229,11 @@ def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
         delta_time = round(float(payload.get("delta_time") or 0.0), 2)
     except (TypeError, ValueError):
         raise ValueError(f"Recipe step field 'delta_time' must be a number, got: {payload.get('delta_time')!r}")
+    actor_refs = _step_actor_refs(payload)
+    primary_actor = actor_refs[0]["actor"] if actor_refs else ""
     return {
-        "actor": str(payload.get("actor") or "").strip(),
+        "actor": primary_actor,
+        "actors": actor_refs,
         "task": str(payload.get("task") or "").strip(),
         "delta_time": delta_time,
         "temp": _parse_numeric_field(payload, "temp"),
@@ -214,7 +269,7 @@ def _evaluate_program_timeline(
 
     while index < len(normalized_steps):
         step = normalized_steps[index]
-        actor = str(step.get("actor") or "").strip()
+        actors = _step_actor_ids(step)
         next_targets = _step_actor_target(previous_targets, step)
         duration_seconds = max(0.0, round(float(step.get("delta_time") or 0.0) * 60.0, 3))
         elapsed_seconds = max(0.0, (current_time - segment_started_at).total_seconds())
@@ -225,7 +280,7 @@ def _evaluate_program_timeline(
             continue
 
         progress = min(1.0, elapsed_seconds / duration_seconds)
-        current_targets = _interpolate_targets(previous_targets, next_targets, actor=actor, progress=progress)
+        current_targets = _interpolate_targets(previous_targets, next_targets, actors=actors, progress=progress)
         if elapsed_seconds < duration_seconds:
             return {
                 "completed": False,
@@ -384,11 +439,11 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
     actors_in_recipe = []
     seen_actors: set[str] = set()
     for step in steps:
-        actor = str(step.get("actor") or "").strip()
-        if not actor or actor in seen_actors:
-            continue
-        seen_actors.add(actor)
-        actors_in_recipe.append(actor)
+        for actor in _step_actor_ids(step):
+            if not actor or actor in seen_actors:
+                continue
+            seen_actors.add(actor)
+            actors_in_recipe.append(actor)
 
     bindings: list[dict[str, Any]] = []
     for actor in actors_in_recipe:
@@ -420,49 +475,67 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
 
     huber_temp_initialized: set[str] = set()
     for index, step in enumerate(steps, start=1):
-        actor = str(step.get("actor") or "").strip()
-        binding = next((item for item in bindings if item["actor"] == actor), None)
-        if binding is None:
-            raise ValueError(f"Step {index} references unknown actor '{actor}'.")
-        profile_id = str(binding.get("profile_id") or "").strip()
-        if profile_id == "motor_rpm":
-            if _has_nonzero_numeric_value(step.get("temp")) or _has_nonzero_numeric_value(step.get("pressure")):
-                raise ValueError(
-                    f"Step {index} contains Temp/Pressure values for actor '{actor}'. "
-                    "Motor recipe actors support RPM values only."
-                )
-            step["temp"] = None
-            step["pressure"] = None
-            rpm = step.get("rpm")
-            if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
-                raise ValueError(
-                    f"Step {index} requests {rpm:g} rpm for actor '{actor}'. "
-                    f"IKA EUROSTAR 60 supports up to {IKA_EUROSTAR_60_MAX_RPM} rpm."
-                )
-            continue
+        step_actor_ids = _step_actor_ids(step)
 
-        if profile_id == "hc_system_temperature":
-            if _has_nonzero_numeric_value(step.get("rpm")) or _has_nonzero_numeric_value(step.get("pressure")):
-                raise ValueError(
-                    f"Step {index} contains RPM/Pressure values for actor '{actor}'. "
-                    "H/C recipe actors support temperature values only."
-                )
-            step["rpm"] = None
-            step["pressure"] = None
-            temp = step.get("temp")
-            if temp is None:
-                if actor not in huber_temp_initialized:
+        # Which fields are relevant to at least one actor in this step.
+        # Used to distinguish "irrelevant zero" from "relevant field for another actor".
+        step_relevant_fields: set[str] = set()
+        step_actor_profiles: dict[str, str] = {}
+        for actor in step_actor_ids:
+            binding = next((item for item in bindings if item["actor"] == actor), None)
+            if binding is None:
+                raise ValueError(f"Step {index} references unknown actor '{actor}'.")
+            profile_id = str(binding.get("profile_id") or "").strip()
+            step_actor_profiles[actor] = profile_id
+            if profile_id == "motor_rpm":
+                step_relevant_fields.add("rpm")
+            elif profile_id == "hc_system_temperature":
+                step_relevant_fields.add("temp")
+
+        for actor in step_actor_ids:
+            profile_id = step_actor_profiles[actor]
+            if profile_id == "motor_rpm":
+                for field_name in ("temp", "pressure"):
+                    if field_name not in step_relevant_fields and _has_nonzero_numeric_value(step.get(field_name)):
+                        raise ValueError(
+                            f"Step {index} contains non-zero {field_name} for motor actor '{actor}'. "
+                            "Motor recipe actors support RPM values only."
+                        )
+                rpm = step.get("rpm")
+                if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
                     raise ValueError(
-                        f"Step {index} for H/C actor '{actor}' must define a temperature before it can hold or ramp."
+                        f"Step {index} requests {rpm:g} rpm for actor '{actor}'. "
+                        f"IKA EUROSTAR 60 supports up to {IKA_EUROSTAR_60_MAX_RPM} rpm."
                     )
                 continue
-            temp_value = float(temp)
-            if temp_value < _HUBER_MIN_SETPOINT_C or temp_value > _HUBER_MAX_SETPOINT_C:
-                raise ValueError(
-                    f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
-                    f"Huber setpoints are limited to {_HUBER_MIN_SETPOINT_C:g}..{_HUBER_MAX_SETPOINT_C:g} degC."
-                )
-            huber_temp_initialized.add(actor)
+
+            if profile_id == "hc_system_temperature":
+                for field_name in ("rpm", "pressure"):
+                    if field_name not in step_relevant_fields and _has_nonzero_numeric_value(step.get(field_name)):
+                        raise ValueError(
+                            f"Step {index} contains non-zero {field_name} for H/C actor '{actor}'. "
+                            "H/C recipe actors support temperature values only."
+                        )
+                temp = step.get("temp")
+                if temp is None:
+                    if actor not in huber_temp_initialized:
+                        raise ValueError(
+                            f"Step {index} for H/C actor '{actor}' must define a temperature before it can hold or ramp."
+                        )
+                    continue
+                temp_value = float(temp)
+                if temp_value < _HUBER_MIN_SETPOINT_C or temp_value > _HUBER_MAX_SETPOINT_C:
+                    raise ValueError(
+                        f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
+                        f"Huber setpoints are limited to {_HUBER_MIN_SETPOINT_C:g}..{_HUBER_MAX_SETPOINT_C:g} degC."
+                    )
+                huber_temp_initialized.add(actor)
+
+        # Null out fields that no actor in this step needs, so irrelevant zero
+        # entries from the editor don't propagate into the runtime snapshot.
+        for field_name in _NUMERIC_FIELDS:
+            if field_name not in step_relevant_fields:
+                step[field_name] = None
 
     return {
         "recipe_id": recipe.recipe_id,
@@ -1064,7 +1137,17 @@ def _apply_current_targets(
     next_applied_lookup: dict[str, dict[str, Any]] = deepcopy(applied_lookup)
     applied_changes: list[dict[str, Any]] = []
 
-    for actor, targets in current_targets.items():
+    # Priority is optional per step actor. Equal or missing priorities remain
+    # deterministic by actor id; this keeps concurrent multi-actor steps ordered
+    # without adding database locks around unrelated devices.
+    ordered_targets = sorted(
+        current_targets.items(),
+        key=lambda item: (
+            int((item[1] or {}).get("_priority") or 0) if isinstance(item[1], dict) else 0,
+            str(item[0]).lower(),
+        ),
+    )
+    for actor, targets in ordered_targets:
         binding = binding_lookup.get(actor)
         if binding is None:
             continue

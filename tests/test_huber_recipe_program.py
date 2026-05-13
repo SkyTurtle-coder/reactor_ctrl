@@ -45,6 +45,16 @@ class HuberRecipeProgramTests(unittest.TestCase):
             "protocol": "huber_unistat_430",
         }
 
+    def _motor_binding(self):
+        return {
+            "actor": "Stirrer_01",
+            "is_resolved": True,
+            "device_id": 8,
+            "device_display_name": "IKA Stirrer",
+            "profile_id": "motor_rpm",
+            "protocol": "ika_eurostar_60",
+        }
+
     def test_huber_temperature_actor_is_allowed_in_recipe_snapshot(self):
         recipe = self._recipe(
             [
@@ -80,6 +90,36 @@ class HuberRecipeProgramTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "temperature values only"):
                 recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
+
+    def test_multi_actor_step_keeps_relevant_values_for_each_actor(self):
+        recipe = self._recipe(
+            [
+                {
+                    "actors": [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+                    "task": "Heat while stirring",
+                    "delta_time": 5,
+                    "temp": 35,
+                    "rpm": 300,
+                    "pressure": 0,
+                },
+            ]
+        )
+
+        with patch.object(
+            recipe_program_runtime,
+            "_build_target_lookup",
+            return_value={"Huber_01": self._binding(), "Stirrer_01": self._motor_binding()},
+        ):
+            snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
+
+        self.assertEqual(
+            snapshot["steps"][0]["actors"],
+            [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+        )
+        self.assertEqual(snapshot["steps"][0]["temp"], 35)
+        self.assertEqual(snapshot["steps"][0]["rpm"], 300)
+        self.assertIsNone(snapshot["steps"][0]["pressure"])
+        self.assertEqual({binding["actor"] for binding in snapshot["bindings"]}, {"Huber_01", "Stirrer_01"})
 
     def test_huber_current_target_writes_setpoint_and_starts_temperature_control(self):
         app = Flask(__name__)

@@ -83,6 +83,39 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         self.assertAlmostEqual(evaluation["current_targets"]["Huber_01"]["temp"], 30.0)
         self.assertAlmostEqual(evaluation["step_progress"], 0.5)
 
+    def test_multi_actor_step_ramps_selected_actors_in_parallel(self):
+        started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
+        steps = [
+            {
+                "actors": [{"actor": "Huber_01"}, {"actor": "Stirrer_01"}],
+                "task": "Initialize",
+                "delta_time": 0,
+                "temp": 20,
+                "rpm": 200,
+            },
+            {
+                "actors": [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+                "task": "Parallel ramp",
+                "delta_time": 2,
+                "temp": 40,
+                "rpm": 600,
+            },
+        ]
+
+        evaluation = _evaluate_program_timeline(
+            steps,
+            active_step_index=0,
+            step_started_at=started_at,
+            now=started_at + timedelta(seconds=60),
+        )
+
+        self.assertFalse(evaluation["completed"])
+        self.assertEqual([item["actor"] for item in evaluation["active_step"]["actors"]], ["Huber_01", "Stirrer_01"])
+        self.assertAlmostEqual(evaluation["current_targets"]["Huber_01"]["temp"], 30.0)
+        self.assertAlmostEqual(evaluation["current_targets"]["Stirrer_01"]["rpm"], 400.0)
+        self.assertEqual(evaluation["current_targets"]["Huber_01"]["_priority"], 1)
+        self.assertEqual(evaluation["current_targets"]["Stirrer_01"]["_priority"], 2)
+
     def test_stopped_program_payload_resets_active_progress_and_targets(self):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         state = RecipeProgramState(

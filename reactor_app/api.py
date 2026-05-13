@@ -1894,6 +1894,7 @@ def delete_device_connection(connection_id: int):
 _RECIPE_ALLOWED_STATUSES = {"draft", "approved", "archived"}
 _RECIPE_MAX_STEPS = 500
 _RECIPE_STEP_NUMERIC_FIELDS = ("delta_time", "temp", "pressure", "rpm")
+_RECIPE_STEP_TARGET_FIELDS = ("temp", "pressure", "rpm")
 _RECIPE_MIN_TEMP_C = -40.0
 _RECIPE_MAX_TEMP_C = 150.0
 
@@ -1919,12 +1920,16 @@ def _is_recipe_actor_node(raw_node: Any) -> bool:
 
 
 def _recipe_allowed_actor_instance_ids(item: ReactorBuild | None) -> list[str]:
+    return list(_recipe_allowed_actor_lookup(item).keys())
+
+
+def _recipe_allowed_actor_lookup(item: ReactorBuild | None) -> dict[str, dict[str, Any]]:
     definition = item.definition_json if item is not None and isinstance(item.definition_json, dict) else {}
     raw_nodes = definition.get("nodes", []) if isinstance(definition, dict) else []
     if not isinstance(raw_nodes, list):
-        return []
+        return {}
 
-    actor_ids: list[str] = []
+    actors: dict[str, dict[str, Any]] = {}
     seen_keys: set[str] = set()
     for raw_node in raw_nodes:
         if not _is_recipe_actor_node(raw_node):
@@ -1939,9 +1944,16 @@ def _recipe_allowed_actor_instance_ids(item: ReactorBuild | None) -> list[str]:
             continue
 
         seen_keys.add(normalized_key)
-        actor_ids.append(instance_id)
+        symbol_id = str(raw_node.get("symbol_id") or "").strip()
+        control = raw_node.get("control") if isinstance(raw_node.get("control"), dict) else {}
+        profile_id = str(control.get("profile_id") or get_default_profile_id(symbol_id) or "").strip()
+        actors[instance_id] = {
+            "actor": instance_id,
+            "profile_id": profile_id,
+            "symbol_id": symbol_id,
+        }
 
-    return actor_ids
+    return actors
 
 
 def _recipe_to_dict(item: Recipe, *, include_steps: bool = True) -> dict[str, Any]:
@@ -1963,14 +1975,73 @@ def _recipe_to_dict(item: Recipe, *, include_steps: bool = True) -> dict[str, An
     return payload
 
 
+def _recipe_target_fields_for_actor(actor_meta: dict[str, Any] | None) -> tuple[str, ...]:
+    profile_id = str((actor_meta or {}).get("profile_id") or "").strip().lower()
+    symbol_id = str((actor_meta or {}).get("symbol_id") or "").strip().lower()
+    if not profile_id and not symbol_id:
+        return ()
+    if profile_id == "hc_system_temperature":
+        return ("temp",)
+    if profile_id in {"motor_rpm", "pump_rpm"}:
+        return ("rpm",)
+    if "pressure" in profile_id or "vacuum" in profile_id or "pressure" in symbol_id or "vacuum" in symbol_id:
+        return ("pressure",)
+    if "pump" in profile_id or "pump" in symbol_id:
+        return ("rpm",)
+    return _RECIPE_STEP_TARGET_FIELDS
+
+
+def _parse_recipe_actor_priority(raw_value: Any, *, field_name: str) -> int | None:
+    if raw_value in (None, ""):
+        return None
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Field '{field_name}' must be an integer or null.") from exc
+    return parsed
+
+
+def _parse_recipe_step_actor_refs(raw: dict[str, Any], index: int) -> list[dict[str, Any]]:
+    raw_refs = raw.get("actors")
+    refs: list[dict[str, Any]] = []
+    if isinstance(raw_refs, list):
+        for ref_index, raw_ref in enumerate(raw_refs, start=1):
+            field_name = f"steps[{index}].actors[{ref_index}]"
+            if isinstance(raw_ref, str):
+                actor = _clean_string(raw_ref, field_name=field_name) or ""
+                priority = None
+            elif isinstance(raw_ref, dict):
+                actor = _clean_string(raw_ref.get("actor"), field_name=f"{field_name}.actor") or ""
+                priority = _parse_recipe_actor_priority(raw_ref.get("priority"), field_name=f"{field_name}.priority")
+            else:
+                raise ValueError(f"Field '{field_name}' must be an object or actor id string.")
+            if actor:
+                refs.append({"actor": actor, "priority": priority})
+    else:
+        actor = _clean_string(raw.get("actor"), field_name=f"steps[{index}].actor") or ""
+        if actor:
+            refs.append({"actor": actor, "priority": None})
+
+    deduplicated: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for ref in refs:
+        normalized_key = _normalized_recipe_actor_key(ref.get("actor"))
+        if not normalized_key or normalized_key in seen_keys:
+            continue
+        seen_keys.add(normalized_key)
+        deduplicated.append(ref)
+    return deduplicated
+
+
 def _parse_recipe_step(raw: Any, index: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Step {index} must be an object.")
 
-    actor = _clean_string(raw.get("actor"), field_name=f"steps[{index}].actor") or ""
+    actor_refs = _parse_recipe_step_actor_refs(raw, index)
+    actor = actor_refs[0]["actor"] if actor_refs else ""
     task = _clean_string(raw.get("task"), field_name=f"steps[{index}].task") or ""
 
-    normalized: dict[str, Any] = {"actor": actor, "task": task}
+    normalized: dict[str, Any] = {"actor": actor, "actors": actor_refs, "task": task}
     for field in _RECIPE_STEP_NUMERIC_FIELDS:
         raw_val = raw.get(field)
         if raw_val in (None, ""):
@@ -1989,7 +2060,12 @@ def _parse_recipe_step(raw: Any, index: int) -> dict[str, Any]:
     return normalized
 
 
-def _validate_recipe_steps(raw_steps: Any, *, allowed_actor_ids: list[str] | None = None) -> list[dict[str, Any]]:
+def _validate_recipe_steps(
+    raw_steps: Any,
+    *,
+    allowed_actor_ids: list[str] | None = None,
+    allowed_actor_lookup: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     if raw_steps in (None, ""):
         return []
     if not isinstance(raw_steps, list):
@@ -1997,28 +2073,56 @@ def _validate_recipe_steps(raw_steps: Any, *, allowed_actor_ids: list[str] | Non
     if len(raw_steps) > _RECIPE_MAX_STEPS:
         raise ValueError(f"Field 'steps' must not contain more than {_RECIPE_MAX_STEPS} items.")
 
-    allowed_actor_lookup = {
-        _normalized_recipe_actor_key(actor_id): actor_id
-        for actor_id in (allowed_actor_ids or [])
+    if allowed_actor_lookup is None:
+        allowed_actor_lookup = {
+            str(actor_id).strip(): {"actor": str(actor_id).strip(), "profile_id": "", "symbol_id": ""}
+            for actor_id in (allowed_actor_ids or [])
+            if str(actor_id or "").strip()
+        }
+    allowed_actor_by_key = {
+        _normalized_recipe_actor_key(actor_id): actor_meta
+        for actor_id, actor_meta in allowed_actor_lookup.items()
         if str(actor_id or "").strip()
     }
     result: list[dict[str, Any]] = []
+    initialized_fields_by_actor: dict[str, set[str]] = {}
     for index, raw in enumerate(raw_steps, start=1):
         step = _parse_recipe_step(raw, index)
         # Skip fully empty trailing rows
-        if not step["actor"] and not step["task"] and all(step[f] is None for f in _RECIPE_STEP_NUMERIC_FIELDS):
+        if not step["actors"] and not step["task"] and all(step[f] is None for f in _RECIPE_STEP_NUMERIC_FIELDS):
             continue
 
-        if not step["actor"]:
-            raise ValueError(f"Field 'steps[{index}].actor' is required.")
+        if not step["actors"]:
+            raise ValueError(f"Field 'steps[{index}].actors' must contain at least one actor.")
 
-        normalized_actor_key = _normalized_recipe_actor_key(step["actor"])
-        if allowed_actor_lookup and normalized_actor_key not in allowed_actor_lookup:
-            raise ValueError(
-                f"Field 'steps[{index}].actor' must match an actuator instance_id from the selected flowsheet."
-            )
-        if normalized_actor_key in allowed_actor_lookup:
-            step["actor"] = allowed_actor_lookup[normalized_actor_key]
+        normalized_refs: list[dict[str, Any]] = []
+        for ref in step["actors"]:
+            normalized_actor_key = _normalized_recipe_actor_key(ref.get("actor"))
+            if allowed_actor_by_key and normalized_actor_key not in allowed_actor_by_key:
+                raise ValueError(
+                    f"Field 'steps[{index}].actors' must match actuator instance_ids from the selected flowsheet."
+                )
+            actor_meta = allowed_actor_by_key.get(normalized_actor_key) or {"actor": ref["actor"], "profile_id": "", "symbol_id": ""}
+            canonical_actor = str(actor_meta.get("actor") or ref["actor"]).strip()
+            target_fields = _recipe_target_fields_for_actor(actor_meta)
+            initialized_fields = initialized_fields_by_actor.setdefault(canonical_actor, set())
+            missing_initial_fields = [
+                field_name
+                for field_name in target_fields
+                if field_name not in initialized_fields and step.get(field_name) is None
+            ]
+            if missing_initial_fields:
+                field_label = ", ".join(missing_initial_fields)
+                raise ValueError(
+                    f"Step {index} for actor '{canonical_actor}' must define {field_label} before it can hold or ramp."
+                )
+            for field_name in target_fields:
+                if step.get(field_name) is not None:
+                    initialized_fields.add(field_name)
+            normalized_refs.append({"actor": canonical_actor, "priority": ref.get("priority")})
+
+        step["actors"] = normalized_refs
+        step["actor"] = normalized_refs[0]["actor"]
 
         result.append(step)
     return result
@@ -2056,12 +2160,12 @@ def _apply_recipe_payload(item: Recipe, payload: dict[str, Any], *, partial: boo
     if recipe_build is None:
         raise ValueError(f"ReactorBuild with id {item.reactor_build_id} was not found.")
 
-    allowed_actor_ids = _recipe_allowed_actor_instance_ids(recipe_build)
-    if not allowed_actor_ids:
+    allowed_actor_lookup = _recipe_allowed_actor_lookup(recipe_build)
+    if not allowed_actor_lookup:
         raise ValueError("The selected flowsheet does not contain any actors.")
 
     if not partial or "steps" in payload:
-        item.steps_json = _validate_recipe_steps(payload.get("steps"), allowed_actor_ids=allowed_actor_ids)
+        item.steps_json = _validate_recipe_steps(payload.get("steps"), allowed_actor_lookup=allowed_actor_lookup)
     if "status" in payload:
         item.status = _validate_choice(
             payload.get("status"),
