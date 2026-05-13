@@ -1464,6 +1464,8 @@ def delete_device(device_id: int):
     if error_response:
         return error_response
 
+    if item.manual_state is not None:
+        db.session.delete(item.manual_state)
     db.session.delete(item)
     ok, error_response = _commit()
     if not ok:

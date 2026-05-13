@@ -27,10 +27,10 @@ class Device(db.Model):
         db.UniqueConstraint("manufacturer_serial", "protocol", name="uq_device_manufacturer_serial_protocol"),
     )
 
-    current_binding = db.relationship("DeviceBindingCurrent", back_populates="device", uselist=False)
-    binding_history = db.relationship("DeviceBindingHistory", back_populates="device")
-    channels = db.relationship("MeasurementChannel", back_populates="device")
-    measurements = db.relationship("Measurement", back_populates="device")
-    commands = db.relationship("ControlCommand", back_populates="device")
-    manual_state = db.relationship("DeviceManualState", back_populates="device", uselist=False)
-    soft_sensor_estimates = db.relationship("SoftSensorEstimate", back_populates="device")
+    current_binding = db.relationship("DeviceBindingCurrent", back_populates="device", uselist=False, passive_deletes=True)
+    binding_history = db.relationship("DeviceBindingHistory", back_populates="device", passive_deletes=True)
+    channels = db.relationship("MeasurementChannel", back_populates="device", passive_deletes=True)
+    measurements = db.relationship("Measurement", back_populates="device", passive_deletes=True)
+    commands = db.relationship("ControlCommand", back_populates="device", passive_deletes=True)
+    manual_state = db.relationship("DeviceManualState", back_populates="device", uselist=False, passive_deletes=True)
+    soft_sensor_estimates = db.relationship("SoftSensorEstimate", back_populates="device", passive_deletes=True)
