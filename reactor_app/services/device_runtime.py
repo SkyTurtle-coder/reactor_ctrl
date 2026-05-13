@@ -134,13 +134,18 @@ def _fail_command(command: ControlCommand, *, status: str, message: str, connect
     command.finished_at = finished_at
 
     # These runtime telemetry fields can be touched by the recipe and manual
-    # reconcilers at the same time. Keep them out of ORM dirty tracking to avoid
-    # MySQL error 1020 on stale row snapshots; last writer wins is acceptable
-    # for connection health metadata.
-    _mark_connection_failure(connection.connection_id, message=message, timestamp=finished_at)
+    # reconcilers at the same time. Use a savepoint so a concurrent 1020 error
+    # cannot destroy the command record; last writer wins is acceptable for
+    # connection health metadata.
+    try:
+        with db.session.begin_nested():
+            _mark_connection_failure(connection.connection_id, message=message, timestamp=finished_at)
+            if binding is not None:
+                _mark_binding_offline(binding.device_id, connection_id=binding.connection_id)
+    except Exception:
+        pass
     db.session.expire(connection, ["last_error", "updated_at"])
     if binding is not None:
-        _mark_binding_offline(binding.device_id, connection_id=binding.connection_id)
         db.session.expire(binding, ["is_online"])
 
     _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
@@ -447,8 +452,12 @@ def execute_device_command(
     # See _fail_command for why these telemetry fields are written outside ORM
     # dirty tracking. The binding update is guarded by connection_id so a stale
     # in-flight command cannot mark a newly rebound device online.
-    _mark_connection_success(connection.connection_id, timestamp=finished_at)
-    _mark_binding_online(binding.device_id, connection_id=binding.connection_id, timestamp=finished_at)
+    try:
+        with db.session.begin_nested():
+            _mark_connection_success(connection.connection_id, timestamp=finished_at)
+            _mark_binding_online(binding.device_id, connection_id=binding.connection_id, timestamp=finished_at)
+    except Exception:
+        pass
     db.session.expire(connection, ["last_seen_at", "last_error", "updated_at"])
     db.session.expire(binding, ["last_seen_at", "is_online"])
 
