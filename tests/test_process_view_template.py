@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -21,6 +22,10 @@ class ProcessViewTemplateTests(unittest.TestCase):
 
         cls.app = create_app()
         cls.client = cls.app.test_client()
+
+    def setUp(self):
+        with self.client.session_transaction() as session:
+            session["authenticated"] = True
 
     @classmethod
     def tearDownClass(cls):
@@ -243,6 +248,18 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn(".ui-collapsible-panel", stylesheet)
         self.assertIn(".ui-collapsible-chevron svg", stylesheet)
         self.assertIn(".ui-collapsible-details[open] > .ui-collapsible-panel", stylesheet)
+
+    def test_process_trends_selection_is_content_sized(self):
+        stylesheet = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
+        selection_match = re.search(r"\.process-plot-selection\s*\{(?P<body>[^}]*)\}", stylesheet, re.DOTALL)
+
+        self.assertIsNotNone(selection_match)
+        selection_body = selection_match.group("body")
+        self.assertIn("min-width: 0;", selection_body)
+        self.assertNotIn("max-height", selection_body)
+        self.assertNotRegex(selection_body, r"\boverflow(?:-[xy])?\s*:")
+        self.assertIn("align-items: start;", stylesheet)
+        self.assertIn("overflow-wrap: anywhere;", stylesheet)
 
 
 if __name__ == "__main__":

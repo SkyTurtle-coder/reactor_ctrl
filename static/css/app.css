@@ -16,7 +16,6 @@
     --danger: #9a2f24;
     --info: #295d86;
     --header-bg: rgba(255, 255, 255, 0.94);
-    --footer-bg: #ffffff;
     --page-tint: rgba(253, 231, 14, 0.08);
     --accent-soft: rgba(253, 231, 14, 0.1);
     --accent-soft-strong: rgba(253, 231, 14, 0.4);
@@ -62,7 +61,6 @@ html[data-theme="dark"] {
     --danger: #f08f84;
     --info: #84c4ff;
     --header-bg: rgba(17, 20, 26, 0.9);
-    --footer-bg: #12161d;
     --page-tint: rgba(253, 231, 14, 0.06);
     --accent-soft: rgba(253, 231, 14, 0.14);
     --accent-soft-strong: rgba(253, 231, 14, 0.32);
@@ -845,11 +843,13 @@ pre {
     display: grid;
     grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
     gap: 1rem;
+    align-items: start;
     padding: 1rem 1.1rem 1.15rem;
 }
 
 .process-plot-selector-card,
 .process-plot-chart-card {
+    min-width: 0;
     border: 1px solid var(--border);
     border-radius: 12px;
     background: #ffffff;
@@ -874,14 +874,13 @@ pre {
 .process-plot-selection {
     display: grid;
     gap: 0.85rem;
-    max-height: 30rem;
-    overflow: auto;
-    padding-right: 0.2rem;
+    min-width: 0;
 }
 
 .process-plot-group {
     display: grid;
     gap: 0.65rem;
+    min-width: 0;
     padding: 0.85rem 0.9rem;
     border: 1px solid var(--border);
     border-radius: 12px;
@@ -891,6 +890,8 @@ pre {
 .process-plot-group-header {
     display: grid;
     gap: 0.22rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .process-plot-group-header p,
@@ -908,6 +909,7 @@ pre {
     display: flex;
     align-items: flex-start;
     gap: 0.6rem;
+    min-width: 0;
     padding: 0.6rem 0.65rem;
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 10px;
@@ -920,6 +922,7 @@ pre {
 
 .process-plot-checkbox-copy {
     min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .process-plot-checkbox-copy strong,
@@ -967,6 +970,7 @@ pre {
 .process-plot-chart-stack {
     display: grid;
     gap: 0.9rem;
+    min-width: 0;
 }
 
 .process-plot-chart-card {
@@ -975,10 +979,19 @@ pre {
 
 .process-plot-chart-head {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
     gap: 1rem;
     margin-bottom: 0.75rem;
+}
+
+.process-plot-chart-head > div {
+    min-width: 0;
+}
+
+.process-plot-chart-head h3 {
+    overflow-wrap: anywhere;
 }
 
 .process-plot-chart-head p {
@@ -999,7 +1012,14 @@ pre {
     display: inline-flex;
     align-items: center;
     gap: 0.45rem;
+    min-width: 0;
+    max-width: 100%;
     font-size: 0.84rem;
+}
+
+.process-plot-legend li span:last-child {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .process-plot-legend-swatch {
@@ -2474,35 +2494,6 @@ kbd {
     color: var(--danger);
 }
 
-.site-footer {
-    border-top: 1px solid var(--border);
-    background: var(--footer-bg);
-}
-
-.footer-bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    padding: 1rem 0 1.15rem;
-    color: var(--muted);
-    font-size: 0.85rem;
-}
-
-.footer-links {
-    display: flex;
-    gap: 1.25rem;
-}
-
-.footer-links a {
-    color: var(--muted);
-}
-
-.footer-links a:hover {
-    color: var(--text);
-}
-
 html[data-theme="dark"] .theme-switch {
     background: rgba(24, 29, 36, 0.86);
     box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
@@ -2707,7 +2698,6 @@ html[data-theme="dark"] .builder-edge-corner-handle {
 }
 
 html[data-theme="dark"] .site-header,
-html[data-theme="dark"] .site-footer,
 html[data-theme="dark"] .card,
 html[data-theme="dark"] .btn,
 html[data-theme="dark"] .nav-link,
@@ -2882,10 +2872,6 @@ html[data-theme="dark"] textarea {
 
     .process-plot-range-field {
         min-width: 0;
-    }
-
-    .process-plot-selection {
-        max-height: none;
     }
 
 }
