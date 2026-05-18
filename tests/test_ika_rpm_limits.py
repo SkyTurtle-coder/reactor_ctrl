@@ -24,7 +24,7 @@ class IkaRpmLimitTests(unittest.TestCase):
 
     def test_recipe_editor_caps_rpm_inputs_at_ika_limit(self):
         source = (Path(__file__).resolve().parents[1] / "static" / "js" / "recipes.js").read_text(encoding="utf-8")
-        self.assertIn('fieldName === "rpm" ? \' max="2000"\' : ""', source)
+        self.assertIn('paramField === "rpm" ? \' max="2000"\' : ""', source)
 
     def test_protocol_specific_lookup_returns_ika_limit(self):
         self.assertEqual(max_rpm_for_protocol("ika_eurostar_60", default=10000), IKA_EUROSTAR_60_MAX_RPM)

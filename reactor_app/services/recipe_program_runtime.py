@@ -34,6 +34,18 @@ _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
+_PARAM_TO_NUMERIC_FIELD = {
+    "target_temp_c": "temp",
+    "pressure_mbar_a": "pressure",
+    "rpm": "rpm",
+}
+_NUMERIC_TO_PARAM_FIELD = {
+    "temp": "target_temp_c",
+    "pressure": "pressure_mbar_a",
+    "rpm": "rpm",
+}
+_PRIORITY_MIN = 1
+_PRIORITY_MAX = 10
 _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_cc230_mock"}
 _HUBER_MIN_SETPOINT_C = -40.0
 _HUBER_MAX_SETPOINT_C = 150.0
@@ -139,8 +151,51 @@ def _copy_global_targets(targets: dict[str, dict[str, float]] | None) -> dict[st
                     next_payload["_priority"] = int(payload.get("_priority"))
                 except (TypeError, ValueError):
                     pass
+            if "_order" in payload:
+                try:
+                    next_payload["_order"] = int(payload.get("_order"))
+                except (TypeError, ValueError):
+                    pass
         result[actor_key] = next_payload
     return result
+
+
+def _normalize_actor_priority(value: Any, fallback: int | None = None) -> int | None:
+    if value in (None, ""):
+        return fallback
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if parsed < _PRIORITY_MIN or parsed > _PRIORITY_MAX:
+        return fallback
+    return parsed
+
+
+def _actor_params_from_ref(raw_ref: dict[str, Any], step: dict[str, Any]) -> dict[str, float | None]:
+    params: dict[str, float | None] = {field_name: None for field_name in _NUMERIC_FIELDS}
+    raw_params = raw_ref.get("params") if isinstance(raw_ref.get("params"), dict) else {}
+    for param_field, numeric_field in _PARAM_TO_NUMERIC_FIELD.items():
+        value = raw_params.get(param_field, raw_params.get(numeric_field))
+        if value is None:
+            value = raw_ref.get(param_field, raw_ref.get(numeric_field))
+        if value in (None, ""):
+            continue
+        try:
+            params[numeric_field] = round(float(value), 2)
+        except (TypeError, ValueError):
+            continue
+
+    if all(value is None for value in params.values()):
+        for numeric_field in _NUMERIC_FIELDS:
+            value = step.get(numeric_field)
+            if value in (None, ""):
+                continue
+            try:
+                params[numeric_field] = round(float(value), 2)
+            except (TypeError, ValueError):
+                continue
+    return params
 
 
 def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
@@ -152,7 +207,7 @@ def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
                 actor = str(raw_ref or "").strip()
                 priority = None
             elif isinstance(raw_ref, dict):
-                actor = str(raw_ref.get("actor") or "").strip()
+                actor = str(raw_ref.get("actor_id") or raw_ref.get("actor") or "").strip()
                 raw_priority = raw_ref.get("priority")
                 try:
                     priority = None if raw_priority in (None, "") else int(raw_priority)
@@ -164,7 +219,7 @@ def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
                 refs.append({"actor": actor, "priority": priority})
 
     if not refs:
-        actor = str(step.get("actor") or "").strip()
+        actor = str(step.get("actor_id") or step.get("actor") or "").strip()
         if actor:
             refs.append({"actor": actor, "priority": None})
 
@@ -193,12 +248,14 @@ def _step_actor_target(base_targets: dict[str, dict[str, float]], step: dict[str
         actor = actor_ref["actor"]
         actor_targets = deepcopy(next_targets.get(actor) or _actor_baseline_state())
         for field_name in _NUMERIC_FIELDS:
-            raw_value = step.get(field_name)
+            params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
+            raw_value = params.get(field_name, step.get(field_name))
             if raw_value in (None, ""):
                 continue
             actor_targets[field_name] = round(float(raw_value), 2)
         if actor_ref.get("priority") is not None:
             actor_targets["_priority"] = int(actor_ref["priority"])
+        actor_targets["_order"] = actor_refs.index(actor_ref)
         next_targets[actor] = actor_targets
     return next_targets
 
@@ -222,6 +279,8 @@ def _interpolate_targets(
             current_actor_targets[field_name] = round(start_value + ((end_value - start_value) * ratio), 2)
         if "_priority" in end_actor_targets:
             current_actor_targets["_priority"] = end_actor_targets["_priority"]
+        if "_order" in end_actor_targets:
+            current_actor_targets["_order"] = end_actor_targets["_order"]
         current_targets[actor] = current_actor_targets
     return current_targets
 
@@ -239,9 +298,11 @@ def _parse_numeric_field(payload: dict, field: str) -> float | None:
 def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
     payload = raw_step if isinstance(raw_step, dict) else {}
     try:
-        delta_time = round(float(payload.get("delta_time") or 0.0), 2)
+        delta_time = round(float(payload.get("delta_time", payload.get("delta_min")) or 0.0), 2)
     except (TypeError, ValueError):
-        raise ValueError(f"Recipe step field 'delta_time' must be a number, got: {payload.get('delta_time')!r}")
+        raise ValueError(
+            f"Recipe step field 'delta_time' must be a number, got: {payload.get('delta_time', payload.get('delta_min'))!r}"
+        )
     actor_refs = _step_actor_refs(payload)
     primary_actor = actor_refs[0]["actor"] if actor_refs else ""
     return {
@@ -249,6 +310,7 @@ def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
         "actors": actor_refs,
         "task": str(payload.get("task") or "").strip(),
         "delta_time": delta_time,
+        "delta_min": delta_time,
         "temp": _parse_numeric_field(payload, "temp"),
         "pressure": _parse_numeric_field(payload, "pressure"),
         "rpm": _parse_numeric_field(payload, "rpm"),
@@ -490,8 +552,6 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
     for index, step in enumerate(steps, start=1):
         step_actor_ids = _step_actor_ids(step)
 
-        # Which fields are relevant to at least one actor in this step.
-        # Used to distinguish "irrelevant zero" from "relevant field for another actor".
         step_relevant_fields: set[str] = set()
         step_actor_profiles: dict[str, str] = {}
         step_actor_protocols: dict[str, str] = {}
@@ -547,8 +607,6 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                     )
                 huber_temp_initialized.add(actor)
 
-        # Null out fields that no actor in this step needs, so irrelevant zero
-        # entries from the editor don't propagate into the runtime snapshot.
         for field_name in _NUMERIC_FIELDS:
             if field_name not in step_relevant_fields:
                 step[field_name] = None

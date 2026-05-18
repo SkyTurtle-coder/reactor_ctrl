@@ -23,6 +23,10 @@ class RecipeEditorTests(unittest.TestCase):
         cls.app = create_app()
         cls.client = cls.app.test_client()
 
+    def setUp(self):
+        with self.client.session_transaction() as session:
+            session["authenticated"] = True
+
     @classmethod
     def tearDownClass(cls):
         app_config.Config.SQLALCHEMY_DATABASE_URI = cls._original_database_uri
@@ -58,11 +62,13 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn('document.getElementById("recipe-build-select")', source)
         self.assertIn("function makeActorPicker(step, rowIndex, isEmpty, disabled)", source)
         self.assertIn("function actorOptionsForBuild(buildData)", source)
-        self.assertIn("function normalizeActorRefs(rawActors, fallbackActor = \"\")", source)
+        self.assertIn("function normalizeActorRefs(rawActors, fallbackActor = \"\",", source)
         self.assertIn("recipe-actor-chip", source)
         self.assertIn('fetchJson(`/api/reactor-builds/${state.reactorBuildId}`)', source)
         self.assertIn("Select a flowsheet before adding steps.", source)
         self.assertIn("At least one actor from the selected flowsheet is required for every step before saving.", source)
+        self.assertNotIn("recipe-actor-advanced", source)
+        self.assertNotIn("<summary>Advanced</summary>", source)
 
     def test_recipe_api_requires_build_and_valid_actor(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")
@@ -94,8 +100,14 @@ class RecipeEditorTests(unittest.TestCase):
         )
 
         self.assertEqual(steps[0]["actor"], "Huber_01")
-        self.assertEqual(steps[0]["actors"][1], {"actor": "Stirrer_01", "priority": 2})
-        self.assertEqual(steps[1]["actors"], [{"actor": "Huber_01", "priority": None}])
+        stirrer_ref = steps[0]["actors"][1]
+        self.assertEqual(stirrer_ref["actor"], "Stirrer_01")
+        self.assertEqual(stirrer_ref["priority"], 2)
+        self.assertEqual(stirrer_ref["params"]["rpm"], 300.0)
+        step1_actors = steps[1]["actors"]
+        self.assertEqual(len(step1_actors), 1)
+        self.assertEqual(step1_actors[0]["actor"], "Huber_01")
+        self.assertEqual(step1_actors[0]["params"]["target_temp_c"], 35.0)
 
     def test_recipe_api_requires_initial_parameter_for_each_selected_actor(self):
         allowed = {
@@ -125,6 +137,8 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn(".recipe-num-input-inactive", source)
         self.assertIn(".recipe-cell-required", source)
         self.assertIn(".recipe-no-flowsheet-hint", source)
+        self.assertNotIn(".recipe-actor-advanced", source)
+        self.assertNotIn(".recipe-priority-field", source)
 
 
 if __name__ == "__main__":

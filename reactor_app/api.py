@@ -1908,6 +1908,19 @@ _RECIPE_ALLOWED_STATUSES = {"draft", "approved", "archived"}
 _RECIPE_MAX_STEPS = 500
 _RECIPE_STEP_NUMERIC_FIELDS = ("delta_time", "temp", "pressure", "rpm")
 _RECIPE_STEP_TARGET_FIELDS = ("temp", "pressure", "rpm")
+_RECIPE_ACTOR_PARAM_FIELDS = ("target_temp_c", "pressure_mbar_a", "rpm")
+_RECIPE_PARAM_TO_LEGACY_FIELD = {
+    "target_temp_c": "temp",
+    "pressure_mbar_a": "pressure",
+    "rpm": "rpm",
+}
+_RECIPE_LEGACY_FIELD_TO_PARAM = {
+    "temp": "target_temp_c",
+    "pressure": "pressure_mbar_a",
+    "rpm": "rpm",
+}
+_RECIPE_PRIORITY_MIN = 1
+_RECIPE_PRIORITY_MAX = 10
 _RECIPE_MIN_TEMP_C = -40.0
 _RECIPE_MAX_TEMP_C = 150.0
 
@@ -1964,9 +1977,24 @@ def _recipe_allowed_actor_lookup(item: ReactorBuild | None) -> dict[str, dict[st
             "actor": instance_id,
             "profile_id": profile_id,
             "symbol_id": symbol_id,
+            "actor_type": _recipe_actor_type_for_meta({"profile_id": profile_id, "symbol_id": symbol_id}),
         }
 
     return actors
+
+
+def _recipe_actor_type_for_meta(actor_meta: dict[str, Any] | None) -> str:
+    profile_id = str((actor_meta or {}).get("profile_id") or "").strip().lower()
+    symbol_id = str((actor_meta or {}).get("symbol_id") or "").strip().lower()
+    if profile_id == "hc_system_temperature" or symbol_id == "hc_system":
+        return "H/C System"
+    if profile_id == "motor_rpm" or symbol_id == "motor":
+        return "Motor"
+    if profile_id == "pump_rpm" or symbol_id == "pump":
+        return "Pump"
+    if "pressure" in profile_id or "vacuum" in profile_id or "pressure" in symbol_id or "vacuum" in symbol_id:
+        return "Pressure"
+    return "Actor"
 
 
 def _recipe_to_dict(item: Recipe, *, include_steps: bool = True) -> dict[str, Any]:
@@ -2007,33 +2035,129 @@ def _recipe_target_fields_for_actor(actor_meta: dict[str, Any] | None) -> tuple[
 def _parse_recipe_actor_priority(raw_value: Any, *, field_name: str) -> int | None:
     if raw_value in (None, ""):
         return None
+    if isinstance(raw_value, bool):
+        raise ValueError(f"Field '{field_name}' must be an integer from 1 to 10.")
+    if isinstance(raw_value, float) and not raw_value.is_integer():
+        raise ValueError(f"Field '{field_name}' must be an integer from 1 to 10.")
     try:
         parsed = int(raw_value)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"Field '{field_name}' must be an integer or null.") from exc
+        raise ValueError(f"Field '{field_name}' must be an integer from 1 to 10.") from exc
+    if parsed < _RECIPE_PRIORITY_MIN or parsed > _RECIPE_PRIORITY_MAX:
+        raise ValueError(f"Field '{field_name}' must be between 1 and 10.")
     return parsed
 
 
-def _parse_recipe_step_actor_refs(raw: dict[str, Any], index: int) -> list[dict[str, Any]]:
+def _next_recipe_priority(used_priorities: set[int], fallback_index: int) -> int:
+    for priority in range(_RECIPE_PRIORITY_MIN, _RECIPE_PRIORITY_MAX + 1):
+        if priority not in used_priorities:
+            return priority
+    return min(max(fallback_index, _RECIPE_PRIORITY_MIN), _RECIPE_PRIORITY_MAX)
+
+
+def _parse_recipe_param_value(raw_value: Any, *, field_name: str, param_field: str) -> float | None:
+    if raw_value in (None, ""):
+        return None
+    parsed = _parse_float(raw_value, field_name=field_name)
+    if param_field == "target_temp_c":
+        if parsed < _RECIPE_MIN_TEMP_C or parsed > _RECIPE_MAX_TEMP_C:
+            raise ValueError(
+                f"Field '{field_name}' must be between {_RECIPE_MIN_TEMP_C:g} and {_RECIPE_MAX_TEMP_C:g}."
+            )
+    elif parsed < 0:
+        raise ValueError(f"Field '{field_name}' must be >= 0.")
+    return round(parsed, 2)
+
+
+def _actor_params_from_payload(
+    raw_ref: dict[str, Any],
+    *,
+    raw_step: dict[str, Any],
+    actor_meta: dict[str, Any] | None,
+    is_single_actor: bool,
+    field_name: str,
+) -> dict[str, float | None]:
+    params: dict[str, float | None] = {param_field: None for param_field in _RECIPE_ACTOR_PARAM_FIELDS}
+    raw_params = raw_ref.get("params") if isinstance(raw_ref.get("params"), dict) else {}
+
+    for param_field in _RECIPE_ACTOR_PARAM_FIELDS:
+        legacy_field = _RECIPE_PARAM_TO_LEGACY_FIELD[param_field]
+        raw_value = raw_params.get(param_field, raw_params.get(legacy_field))
+        if raw_value is None and param_field in raw_ref:
+            raw_value = raw_ref.get(param_field)
+        if raw_value is None and legacy_field in raw_ref:
+            raw_value = raw_ref.get(legacy_field)
+        params[param_field] = _parse_recipe_param_value(
+            raw_value,
+            field_name=f"{field_name}.params.{param_field}",
+            param_field=param_field,
+        )
+
+    if all(value is None for value in params.values()):
+        target_fields = _recipe_target_fields_for_actor(actor_meta)
+        legacy_fields = target_fields if target_fields else (_RECIPE_STEP_TARGET_FIELDS if is_single_actor else ())
+        for legacy_field in legacy_fields:
+            param_field = _RECIPE_LEGACY_FIELD_TO_PARAM[legacy_field]
+            params[param_field] = _parse_recipe_param_value(
+                raw_step.get(legacy_field),
+                field_name=f"{field_name}.params.{param_field}",
+                param_field=param_field,
+            )
+
+    return params
+
+
+def _parse_recipe_step_actor_refs(
+    raw: dict[str, Any],
+    index: int,
+    *,
+    allowed_actor_by_key: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     raw_refs = raw.get("actors")
     refs: list[dict[str, Any]] = []
     if isinstance(raw_refs, list):
-        for ref_index, raw_ref in enumerate(raw_refs, start=1):
-            field_name = f"steps[{index}].actors[{ref_index}]"
-            if isinstance(raw_ref, str):
-                actor = _clean_string(raw_ref, field_name=field_name) or ""
-                priority = None
-            elif isinstance(raw_ref, dict):
-                actor = _clean_string(raw_ref.get("actor"), field_name=f"{field_name}.actor") or ""
-                priority = _parse_recipe_actor_priority(raw_ref.get("priority"), field_name=f"{field_name}.priority")
-            else:
-                raise ValueError(f"Field '{field_name}' must be an object or actor id string.")
-            if actor:
-                refs.append({"actor": actor, "priority": priority})
+        raw_items = raw_refs
     else:
-        actor = _clean_string(raw.get("actor"), field_name=f"steps[{index}].actor") or ""
-        if actor:
-            refs.append({"actor": actor, "priority": None})
+        actor = _clean_string(raw.get("actor_id", raw.get("actor")), field_name=f"steps[{index}].actor") or ""
+        raw_items = [{"actor": actor}] if actor else []
+
+    used_priorities: set[int] = set()
+    for ref_index, raw_ref in enumerate(raw_items, start=1):
+        field_name = f"steps[{index}].actors[{ref_index}]"
+        if isinstance(raw_ref, str):
+            actor = _clean_string(raw_ref, field_name=field_name) or ""
+            raw_object: dict[str, Any] = {"actor": actor}
+        elif isinstance(raw_ref, dict):
+            actor = _clean_string(
+                raw_ref.get("actor_id", raw_ref.get("actor")),
+                field_name=f"{field_name}.actor_id",
+            ) or ""
+            raw_object = raw_ref
+        else:
+            raise ValueError(f"Field '{field_name}' must be an object or actor id string.")
+
+        if not actor:
+            continue
+        actor_meta = (allowed_actor_by_key or {}).get(_normalized_recipe_actor_key(actor))
+        explicit_priority = _parse_recipe_actor_priority(raw_object.get("priority"), field_name=f"{field_name}.priority")
+        priority = explicit_priority if explicit_priority is not None else _next_recipe_priority(used_priorities, ref_index)
+        used_priorities.add(priority)
+        refs.append(
+            {
+                "actor": actor,
+                "actor_id": actor,
+                "actor_type": _clean_string(raw_object.get("actor_type"), field_name=f"{field_name}.actor_type")
+                or _recipe_actor_type_for_meta(actor_meta),
+                "priority": priority,
+                "params": _actor_params_from_payload(
+                    raw_object,
+                    raw_step=raw,
+                    actor_meta=actor_meta,
+                    is_single_actor=len(raw_items) == 1,
+                    field_name=field_name,
+                ),
+            }
+        )
 
     deduplicated: list[dict[str, Any]] = []
     seen_keys: set[str] = set()
@@ -2046,30 +2170,29 @@ def _parse_recipe_step_actor_refs(raw: dict[str, Any], index: int) -> list[dict[
     return deduplicated
 
 
-def _parse_recipe_step(raw: Any, index: int) -> dict[str, Any]:
+def _parse_recipe_step(
+    raw: Any,
+    index: int,
+    *,
+    allowed_actor_by_key: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"Step {index} must be an object.")
 
-    actor_refs = _parse_recipe_step_actor_refs(raw, index)
+    actor_refs = _parse_recipe_step_actor_refs(raw, index, allowed_actor_by_key=allowed_actor_by_key)
     actor = actor_refs[0]["actor"] if actor_refs else ""
     task = _clean_string(raw.get("task"), field_name=f"steps[{index}].task") or ""
 
     normalized: dict[str, Any] = {"actor": actor, "actors": actor_refs, "task": task}
-    for field in _RECIPE_STEP_NUMERIC_FIELDS:
-        raw_val = raw.get(field)
-        if raw_val in (None, ""):
-            normalized[field] = None
-        else:
-            parsed = _parse_float(raw_val, field_name=f"steps[{index}].{field}")
-            if field == "temp":
-                if parsed < _RECIPE_MIN_TEMP_C or parsed > _RECIPE_MAX_TEMP_C:
-                    raise ValueError(
-                        f"Field 'steps[{index}].temp' must be between "
-                        f"{_RECIPE_MIN_TEMP_C:g} and {_RECIPE_MAX_TEMP_C:g}."
-                    )
-            elif parsed < 0:
-                raise ValueError(f"Field 'steps[{index}].{field}' must be >= 0.")
-            normalized[field] = round(parsed, 2)
+    raw_delta = raw.get("delta_time", raw.get("delta_min"))
+    if raw_delta in (None, ""):
+        normalized["delta_time"] = None
+    else:
+        parsed_delta = _parse_float(raw_delta, field_name=f"steps[{index}].delta_time")
+        if parsed_delta < 0:
+            raise ValueError(f"Field 'steps[{index}].delta_time' must be >= 0.")
+        normalized["delta_time"] = round(parsed_delta, 2)
+    normalized["delta_min"] = normalized["delta_time"]
     return normalized
 
 
@@ -2100,16 +2223,16 @@ def _validate_recipe_steps(
     result: list[dict[str, Any]] = []
     initialized_fields_by_actor: dict[str, set[str]] = {}
     for index, raw in enumerate(raw_steps, start=1):
-        step = _parse_recipe_step(raw, index)
+        step = _parse_recipe_step(raw, index, allowed_actor_by_key=allowed_actor_by_key)
         # Skip fully empty trailing rows
-        if not step["actors"] and not step["task"] and all(step[f] is None for f in _RECIPE_STEP_NUMERIC_FIELDS):
+        if not step["actors"] and not step["task"] and step["delta_time"] is None:
             continue
 
         if not step["actors"]:
             raise ValueError(f"Field 'steps[{index}].actors' must contain at least one actor.")
 
         normalized_refs: list[dict[str, Any]] = []
-        for ref in step["actors"]:
+        for ref_index, ref in enumerate(step["actors"]):
             normalized_actor_key = _normalized_recipe_actor_key(ref.get("actor"))
             if allowed_actor_by_key and normalized_actor_key not in allowed_actor_by_key:
                 raise ValueError(
@@ -2118,11 +2241,26 @@ def _validate_recipe_steps(
             actor_meta = allowed_actor_by_key.get(normalized_actor_key) or {"actor": ref["actor"], "profile_id": "", "symbol_id": ""}
             canonical_actor = str(actor_meta.get("actor") or ref["actor"]).strip()
             target_fields = _recipe_target_fields_for_actor(actor_meta)
+            target_param_fields = {_RECIPE_LEGACY_FIELD_TO_PARAM[field_name] for field_name in target_fields}
+            params = ref.get("params") if isinstance(ref.get("params"), dict) else {}
+            normalized_params = {param_field: params.get(param_field) for param_field in _RECIPE_ACTOR_PARAM_FIELDS}
+
+            for param_field, value in list(normalized_params.items()):
+                if param_field in target_param_fields:
+                    continue
+                if value is not None and abs(float(value)) > 0.000001:
+                    raise ValueError(
+                        f"Field 'steps[{index}].actors[{ref_index + 1}].params.{param_field}' "
+                        f"is not supported by actor '{canonical_actor}'."
+                    )
+                normalized_params[param_field] = None
+
             initialized_fields = initialized_fields_by_actor.setdefault(canonical_actor, set())
             missing_initial_fields = [
                 field_name
                 for field_name in target_fields
-                if field_name not in initialized_fields and step.get(field_name) is None
+                if field_name not in initialized_fields
+                and normalized_params.get(_RECIPE_LEGACY_FIELD_TO_PARAM[field_name]) is None
             ]
             if missing_initial_fields:
                 field_label = ", ".join(missing_initial_fields)
@@ -2130,12 +2268,26 @@ def _validate_recipe_steps(
                     f"Step {index} for actor '{canonical_actor}' must define {field_label} before it can hold or ramp."
                 )
             for field_name in target_fields:
-                if step.get(field_name) is not None:
+                if normalized_params.get(_RECIPE_LEGACY_FIELD_TO_PARAM[field_name]) is not None:
                     initialized_fields.add(field_name)
-            normalized_refs.append({"actor": canonical_actor, "priority": ref.get("priority")})
+            normalized_refs.append(
+                {
+                    "actor": canonical_actor,
+                    "actor_id": canonical_actor,
+                    "actor_type": _recipe_actor_type_for_meta(actor_meta),
+                    "priority": ref.get("priority"),
+                    "params": normalized_params,
+                }
+            )
 
-        step["actors"] = normalized_refs
-        step["actor"] = normalized_refs[0]["actor"]
+        step["actors"] = [
+            item
+            for _original_index, item in sorted(
+                enumerate(normalized_refs),
+                key=lambda pair: (pair[1].get("priority") or _RECIPE_PRIORITY_MAX, pair[0]),
+            )
+        ]
+        step["actor"] = step["actors"][0]["actor"]
 
         result.append(step)
     return result

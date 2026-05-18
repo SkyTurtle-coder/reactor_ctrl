@@ -2637,6 +2637,7 @@ html[data-theme="dark"] textarea:disabled {
 
 html[data-theme="dark"] .recipe-text-input,
 html[data-theme="dark"] .recipe-num-input,
+html[data-theme="dark"] .recipe-priority-input,
 html[data-theme="dark"] .recipe-actor-picker,
 html[data-theme="dark"] .recipe-actor-select {
     background: transparent;
@@ -2644,6 +2645,7 @@ html[data-theme="dark"] .recipe-actor-select {
 
 html[data-theme="dark"] .recipe-text-input:hover,
 html[data-theme="dark"] .recipe-num-input:hover,
+html[data-theme="dark"] .recipe-priority-input:hover,
 html[data-theme="dark"] .recipe-actor-picker:hover,
 html[data-theme="dark"] .recipe-actor-select:hover {
     background: var(--surface-alt);
@@ -2652,6 +2654,7 @@ html[data-theme="dark"] .recipe-actor-select:hover {
 
 html[data-theme="dark"] .recipe-text-input:focus,
 html[data-theme="dark"] .recipe-num-input:focus,
+html[data-theme="dark"] .recipe-priority-input:focus,
 html[data-theme="dark"] .recipe-actor-picker:focus-within,
 html[data-theme="dark"] .recipe-actor-select:focus {
     background: var(--surface);
@@ -2659,8 +2662,14 @@ html[data-theme="dark"] .recipe-actor-select:focus {
 
 html[data-theme="dark"] .recipe-text-input:disabled,
 html[data-theme="dark"] .recipe-num-input:disabled,
+html[data-theme="dark"] .recipe-priority-input:disabled,
 html[data-theme="dark"] .recipe-actor-select:disabled {
     background: rgba(255, 255, 255, 0.04);
+}
+
+html[data-theme="dark"] .recipe-step-cell,
+html[data-theme="dark"] .recipe-add-actor-row td {
+    background: rgba(253, 231, 14, 0.04);
 }
 
 html[data-theme="dark"] .recipe-cell-required {
@@ -2980,7 +2989,7 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-table {
-    min-width: 680px;
+    min-width: 900px;
 }
 
 .recipe-col-num {
@@ -2993,7 +3002,12 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-col-actor {
-    min-width: 220px;
+    min-width: 240px;
+}
+
+.recipe-col-priority {
+    width: 4.25rem;
+    text-align: center;
 }
 
 .recipe-col-num-val {
@@ -3012,12 +3026,31 @@ html[data-theme="dark"] textarea {
     font-size: 0.85rem;
 }
 
+.recipe-step-cell {
+    vertical-align: top;
+    background: rgba(248, 242, 232, 0.36);
+}
+
+.recipe-step-cell .recipe-del-btn {
+    margin-top: 0.35rem;
+}
+
+.recipe-actor-subrow td {
+    border-top-color: rgba(0, 0, 0, 0.05);
+}
+
+.recipe-add-actor-row td {
+    padding-top: 0.45rem;
+    background: rgba(248, 242, 232, 0.2);
+}
+
 .recipe-num-cell-empty {
     color: transparent;
 }
 
 .recipe-text-input,
 .recipe-num-input,
+.recipe-priority-input,
 .recipe-actor-picker,
 .recipe-actor-select {
     width: 100%;
@@ -3035,6 +3068,7 @@ html[data-theme="dark"] textarea {
 
 .recipe-text-input:hover,
 .recipe-num-input:hover,
+.recipe-priority-input:hover,
 .recipe-actor-picker:hover,
 .recipe-actor-select:hover {
     border-color: var(--border);
@@ -3043,6 +3077,7 @@ html[data-theme="dark"] textarea {
 
 .recipe-text-input:focus,
 .recipe-num-input:focus,
+.recipe-priority-input:focus,
 .recipe-actor-picker:focus-within,
 .recipe-actor-select:focus {
     outline: 2px solid var(--accent);
@@ -3053,6 +3088,7 @@ html[data-theme="dark"] textarea {
 
 .recipe-text-input:disabled,
 .recipe-num-input:disabled,
+.recipe-priority-input:disabled,
 .recipe-actor-select:disabled {
     cursor: not-allowed;
     color: var(--muted);
@@ -3072,15 +3108,15 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-actor-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.12rem 0.45rem;
     max-width: 100%;
-    padding: 0.15rem 0.25rem 0.15rem 0.45rem;
+    padding: 0.38rem 0.5rem;
     border: 1px solid var(--border);
-    border-radius: 999px;
+    border-radius: 8px;
     background: var(--surface);
-    font-size: 0.75rem;
+    font-size: 0.82rem;
 }
 
 .recipe-actor-chip.is-invalid {
@@ -3093,11 +3129,21 @@ html[data-theme="dark"] textarea {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    font-weight: 700;
+}
+
+.recipe-actor-type {
+    grid-column: 1 / 2;
+    color: var(--muted);
+    font-size: 0.74rem;
 }
 
 .recipe-actor-chip-fields {
     display: inline-flex;
     gap: 0.15rem;
+    grid-column: 2 / 3;
+    grid-row: 1 / span 2;
+    align-self: center;
     flex-shrink: 0;
 }
 
@@ -3136,41 +3182,47 @@ html[data-theme="dark"] textarea {
     font-size: 0.82rem;
 }
 
-.recipe-actor-advanced {
-    color: var(--muted);
-    font-size: 0.75rem;
+.recipe-priority-input {
+    min-width: 3.25rem;
+    max-width: 3.75rem;
+    text-align: center;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
-.recipe-actor-advanced summary {
-    cursor: pointer;
+.recipe-priority-input.is-high {
+    background: rgba(38, 104, 71, 0.08);
+    border-color: rgba(38, 104, 71, 0.18);
 }
 
-.recipe-priority-grid {
-    display: grid;
-    gap: 0.25rem;
-    margin-top: 0.25rem;
+.recipe-priority-input.is-medium {
+    background: rgba(253, 231, 14, 0.12);
+    border-color: rgba(253, 231, 14, 0.25);
 }
 
-.recipe-priority-field {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 4rem;
-    gap: 0.4rem;
-    align-items: center;
+.recipe-priority-input.is-low {
+    background: rgba(102, 102, 102, 0.08);
+    border-color: rgba(102, 102, 102, 0.14);
 }
 
-.recipe-priority-field input {
-    width: 100%;
-    min-height: 1.75rem;
-    padding: 0.2rem 0.35rem;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
+.recipe-priority-input.is-invalid {
+    border-color: var(--danger);
+    background: rgba(154, 47, 36, 0.08);
 }
 
 .recipe-num-input-inactive {
     opacity: 0.52;
+}
+
+.recipe-muted-cell {
+    color: var(--muted);
+    text-align: center;
+}
+
+.recipe-priority-warning {
+    margin-top: 0.35rem;
+    color: var(--warning);
+    font-size: 0.8rem;
 }
 
 .recipe-input-empty {
