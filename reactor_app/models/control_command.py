@@ -25,7 +25,7 @@ class ControlCommand(db.Model):
     ack_at = db.Column(db.DateTime(timezone=True))
     finished_at = db.Column(db.DateTime(timezone=True))
     retry_count = db.Column(db.Integer, nullable=False, server_default=db.text("0"))
-    error_message = db.Column(db.String(500))
+    error_message = db.Column(db.Text)
 
     device = db.relationship("Device", back_populates="commands")
     events = db.relationship("ControlCommandEvent", back_populates="command")

@@ -26,7 +26,7 @@ class RecipeProgramRun(db.Model):
     started_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.text("CURRENT_TIMESTAMP(3)"), index=True)
     finished_at = db.Column(db.DateTime(timezone=True), index=True)
     last_progress_at = db.Column(db.DateTime(timezone=True), index=True)
-    last_error = db.Column(db.String(500))
+    last_error = db.Column(db.Text)
     created_at = db.Column(
         db.DateTime(timezone=True),
         nullable=False,

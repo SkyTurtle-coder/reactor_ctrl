@@ -271,6 +271,11 @@ def _clean_string(value: Any, *, field_name: str, required: bool = False) -> str
         if required:
             raise ValueError(f"Field '{field_name}' must not be empty.")
         return None
+    # Protect database columns that previously were limited (e.g. last_error)
+    if field_name in {"last_error", "error_message"}:
+        max_len = 2000
+        if len(text) > max_len:
+            return text[:max_len]
     return text
 
 

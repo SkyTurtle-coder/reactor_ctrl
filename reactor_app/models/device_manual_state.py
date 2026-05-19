@@ -24,7 +24,7 @@ class DeviceManualState(db.Model):
     torque_ncm = db.Column(db.Float)
     last_reported_at = db.Column(db.DateTime(timezone=True))
     queue_status = db.Column(db.String(16), nullable=False, server_default=db.text("'idle'"), index=True)
-    last_error = db.Column(db.String(500))
+    last_error = db.Column(db.Text)
     next_poll_at = db.Column(db.DateTime(timezone=True), index=True)
     watch_expires_at = db.Column(db.DateTime(timezone=True), index=True)
     lease_owner = db.Column(db.String(64), index=True)

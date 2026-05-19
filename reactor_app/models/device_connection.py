@@ -27,7 +27,7 @@ class DeviceConnection(db.Model):
     write_timeout_ms = db.Column(db.Integer, nullable=False, server_default=db.text("1200"))
     reconnect_delay_ms = db.Column(db.Integer, nullable=False, server_default=db.text("1000"))
     last_seen_at = db.Column(db.DateTime(timezone=True))
-    last_error = db.Column(db.String(500))
+    last_error = db.Column(db.Text)
     is_enabled = db.Column(db.Boolean, nullable=False, server_default=db.text("1"), index=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.text("CURRENT_TIMESTAMP(3)"))
     updated_at = db.Column(
