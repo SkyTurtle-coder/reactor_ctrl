@@ -26,7 +26,7 @@ from ..models import (
     ReactorBuild,
 )
 from .device_manual_runtime import queue_manual_state_update
-from .device_runtime import execute_device_command
+from .device_runtime import DeviceCommandError, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "recipe_program_reconciler_thread"
@@ -56,6 +56,10 @@ _HUBER_SETPOINT_LIMITS_BY_PROTOCOL = {
     "huber_cc230_mock": (-50.0, 200.0),
 }
 _SAFE_HUBER_SETPOINT_C = 20.0
+
+
+class RecipeProgramDeviceCommandError(RuntimeError):
+    pass
 
 
 def _now_utc() -> datetime:
@@ -271,11 +275,15 @@ def _step_actor_target(base_targets: dict[str, dict[str, float]], step: dict[str
         actor = actor_ref["actor"]
         actor_targets = deepcopy(next_targets.get(actor) or _actor_baseline_state())
         params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
+        has_target_value = False
         for field_name in _NUMERIC_FIELDS:
             raw_value = params.get(field_name, step.get(field_name))
             if raw_value in (None, ""):
                 continue
+            has_target_value = True
             actor_targets[field_name] = round(float(raw_value), 2)
+        if not has_target_value and actor not in next_targets:
+            continue
         if actor_ref.get("priority") is not None:
             actor_targets["_priority"] = int(actor_ref["priority"])
         actor_targets["_order"] = int(actor_ref.get("_order") or actor_refs.index(actor_ref))
@@ -367,8 +375,8 @@ def _evaluate_program_timeline(
 
     while index < len(normalized_steps):
         step = normalized_steps[index]
-        actors = _step_actor_ids(step)
         next_targets = _step_actor_target(previous_targets, step)
+        actors = [actor for actor in _step_actor_ids(step) if actor in next_targets or actor in previous_targets]
         duration_seconds = max(0.0, round(float(step.get("delta_time") or 0.0) * 60.0, 3))
         elapsed_seconds = max(0.0, (current_time - segment_started_at).total_seconds())
 
@@ -1160,6 +1168,120 @@ def _manual_text_payload(command_text: str) -> dict[str, Any]:
     }
 
 
+def _positive_int_config(app: Flask, key: str, default: int, *, min_value: int = 1) -> int:
+    try:
+        value = int(app.config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(min_value, value)
+
+
+def _recipe_command_payload(app: Flask, payload: dict[str, Any] | None) -> dict[str, Any]:
+    command_payload = deepcopy(payload or {})
+    command_payload.setdefault(
+        "connect_timeout_ms",
+        _positive_int_config(app, "RECIPE_PROGRAM_DEVICE_CONNECT_TIMEOUT_MS", 3000),
+    )
+    command_payload.setdefault(
+        "response_timeout_ms",
+        _positive_int_config(app, "RECIPE_PROGRAM_DEVICE_RESPONSE_TIMEOUT_MS", 1200),
+    )
+    command_payload.setdefault(
+        "write_timeout_ms",
+        _positive_int_config(app, "RECIPE_PROGRAM_DEVICE_WRITE_TIMEOUT_MS", 1200),
+    )
+    command_payload.setdefault(
+        "max_retries",
+        _positive_int_config(app, "RECIPE_PROGRAM_DEVICE_MAX_RETRIES", 1, min_value=0),
+    )
+    return command_payload
+
+
+def _recipe_step_label(evaluation: dict[str, Any] | None) -> str:
+    if not isinstance(evaluation, dict):
+        return "current step"
+    active_step = evaluation.get("active_step") if isinstance(evaluation.get("active_step"), dict) else None
+    try:
+        active_step_number = int(evaluation.get("active_step_index") or 0) + 1
+    except (TypeError, ValueError):
+        active_step_number = 1
+    if active_step is None:
+        return "final target application"
+    task = str(active_step.get("task") or "").strip()
+    return f"step {active_step_number}{f' ({task})' if task else ''}"
+
+
+def _device_command_failure_message(
+    exc: DeviceCommandError,
+    *,
+    evaluation: dict[str, Any] | None,
+    actor: str,
+    binding: dict[str, Any],
+    device: Device,
+    command_name: str,
+) -> str:
+    command = getattr(exc, "command", None)
+    device_name = str(getattr(device, "display_name", "") or binding.get("device_display_name") or "").strip()
+    device_id = getattr(device, "device_id", binding.get("device_id", "unknown"))
+    protocol = str(binding.get("protocol") or getattr(device, "protocol", "") or "unknown").strip()
+    detail = str(getattr(command, "error_message", "") or str(exc) or "").strip()
+    status = str(getattr(command, "status", "") or "").strip()
+    command_id = getattr(command, "command_id", None)
+
+    message = (
+        f"Recipe device command failed at {_recipe_step_label(evaluation)}: "
+        f"actor '{actor}', command '{command_name}', device '{device_name or device_id}' "
+        f"(ID {device_id}, protocol {protocol})."
+    )
+    if status:
+        message = f"{message} Command status: {status}."
+    if command_id:
+        message = f"{message} Command ID: {command_id}."
+    if detail:
+        message = f"{message} Device error: {detail}"
+    return message
+
+
+def _execute_recipe_device_command(
+    app: Flask,
+    *,
+    evaluation: dict[str, Any] | None,
+    actor: str,
+    binding: dict[str, Any],
+    device: Device,
+    command_name: str,
+    payload: dict[str, Any] | None,
+    requested_by: str,
+) -> None:
+    try:
+        execute_device_command(
+            device,
+            command_name=command_name,
+            payload=_recipe_command_payload(app, payload),
+            requested_by=requested_by,
+        )
+    except DeviceCommandError as exc:
+        if getattr(exc, "command", None) is not None:
+            try:
+                db.session.flush()
+                db.session.commit()
+            except Exception:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+        raise RecipeProgramDeviceCommandError(
+            _device_command_failure_message(
+                exc,
+                evaluation=evaluation,
+                actor=actor,
+                binding=binding,
+                device=device,
+                command_name=command_name,
+            )
+        ) from exc
+
+
 def _apply_safe_stop_to_binding(
     app: Flask,
     binding: dict[str, Any],
@@ -1199,8 +1321,12 @@ def _apply_safe_stop_to_binding(
             ("stop", {}),
         ):
             try:
-                execute_device_command(
-                    device,
+                _execute_recipe_device_command(
+                    app,
+                    evaluation=None,
+                    actor=actor,
+                    binding=binding,
+                    device=device,
                     command_name=command_name,
                     payload=payload,
                     requested_by=requested_by,
@@ -1224,8 +1350,12 @@ def _apply_safe_stop_to_binding(
 
         for command_text in ("OUT_SP_4 0", "STOP_4"):
             try:
-                execute_device_command(
-                    device,
+                _execute_recipe_device_command(
+                    app,
+                    evaluation=None,
+                    actor=actor,
+                    binding=binding,
+                    device=device,
                     command_name="manual_text",
                     payload=_manual_text_payload(command_text),
                     requested_by=requested_by,
@@ -1303,6 +1433,7 @@ def _apply_current_targets(
     current_targets: dict[str, dict[str, float]],
     *,
     worker_id: str | None = None,
+    evaluation: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]] | None:
     if not _program_claim_allows_target_application(state, worker_id):
         return None
@@ -1387,8 +1518,12 @@ def _apply_current_targets(
             if next_applied_lookup.get(actor) == next_payload:
                 continue
 
-            execute_device_command(
-                device,
+            _execute_recipe_device_command(
+                app,
+                evaluation=evaluation,
+                actor=actor,
+                binding=binding,
+                device=device,
                 command_name="set_setpoint",
                 payload={
                     "temp_c": temp_c,
@@ -1398,8 +1533,14 @@ def _apply_current_targets(
                 requested_by="recipe_program",
             )
             if not bool(previous_payload.get("is_on")):
-                execute_device_command(
-                    device,
+                if not _program_claim_allows_target_application(state, worker_id):
+                    return None
+                _execute_recipe_device_command(
+                    app,
+                    evaluation=evaluation,
+                    actor=actor,
+                    binding=binding,
+                    device=device,
                     command_name="start",
                     payload={},
                     requested_by="recipe_program",
@@ -1486,6 +1627,7 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
             state,
             evaluation.get("current_targets") or {},
             worker_id=worker_id,
+            evaluation=evaluation,
         )
         if applied_changes is None:
             db.session.rollback()

@@ -167,6 +167,32 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         self.assertEqual(evaluation["current_targets"]["Stirrer_01"]["_priority"], 1)
         self.assertEqual(evaluation["current_targets"]["Huber_01"]["_priority"], 2)
 
+    def test_initial_actor_with_empty_params_does_not_create_target(self):
+        started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
+        steps = [
+            {
+                "actors": [
+                    {
+                        "actor_id": "Stirrer_01",
+                        "priority": 1,
+                        "params": {"target_temp_c": None, "pressure_mbar_a": None, "rpm": ""},
+                    }
+                ],
+                "task": "No command",
+                "delta_time": 1,
+            },
+        ]
+
+        evaluation = _evaluate_program_timeline(
+            steps,
+            active_step_index=0,
+            step_started_at=started_at,
+            now=started_at + timedelta(seconds=30),
+        )
+
+        self.assertFalse(evaluation["completed"])
+        self.assertNotIn("Stirrer_01", evaluation["current_targets"])
+
     def test_stopped_program_payload_resets_active_progress_and_targets(self):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         state = RecipeProgramState(

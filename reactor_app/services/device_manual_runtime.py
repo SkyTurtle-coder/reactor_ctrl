@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from flask import Flask
+from flask import Flask, has_app_context
 from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 
@@ -179,6 +179,102 @@ def _active_recipe_program_device_ids() -> set[int] | None:
         if device_id > 0:
             device_ids.add(device_id)
     return device_ids
+
+
+def _active_recipe_binding_for_device(device_id: int) -> tuple[RecipeProgramState, dict[str, Any]] | tuple[None, None]:
+    try:
+        state = db.session.get(RecipeProgramState, _RECIPE_PROGRAM_STATE_ID)
+    except Exception:
+        return None, None
+    if state is None or str(state.status or "").strip().lower() != _RECIPE_PROGRAM_RUNNING_STATUS:
+        return None, None
+
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        try:
+            binding_device_id = int(binding.get("device_id"))
+        except (TypeError, ValueError):
+            continue
+        if binding_device_id == int(device_id):
+            return state, binding
+    return None, None
+
+
+def _manual_runtime_error_message(device: Device | None, exc: Exception, binding: dict[str, Any] | None) -> str:
+    actor = str((binding or {}).get("actor") or "").strip()
+    command = getattr(exc, "command", None)
+    detail = str(getattr(command, "error_message", "") or str(exc) or "").strip()
+    command_name = str(getattr(command, "command_name", "") or "manual-state command").strip()
+    status = str(getattr(command, "status", "") or "").strip()
+    command_id = getattr(command, "command_id", None)
+    device_id = getattr(device, "device_id", (binding or {}).get("device_id", "unknown"))
+    device_name = str(getattr(device, "display_name", "") or (binding or {}).get("device_display_name") or "").strip()
+    protocol = str(getattr(device, "protocol", "") or (binding or {}).get("protocol") or "unknown").strip()
+
+    message = (
+        "Recipe device command failed during manual device execution: "
+        f"actor '{actor or 'unknown'}', command '{command_name}', "
+        f"device '{device_name or device_id}' (ID {device_id}, protocol {protocol})."
+    )
+    if status:
+        message = f"{message} Command status: {status}."
+    if command_id:
+        message = f"{message} Command ID: {command_id}."
+    if detail:
+        message = f"{message} Device error: {detail}"
+    return message
+
+
+def _fail_active_recipe_program_for_device(app: Flask, device: Device | None, exc: Exception) -> str | None:
+    if device is None:
+        return None
+    program_state, binding = _active_recipe_binding_for_device(int(device.device_id))
+    if program_state is None or binding is None:
+        return None
+
+    now = _now_utc()
+    message = _manual_runtime_error_message(device, exc, binding)
+    program_state.status = "error"
+    program_state.stop_requested = False
+    program_state.finished_at = now
+    program_state.last_progress_at = now
+    program_state.last_error = message
+    program_state.lease_owner = None
+    program_state.lease_expires_at = None
+
+    if not has_app_context():
+        return message
+
+    try:
+        from . import recipe_program_runtime
+
+        run = recipe_program_runtime._ensure_open_program_run(program_state)
+        if run is not None:
+            run.status = "error"
+            run.finished_at = now
+            run.last_progress_at = now
+            run.last_error = message
+            recipe_program_runtime._record_program_event(
+                run,
+                "error",
+                state=program_state,
+                evaluation=recipe_program_runtime._evaluate_state_snapshot(program_state, now=now),
+                payload={
+                    "error": message,
+                    "device_id": getattr(device, "device_id", None),
+                    "actor": str(binding.get("actor") or "").strip(),
+                },
+            )
+    except Exception:
+        app.logger.warning(
+            "Manual reconciler could not append recipe program error event for device %s.",
+            getattr(device, "device_id", "unknown"),
+            exc_info=True,
+        )
+    return message
 
 
 def _load_ika_measurement_channels(device_id: int) -> dict[str, MeasurementChannel]:
@@ -805,7 +901,10 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         state = db.session.get(DeviceManualState, device_id)
         if state is None:
             return
-        state.last_error = str(exc)
+        recipe_program_error = _fail_active_recipe_program_for_device(app, device, exc)
+        state.last_error = recipe_program_error or str(exc)
+        if recipe_program_error and desired_pending:
+            state.applied_version = processed_version
         # Use the background interval for retry when no UI session is watching so
         # an unreachable device is not hammered on every reconciler tick.
         retry_interval = _manual_poll_interval(app) if watch_active else _background_poll_interval(app)

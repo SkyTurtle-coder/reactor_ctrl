@@ -6,14 +6,15 @@ from unittest.mock import MagicMock, patch
 from flask import Flask
 from sqlalchemy.exc import OperationalError
 
-from reactor_app.models import Device, DeviceManualState
+from reactor_app.models import Device, DeviceManualState, RecipeProgramState
 from reactor_app.services import device_manual_runtime
 
 
 class _FakeSessionForProcess:
-    def __init__(self, *, state, device):
+    def __init__(self, *, state, device, program_state=None):
         self._state = state
         self._device = device
+        self._program_state = program_state
         self.commit_calls = 0
         self.rollback_calls = 0
 
@@ -22,6 +23,8 @@ class _FakeSessionForProcess:
             return self._state
         if model is Device:
             return self._device
+        if model is RecipeProgramState:
+            return self._program_state
         raise AssertionError(f"Unexpected model lookup: {model}")
 
     def commit(self):
@@ -312,6 +315,62 @@ class ProcessManualStateAppliedVersionTests(unittest.TestCase):
 
         self.assertEqual(state.applied_version, 0, "applied_version must stay 0 on failure")
         self.assertIn("booting", state.last_error or "")
+        self.assertEqual(state.queue_status, "error")
+
+    def test_recipe_program_is_failed_when_active_recipe_device_command_fails(self):
+        app = self._make_app()
+        now = datetime.now(timezone.utc)
+        state = DeviceManualState(
+            device_id=1,
+            queue_status="running",
+            desired_version=2,
+            applied_version=1,
+            desired_is_on=True,
+            desired_speed=300,
+            lease_owner="worker-x",
+        )
+        state.watch_expires_at = now + timedelta(seconds=30)
+        state.next_poll_at = now - timedelta(seconds=1)
+
+        device = Device(
+            device_id=1,
+            asset_serial="IKA-1",
+            display_name="IKA Stirrer",
+            device_type="actuator",
+            protocol="ika_eurostar_60",
+        )
+        program_state = RecipeProgramState(
+            recipe_program_state_id=1,
+            recipe_id=3,
+            status="running",
+            lease_owner="recipe-worker",
+            stop_requested=False,
+        )
+        program_state.snapshot_json = {
+            "bindings": [
+                {
+                    "actor": "Stirrer-01",
+                    "device_id": 1,
+                    "device_display_name": "IKA Stirrer",
+                    "protocol": "ika_eurostar_60",
+                }
+            ]
+        }
+        fake_session = _FakeSessionForProcess(state=state, device=device, program_state=program_state)
+
+        def fake_apply(_dev, _st):
+            raise RuntimeError("Device command execution failed.")
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "_apply_desired_ika_state", fake_apply):
+                device_manual_runtime._process_manual_state(app, device_id=1, worker_id="worker-x")
+
+        self.assertEqual(program_state.status, "error")
+        self.assertIsNone(program_state.lease_owner)
+        self.assertIn("Stirrer-01", program_state.last_error or "")
+        self.assertIn("IKA Stirrer", program_state.last_error or "")
+        self.assertIn("Device command execution failed", program_state.last_error or "")
+        self.assertEqual(state.applied_version, 2)
         self.assertEqual(state.queue_status, "error")
 
     def test_applied_version_set_when_telemetry_valid(self):

@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import config as app_config
@@ -303,7 +304,17 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             db.session.execute(text("DELETE FROM device_server"))
             db.session.commit()
 
-    def _seed_recipe(self, *, steps_json: list[dict]) -> Recipe:
+    def _seed_recipe(
+        self,
+        *,
+        steps_json: list[dict],
+        actor_id: str = "Stirrer_01",
+        profile_id: str = "motor_rpm",
+        protocol: str = "ika_eurostar_60",
+        device_type: str = "actuator",
+        symbol_id: str = "motor",
+        label: str = "Stirrer 1",
+    ) -> Recipe:
         server = DeviceServer(
             server_code="MOXA-01",
             display_name="Moxa Test",
@@ -333,11 +344,11 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         db.session.flush()
 
         device = Device(
-            asset_serial="IKA-001",
-            manufacturer_serial="SN-IKA-001",
-            display_name="IKA Stirrer",
-            device_type="actuator",
-            protocol="ika_eurostar_60",
+            asset_serial=f"{actor_id}-001",
+            manufacturer_serial=f"SN-{actor_id}-001",
+            display_name=label,
+            device_type=device_type,
+            protocol=protocol,
             is_active=True,
         )
         db.session.add(device)
@@ -362,17 +373,17 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 "nodes": [
                     {
                         "id": "node-motor-1",
-                        "instance_id": "Stirrer_01",
-                        "label": "Stirrer 1",
-                        "symbol_id": "motor",
+                        "instance_id": actor_id,
+                        "label": label,
+                        "symbol_id": symbol_id,
                         "category": "actuators",
                         "communication": {
                             "device_server_code": "MOXA-01",
                             "connection_label": "Port 1",
-                            "protocol": "ika_eurostar_60",
+                            "protocol": protocol,
                         },
                         "control": {
-                            "profile_id": "motor_rpm",
+                            "profile_id": profile_id,
                             "config": {},
                         },
                     }
@@ -505,6 +516,115 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             self.assertEqual(run.finished_at, self._naive_utc(stopped_at))
             self.assertEqual(events[-1].event_type, "stopped")
             self.assertEqual(run.requested_by, "integration_stop")
+
+    def test_huber_command_failure_sets_program_error_with_context(self):
+        started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)
+        worker_id = "worker-1"
+
+        with self.app.app_context():
+            recipe = self._seed_recipe(
+                steps_json=[
+                    {"actor": "HUBER-01", "task": "Heat", "delta_time": 1, "temp": 25},
+                ],
+                actor_id="HUBER-01",
+                profile_id="hc_system_temperature",
+                protocol="huber_cc230",
+                device_type="thermostat",
+                symbol_id="hc_system",
+                label="Huber CC230",
+            )
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at):
+                recipe_program_runtime.start_recipe_program(self.app, recipe, requested_by="integration_test")
+                db.session.commit()
+
+            self._acquire_program_lease(worker_id=worker_id, lease_until=started_at + timedelta(seconds=15))
+            command = SimpleNamespace(
+                command_id=390180,
+                command_name="set_setpoint",
+                status="failed",
+                error_message="Keine Antwort vom HUBER CC230.",
+            )
+
+            def fail_command(*args, **kwargs):
+                raise recipe_program_runtime.DeviceCommandError(
+                    "Device command execution failed.",
+                    status_code=502,
+                    command=command,
+                )
+
+            with patch.object(recipe_program_runtime, "execute_device_command", side_effect=fail_command):
+                with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at + timedelta(seconds=10)):
+                    recipe_program_runtime._process_recipe_program_state(self.app, worker_id=worker_id)
+
+            state = db.session.get(RecipeProgramState, 1)
+            run = RecipeProgramRun.query.one()
+            events = RecipeProgramEvent.query.order_by(RecipeProgramEvent.recipe_program_event_id.asc()).all()
+
+            self.assertEqual(state.status, "error")
+            self.assertEqual(run.status, "error")
+            self.assertIn("step 1 (Heat)", state.last_error)
+            self.assertIn("HUBER-01", state.last_error)
+            self.assertIn("set_setpoint", state.last_error)
+            self.assertIn("Huber CC230", state.last_error)
+            self.assertIn("Keine Antwort", state.last_error)
+            self.assertEqual(events[-1].event_type, "error")
+
+    def test_can_start_different_recipe_after_error(self):
+        started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)
+        failed_at = started_at + timedelta(seconds=20)
+        restarted_at = failed_at + timedelta(seconds=10)
+
+        with self.app.app_context():
+            first_recipe = self._seed_recipe(
+                steps_json=[
+                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
+                ]
+            )
+            second_recipe = Recipe(
+                title="Second History Recipe",
+                operator_name="Operator",
+                status="released",
+                reactor_build_id=first_recipe.reactor_build_id,
+                steps_json=[
+                    {"actor": "Stirrer_01", "task": "Ramp to 150", "delta_time": 1, "rpm": 150},
+                ],
+                created_by="tester",
+                updated_by="tester",
+                is_active=True,
+            )
+            db.session.add(second_recipe)
+            db.session.commit()
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at):
+                recipe_program_runtime.start_recipe_program(self.app, first_recipe, requested_by="integration_test")
+                db.session.commit()
+
+            state = db.session.get(RecipeProgramState, 1)
+            run = RecipeProgramRun.query.one()
+            state.status = "error"
+            state.finished_at = failed_at
+            state.last_progress_at = failed_at
+            state.last_error = "Device command execution failed."
+            state.lease_owner = None
+            state.lease_expires_at = None
+            run.status = "error"
+            run.finished_at = failed_at
+            run.last_progress_at = failed_at
+            run.last_error = state.last_error
+            db.session.commit()
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=restarted_at):
+                state = recipe_program_runtime.start_recipe_program(self.app, second_recipe, requested_by="integration_restart")
+                db.session.commit()
+
+            runs = RecipeProgramRun.query.order_by(RecipeProgramRun.recipe_program_run_id.asc()).all()
+
+            self.assertEqual(state.status, "running")
+            self.assertEqual(state.recipe_id, second_recipe.recipe_id)
+            self.assertEqual(len(runs), 2)
+            self.assertEqual(runs[0].status, "error")
+            self.assertEqual(runs[1].status, "running")
 
     def test_can_start_different_recipe_after_stop(self):
         started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)

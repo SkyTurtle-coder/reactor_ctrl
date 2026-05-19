@@ -11,6 +11,9 @@ from reactor_app.services import recipe_program_runtime
 class _FakeSession:
     def __init__(self, device):
         self.device = device
+        self.commit_calls = 0
+        self.rollback_calls = 0
+        self.flush_calls = 0
 
     def get(self, model, item_id):
         if model is Device and int(item_id) == int(self.device.device_id):
@@ -19,6 +22,15 @@ class _FakeSession:
 
     def refresh(self, item):
         return None
+
+    def flush(self):
+        self.flush_calls += 1
+
+    def commit(self):
+        self.commit_calls += 1
+
+    def rollback(self):
+        self.rollback_calls += 1
 
 
 class HuberRecipeProgramTests(unittest.TestCase):
@@ -189,9 +201,94 @@ class HuberRecipeProgramTests(unittest.TestCase):
         command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
         self.assertEqual(command_names, ["set_setpoint", "start"])
         self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["temp_c"], 21.25)
+        self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["response_timeout_ms"], 1200)
+        self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["max_retries"], 1)
         self.assertEqual(state.last_applied_targets_json["Huber_01"]["temp"], 21.25)
         self.assertTrue(state.last_applied_targets_json["Huber_01"]["is_on"])
         self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
+
+    def test_huber_current_target_failure_reports_recipe_context(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="CC230-7",
+            display_name="Huber CC230",
+            device_type="thermostat",
+            protocol="huber_cc230",
+        )
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._cc230_binding()]}
+        state.last_applied_targets_json = {}
+        command = SimpleNamespace(
+            command_id=390180,
+            command_name="set_setpoint",
+            status="failed",
+            error_message="Keine Antwort vom HUBER CC230.",
+        )
+        fake_session = _FakeSession(device)
+
+        def fail_command(*args, **kwargs):
+            raise recipe_program_runtime.DeviceCommandError(
+                "Device command execution failed.",
+                status_code=502,
+                command=command,
+            )
+
+        evaluation = {"active_step_index": 1, "active_step": {"task": "Ramp"}}
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(recipe_program_runtime, "execute_device_command", side_effect=fail_command):
+                with self.assertRaises(recipe_program_runtime.RecipeProgramDeviceCommandError) as ctx:
+                    recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Huber_01": {"temp": 21.25, "pressure": 0, "rpm": 0}},
+                        evaluation=evaluation,
+                    )
+
+        message = str(ctx.exception)
+        self.assertIn("step 2 (Ramp)", message)
+        self.assertIn("Huber_01", message)
+        self.assertIn("set_setpoint", message)
+        self.assertIn("Huber CC230", message)
+        self.assertIn("390180", message)
+        self.assertIn("Keine Antwort", message)
+        self.assertEqual(fake_session.commit_calls, 1)
+
+    def test_huber_current_target_respects_stop_before_start_command(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+        state = RecipeProgramState(status="running", lease_owner="worker-1", stop_requested=False)
+        state.snapshot_json = {"bindings": [self._binding()]}
+        state.last_applied_targets_json = {}
+
+        class StopAfterSetpointSession(_FakeSession):
+            def __init__(self, session_device):
+                super().__init__(session_device)
+                self.refresh_calls = 0
+
+            def refresh(self, item):
+                self.refresh_calls += 1
+                if self.refresh_calls >= 3:
+                    item.stop_requested = True
+
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=StopAfterSetpointSession(device))):
+            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                changes = recipe_program_runtime._apply_current_targets(
+                    app,
+                    state,
+                    {"Huber_01": {"temp": 21.25, "pressure": 0, "rpm": 0}},
+                    worker_id="worker-1",
+                )
+
+        self.assertIsNone(changes)
+        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        self.assertEqual(command_names, ["set_setpoint"])
 
     def test_cc230_current_target_uses_cc230_setpoint_limits(self):
         app = Flask(__name__)
