@@ -506,6 +506,54 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             self.assertEqual(events[-1].event_type, "stopped")
             self.assertEqual(run.requested_by, "integration_stop")
 
+    def test_can_start_different_recipe_after_stop(self):
+        started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)
+        stopped_at = started_at + timedelta(seconds=20)
+        restarted_at = stopped_at + timedelta(seconds=10)
+
+        with self.app.app_context():
+            first_recipe = self._seed_recipe(
+                steps_json=[
+                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
+                ]
+            )
+            second_recipe = Recipe(
+                title="Second History Recipe",
+                operator_name="Operator",
+                status="released",
+                reactor_build_id=first_recipe.reactor_build_id,
+                steps_json=[
+                    {"actor": "Stirrer_01", "task": "Ramp to 150", "delta_time": 1, "rpm": 150},
+                ],
+                created_by="tester",
+                updated_by="tester",
+                is_active=True,
+            )
+            db.session.add(second_recipe)
+            db.session.commit()
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at):
+                recipe_program_runtime.start_recipe_program(self.app, first_recipe, requested_by="integration_test")
+                db.session.commit()
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=stopped_at):
+                with patch.object(recipe_program_runtime, "execute_device_command"):
+                    recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
+                    db.session.commit()
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=restarted_at):
+                state = recipe_program_runtime.start_recipe_program(self.app, second_recipe, requested_by="integration_restart")
+                db.session.commit()
+
+            runs = RecipeProgramRun.query.order_by(RecipeProgramRun.recipe_program_run_id.asc()).all()
+
+            self.assertEqual(state.status, "running")
+            self.assertEqual(state.recipe_id, second_recipe.recipe_id)
+            self.assertEqual(len(runs), 2)
+            self.assertEqual(runs[0].status, "stopped")
+            self.assertEqual(runs[1].status, "running")
+            self.assertEqual(runs[1].recipe_id, second_recipe.recipe_id)
+
 
 if __name__ == "__main__":
     unittest.main()
