@@ -58,13 +58,16 @@ class DeviceCommandError(RuntimeError):
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
-    db.session.add(
-        ControlCommandEvent(
-            command=command,
-            event_type=event_type,
-            event_payload=event_payload,
-        )
+    if command.command_id is None:
+        db.session.add(command)
+        db.session.flush()
+    event = ControlCommandEvent(
+        command_id=command.command_id,
+        event_type=event_type,
+        event_payload=event_payload,
     )
+    db.session.add(event)
+    db.session.flush()
 
 
 def _mark_connection_success(connection_id: int, *, timestamp: datetime) -> None:

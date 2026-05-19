@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from reactor_app.models import ControlCommand, ControlCommandEvent
 from reactor_app.services import device_runtime
 
 
@@ -13,6 +14,27 @@ class _FakeSession:
     def execute(self, statement, params):
         self.executions.append((str(statement), dict(params)))
         return SimpleNamespace(rowcount=1)
+
+
+class _FakeCommandEventSession:
+    def __init__(self):
+        self.objects = []
+        self.operations = []
+
+    def add(self, item):
+        self.objects.append(item)
+        if isinstance(item, ControlCommand):
+            self.operations.append(("add_command", item.command_id))
+        elif isinstance(item, ControlCommandEvent):
+            self.operations.append(("add_event", item.command_id))
+        else:
+            self.operations.append(("add", type(item).__name__))
+
+    def flush(self):
+        for item in self.objects:
+            if isinstance(item, ControlCommand) and item.command_id is None:
+                item.command_id = 123
+        self.operations.append(("flush", None))
 
 
 class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
@@ -53,6 +75,31 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertIn("SET is_online=0", binding_sql)
         self.assertIn("WHERE device_id=:did AND connection_id=:cid", binding_sql)
         self.assertEqual(binding_params, {"did": 7, "cid": 3})
+
+    def test_add_command_event_flushes_parent_command_before_child_event(self):
+        session = _FakeCommandEventSession()
+        command = ControlCommand(
+            device_id=7,
+            request_uuid="request-1",
+            requested_by="test",
+            command_name="manual_text",
+            status="queued",
+        )
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            device_runtime._add_command_event(command, "queued", {"requested_by": "test"})
+
+        event = next(item for item in session.objects if isinstance(item, ControlCommandEvent))
+        self.assertEqual(event.command_id, 123)
+        self.assertEqual(
+            session.operations,
+            [
+                ("add_command", None),
+                ("flush", None),
+                ("add_event", 123),
+                ("flush", None),
+            ],
+        )
 
 
 if __name__ == "__main__":
