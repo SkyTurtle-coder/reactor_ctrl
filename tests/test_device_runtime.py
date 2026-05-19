@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from reactor_app.models import ControlCommand, ControlCommandEvent
 from reactor_app.services import device_runtime
+from reactor_app.services.drivers import DeviceCommandResult
 
 
 class _FakeSession:
@@ -38,6 +39,78 @@ class _FakeCommandEventSession:
             if isinstance(item, ControlCommand) and item.command_id is None:
                 item.command_id = 123
         self.operations.append(("flush", None))
+
+
+class _FakeExecuteCommandSession:
+    def __init__(self):
+        self.objects = []
+        self.operations = []
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    def add(self, item):
+        self.objects.append(item)
+        if isinstance(item, ControlCommandEvent):
+            self.operations.append(("add_event", item.event_type, item.command_id))
+        elif isinstance(item, ControlCommand):
+            self.operations.append(("add_command", item.command_id))
+
+    def flush(self, *args, **kwargs):
+        targets = args[0] if args else self.objects
+        if targets is None:
+            targets = self.objects
+        for item in targets:
+            if isinstance(item, ControlCommand) and item.command_id is None:
+                item.command_id = 5728
+        self.operations.append(("flush", None))
+
+    def commit(self):
+        self.commit_calls += 1
+        self.operations.append(("commit", self.commit_calls))
+
+    def rollback(self):
+        self.rollback_calls += 1
+        self.operations.append(("rollback", self.rollback_calls))
+
+    def get_bind(self):
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    def execute(self, *_args, **_kwargs):
+        self.operations.append(("execute", None))
+        return SimpleNamespace(rowcount=1)
+
+    def begin_nested(self):
+        return self
+
+    @property
+    def no_autoflush(self):
+        return self
+
+    def expire(self, *_args, **_kwargs):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+class _FakeDriver:
+    uses_transport = False
+
+    def __init__(self, session):
+        self.session = session
+        self.commit_calls_at_execute = None
+
+    def execute(self, *, transport, request):
+        self.commit_calls_at_execute = self.session.commit_calls
+        return DeviceCommandResult(
+            acknowledged=True,
+            response_text="OK",
+            response_hex="4f4b",
+            metadata={"value": "OK"},
+        )
 
 
 class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
@@ -153,6 +226,41 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertIn("device_id=3", message)
         self.assertIn("Huber PB address mismatch: sent 0A, got 00.", message)
         self.assertNotEqual(message, "Device command execution failed.")
+
+    def test_execute_device_command_commits_queued_and_sent_before_driver_io(self):
+        session = _FakeExecuteCommandSession()
+        driver = _FakeDriver(session)
+        connection = SimpleNamespace(
+            connection_id=3,
+            is_enabled=True,
+            transport_type="tcp_socket",
+        )
+        binding = SimpleNamespace(
+            device_id=7,
+            connection_id=3,
+            connection=connection,
+        )
+        device = SimpleNamespace(
+            device_id=7,
+            protocol="fake_protocol",
+            current_binding=binding,
+        )
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            with patch.object(device_runtime, "get_driver", return_value=driver):
+                execution = device_runtime.execute_device_command(
+                    device,
+                    command_name="manual_text",
+                    payload={},
+                    requested_by="test",
+                )
+
+        self.assertEqual(driver.commit_calls_at_execute, 2)
+        self.assertEqual(execution.command.command_id, 5728)
+        self.assertEqual(execution.command.status, "acked")
+        self.assertGreaterEqual(session.commit_calls, 3)
+        event_types = [operation[1] for operation in session.operations if operation[0] == "add_event"]
+        self.assertEqual(event_types, ["queued", "sent", "response"])
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ class _FakeSessionForClaim:
 
         self._candidates_query = MagicMock()
         self._candidates_query.join.return_value = self._candidates_query
+        self._candidates_query.outerjoin.return_value = self._candidates_query
         self._candidates_query.filter.return_value = self._candidates_query
         self._candidates_query.order_by.return_value = self._candidates_query
         self._candidates_query.limit.return_value = self._candidates_query
@@ -163,6 +164,40 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(calls["count"], 2)
         self.assertEqual(fake_session.rollback_calls, 1)
+
+    def test_manual_claim_sort_uses_port_number_when_no_recipe_priority_exists(self):
+        rows = [
+            (4, 0, 0, None, None, 2),
+            (3, 0, 0, None, None, 1),
+        ]
+
+        ordered = sorted(
+            rows,
+            key=lambda row: device_manual_runtime._manual_claim_candidate_sort_key(
+                row,
+                active_recipe_priority_order={},
+                active_recipe=False,
+            ),
+        )
+
+        self.assertEqual([row[0] for row in ordered], [3, 4])
+
+    def test_manual_claim_sort_uses_recipe_priority_before_port_number(self):
+        rows = [
+            (4, 0, 0, None, None, 2),
+            (3, 0, 0, None, None, 1),
+        ]
+
+        ordered = sorted(
+            rows,
+            key=lambda row: device_manual_runtime._manual_claim_candidate_sort_key(
+                row,
+                active_recipe_priority_order={4: (1, 0), 3: (2, 1)},
+                active_recipe=True,
+            ),
+        )
+
+        self.assertEqual([row[0] for row in ordered], [4, 3])
 
 
 class ParseIkaNumericResponseTests(unittest.TestCase):

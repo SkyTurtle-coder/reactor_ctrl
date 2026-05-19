@@ -113,26 +113,27 @@ def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_L
 
     if dialect_name in {"mysql", "mariadb"}:
         lock_name = f"reactor_ctrl:device_command:{normalized_device_id}"
-        result = db.session.execute(
-            text("SELECT GET_LOCK(:lock_name, :timeout_s)"),
-            {"lock_name": lock_name, "timeout_s": timeout_seconds},
-        ).scalar()
-        if result != 1:
-            raise DeviceCommandError(
-                f"Device {normalized_device_id} is busy executing another command.",
-                status_code=409,
-            )
-        try:
-            yield
-        finally:
-            try:
-                db.session.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
-            except Exception:
-                logging.getLogger(__name__).warning(
-                    "Failed to release device command lock for device %s.",
-                    normalized_device_id,
-                    exc_info=True,
+        with db.engine.connect() as connection:
+            result = connection.execute(
+                text("SELECT GET_LOCK(:lock_name, :timeout_s)"),
+                {"lock_name": lock_name, "timeout_s": timeout_seconds},
+            ).scalar()
+            if result != 1:
+                raise DeviceCommandError(
+                    f"Device {normalized_device_id} is busy executing another command.",
+                    status_code=409,
                 )
+            try:
+                yield
+            finally:
+                try:
+                    connection.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "Failed to release device command lock for device %s.",
+                        normalized_device_id,
+                        exc_info=True,
+                    )
         return
 
     lock = _local_device_command_lock(normalized_device_id)
@@ -179,6 +180,36 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
             exc,
         )
         raise
+
+
+def _commit_command_phase(command: ControlCommand, phase: str) -> None:
+    try:
+        db.session.commit()
+    except Exception as exc:
+        command_id = getattr(command, "command_id", None)
+        request_uuid = getattr(command, "request_uuid", None)
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logging.getLogger(__name__).exception(
+            "Failed to commit device command phase %s (command_id=%s, request_uuid=%s).",
+            phase,
+            command_id,
+            request_uuid,
+        )
+        raise DeviceCommandError(
+            f"Device command log persistence failed during {phase}.",
+            status_code=500,
+            command=command,
+        ) from exc
+
+
+def _safe_expire(item: Any, attribute_names: list[str]) -> None:
+    try:
+        db.session.expire(item, attribute_names)
+    except Exception:
+        pass
 
 
 def _mark_connection_success(connection_id: int, *, timestamp: datetime) -> None:
@@ -241,7 +272,15 @@ def _build_transport_config(connection, payload: dict[str, Any]) -> TcpSocketCon
     )
 
 
-def _fail_command(command: ControlCommand, *, status: str, message: str, connection, binding) -> None:
+def _fail_command(
+    command: ControlCommand,
+    *,
+    status: str,
+    message: str,
+    connection_id: int,
+    binding_device_id: int | None,
+    binding_connection_id: int | None,
+) -> None:
     finished_at = _now_utc()
     command.status = status
     command.error_message = message
@@ -254,16 +293,14 @@ def _fail_command(command: ControlCommand, *, status: str, message: str, connect
     try:
         with db.session.begin_nested():
             with db.session.no_autoflush:
-                _mark_connection_failure(connection.connection_id, message=message, timestamp=finished_at)
-                if binding is not None:
-                    _mark_binding_offline(binding.device_id, connection_id=binding.connection_id)
+                _mark_connection_failure(connection_id, message=message, timestamp=finished_at)
+                if binding_device_id is not None and binding_connection_id is not None:
+                    _mark_binding_offline(binding_device_id, connection_id=binding_connection_id)
     except Exception:
         pass
-    db.session.expire(connection, ["last_error", "updated_at"])
-    if binding is not None:
-        db.session.expire(binding, ["is_online"])
 
     _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
+    _commit_command_phase(command, status)
 
 
 def _fail_command_without_connection_health(command: ControlCommand, *, status: str, message: str) -> None:
@@ -272,6 +309,7 @@ def _fail_command_without_connection_health(command: ControlCommand, *, status: 
     command.error_message = message
     command.finished_at = finished_at
     _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
+    _commit_command_phase(command, status)
 
 
 def _parse_measurement_datetime(value: Any) -> datetime | None:
@@ -527,6 +565,9 @@ def execute_device_command(
     except DriverNotFoundError as exc:
         raise DeviceCommandError(str(exc), status_code=400) from exc
     transport_config = _build_transport_config(connection, payload) if driver.uses_transport else None
+    connection_id = int(connection.connection_id)
+    binding_device_id = int(binding.device_id) if binding.device_id is not None else None
+    binding_connection_id = int(binding.connection_id) if binding.connection_id is not None else None
 
     command = ControlCommand(
         device_id=device.device_id,
@@ -539,6 +580,7 @@ def execute_device_command(
     db.session.add(command)
     db.session.flush()
     _add_command_event(command, "queued", {"requested_by": requested_by})
+    _commit_command_phase(command, "queued")
 
     request = DeviceCommandRequest(command_name=command_name, payload=payload)
     sent_at = _now_utc()
@@ -551,23 +593,46 @@ def execute_device_command(
                     command.status = "sent"
                     command.sent_at = sent_at
                     _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
+                    _commit_command_phase(command, "sent")
                     result = driver.execute(transport=transport, request=request)
             else:
                 command.status = "sent"
                 command.sent_at = sent_at
                 _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
+                _commit_command_phase(command, "sent")
                 result = driver.execute(transport=None, request=request)
     except DeviceCommandError as exc:
         _fail_command_without_connection_health(command, status="failed", message=str(exc))
         raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=exc.details) from exc
     except socket.timeout as exc:
-        _fail_command(command, status="timeout", message=str(exc), connection=connection, binding=binding)
+        _fail_command(
+            command,
+            status="timeout",
+            message=str(exc),
+            connection_id=connection_id,
+            binding_device_id=binding_device_id,
+            binding_connection_id=binding_connection_id,
+        )
         raise DeviceCommandError("Timed out while waiting for a device response.", status_code=504, command=command) from exc
     except DriverValidationError as exc:
-        _fail_command(command, status="failed", message=str(exc), connection=connection, binding=binding)
+        _fail_command(
+            command,
+            status="failed",
+            message=str(exc),
+            connection_id=connection_id,
+            binding_device_id=binding_device_id,
+            binding_connection_id=binding_connection_id,
+        )
         raise DeviceCommandError(str(exc), status_code=400, command=command) from exc
     except (OSError, DriverError) as exc:
-        _fail_command(command, status="failed", message=str(exc), connection=connection, binding=binding)
+        _fail_command(
+            command,
+            status="failed",
+            message=str(exc),
+            connection_id=connection_id,
+            binding_device_id=binding_device_id,
+            binding_connection_id=binding_connection_id,
+        )
         raise DeviceCommandError("Device command execution failed.", status_code=502, command=command) from exc
 
     finished_at = _now_utc()
@@ -582,12 +647,13 @@ def execute_device_command(
     try:
         with db.session.begin_nested():
             with db.session.no_autoflush:
-                _mark_connection_success(connection.connection_id, timestamp=finished_at)
-                _mark_binding_online(binding.device_id, connection_id=binding.connection_id, timestamp=finished_at)
+                _mark_connection_success(connection_id, timestamp=finished_at)
+                if binding_device_id is not None and binding_connection_id is not None:
+                    _mark_binding_online(binding_device_id, connection_id=binding_connection_id, timestamp=finished_at)
     except Exception:
         pass
-    db.session.expire(connection, ["last_seen_at", "last_error", "updated_at"])
-    db.session.expire(binding, ["last_seen_at", "is_online"])
+    _safe_expire(connection, ["last_seen_at", "last_error", "updated_at"])
+    _safe_expire(binding, ["last_seen_at", "is_online"])
 
     _add_command_event(
         command,
@@ -599,12 +665,20 @@ def execute_device_command(
             "metadata": result.metadata,
         },
     )
-    measurement = _persist_measurement(
-        device=device,
-        command=command,
-        payload=payload,
-        result=result,
-        finished_at=finished_at,
-    )
+    _commit_command_phase(command, "response")
+
+    try:
+        measurement = _persist_measurement(
+            device=device,
+            command=command,
+            payload=payload,
+            result=result,
+            finished_at=finished_at,
+        )
+        if measurement is not None:
+            _commit_command_phase(command, "measurement")
+    except DeviceCommandError:
+        _commit_command_phase(command, "measurement_failed")
+        raise
 
     return ExecutedDeviceCommand(command=command, result=result, measurement=measurement)

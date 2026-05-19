@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 from flask import Flask, has_app_context
-from sqlalchemy import and_, case, or_
+from sqlalchemy import and_, case, inspect, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from ..extensions import db
-from ..models import Device, DeviceManualState, Measurement, MeasurementChannel, RecipeProgramState
+from ..models import (
+    Device,
+    DeviceBindingCurrent,
+    DeviceConnection,
+    DeviceManualState,
+    Measurement,
+    MeasurementChannel,
+    RecipeProgramState,
+)
 from .device_runtime import DeviceCommandError, describe_device_command_error, execute_device_command
 
 
@@ -20,8 +29,11 @@ _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
 _DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for newly active supported devices
 _RECIPE_PROGRAM_STATE_ID = 1
 _RECIPE_PROGRAM_RUNNING_STATUS = "running"
+_RECIPE_PRIORITY_MAX = 10
 _TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
 _DUPLICATE_KEY_ERROR_CODES = {1062}
+_MANUAL_RECIPE_SEQUENCE_LOCK = threading.RLock()
+_MANUAL_CLAIM_PORT_ORDER_CACHE: dict[int, bool] = {}
 
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle. channel_code values are part of the
@@ -127,6 +139,53 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _db_dialect_name() -> str:
+    try:
+        bind = db.session.get_bind()
+    except Exception:
+        return ""
+    return str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+
+
+@contextmanager
+def _manual_recipe_sequence_lock(*, timeout_s: float = 1.0):
+    dialect_name = _db_dialect_name()
+    timeout_seconds = max(1, int(round(float(timeout_s))))
+
+    if dialect_name in {"mysql", "mariadb"}:
+        lock_name = "reactor_ctrl:recipe_manual_sequence"
+        with db.engine.connect() as connection:
+            result = connection.execute(
+                text("SELECT GET_LOCK(:lock_name, :timeout_s)"),
+                {"lock_name": lock_name, "timeout_s": timeout_seconds},
+            ).scalar()
+            if result != 1:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                try:
+                    connection.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
+                except Exception:
+                    pass
+        return
+
+    acquired = _MANUAL_RECIPE_SEQUENCE_LOCK.acquire(timeout=timeout_seconds)
+    if not acquired:
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        _MANUAL_RECIPE_SEQUENCE_LOCK.release()
+
+
+@contextmanager
+def _no_sequence_lock():
+    yield True
+
+
 def _manual_watch_ttl(app: Flask) -> timedelta:
     seconds = max(5, int(app.config.get("DEVICE_MANUAL_RECONCILER_WATCH_TTL_SECONDS", 30)))
     return timedelta(seconds=seconds)
@@ -224,6 +283,131 @@ def _active_recipe_program_device_ids() -> set[int] | None:
         if device_id > 0:
             device_ids.add(device_id)
     return device_ids
+
+
+def _active_recipe_device_priority_order(now: datetime) -> dict[int, tuple[int, int]]:
+    try:
+        state = db.session.get(RecipeProgramState, _RECIPE_PROGRAM_STATE_ID)
+    except Exception:
+        return {}
+    if state is None or str(state.status or "").strip().lower() != _RECIPE_PROGRAM_RUNNING_STATUS:
+        return {}
+
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    binding_by_actor = {
+        str(binding.get("actor") or "").strip(): binding
+        for binding in bindings
+        if isinstance(binding, dict) and str(binding.get("actor") or "").strip()
+    }
+
+    try:
+        from . import recipe_program_runtime
+
+        evaluation = recipe_program_runtime._evaluate_state_snapshot(state, now=now)
+    except Exception:
+        return {}
+
+    current_targets = evaluation.get("current_targets") if isinstance(evaluation, dict) else {}
+    if not isinstance(current_targets, dict):
+        return {}
+
+    ordered_targets = sorted(
+        current_targets.items(),
+        key=lambda item: (
+            int((item[1] or {}).get("_priority") or _RECIPE_PRIORITY_MAX)
+            if isinstance(item[1], dict)
+            else _RECIPE_PRIORITY_MAX,
+            int((item[1] or {}).get("_order") or 0) if isinstance(item[1], dict) else 0,
+            str(item[0]).lower(),
+        ),
+    )
+
+    order_by_device_id: dict[int, tuple[int, int]] = {}
+    for order_index, (actor, targets) in enumerate(ordered_targets):
+        binding = binding_by_actor.get(str(actor or "").strip())
+        if not isinstance(binding, dict):
+            continue
+        try:
+            device_id = int(binding.get("device_id"))
+        except (TypeError, ValueError):
+            continue
+        if device_id <= 0 or device_id in order_by_device_id:
+            continue
+        try:
+            priority = int((targets or {}).get("_priority") or _RECIPE_PRIORITY_MAX) if isinstance(targets, dict) else _RECIPE_PRIORITY_MAX
+        except (TypeError, ValueError):
+            priority = _RECIPE_PRIORITY_MAX
+        priority = min(_RECIPE_PRIORITY_MAX, max(1, priority))
+        order_by_device_id[device_id] = (priority, order_index)
+    return order_by_device_id
+
+
+def _candidate_row_value(row: Any, index: int, default: Any = None) -> Any:
+    try:
+        return row[index]
+    except (IndexError, TypeError, KeyError):
+        return default
+
+
+def _candidate_datetime_sort_value(value: Any) -> float:
+    normalized = _as_utc_datetime(value if isinstance(value, datetime) else None)
+    return normalized.timestamp() if normalized is not None else float("inf")
+
+
+def _manual_claim_candidate_sort_key(
+    row: Any,
+    *,
+    active_recipe_priority_order: dict[int, tuple[int, int]],
+    active_recipe: bool,
+) -> tuple:
+    try:
+        device_id = int(_candidate_row_value(row, 0, 0) or 0)
+    except (TypeError, ValueError):
+        device_id = 0
+    try:
+        desired_version = int(_candidate_row_value(row, 1, 0) or 0)
+    except (TypeError, ValueError):
+        desired_version = 0
+    try:
+        applied_version = int(_candidate_row_value(row, 2, 0) or 0)
+    except (TypeError, ValueError):
+        applied_version = 0
+    try:
+        port_number = int(_candidate_row_value(row, 5, 9999) or 9999)
+    except (TypeError, ValueError):
+        port_number = 9999
+
+    desired_pending_order = 0 if desired_version > applied_version else 1
+    if active_recipe:
+        priority, recipe_order = active_recipe_priority_order.get(device_id, (_RECIPE_PRIORITY_MAX + 1, 9999))
+        return (priority, recipe_order, desired_pending_order, port_number, device_id)
+
+    return (
+        desired_pending_order,
+        _candidate_datetime_sort_value(_candidate_row_value(row, 3)),
+        _candidate_datetime_sort_value(_candidate_row_value(row, 4)),
+        port_number,
+        device_id,
+    )
+
+
+def _manual_claim_port_order_available() -> bool:
+    try:
+        engine = db.engine
+    except Exception:
+        return True
+    engine_key = id(engine)
+    if engine_key in _MANUAL_CLAIM_PORT_ORDER_CACHE:
+        return _MANUAL_CLAIM_PORT_ORDER_CACHE[engine_key]
+    try:
+        table_names = set(inspect(engine).get_table_names())
+    except Exception:
+        _MANUAL_CLAIM_PORT_ORDER_CACHE[engine_key] = True
+        return True
+    available = {"device_binding_current", "device_connection"}.issubset(table_names)
+    _MANUAL_CLAIM_PORT_ORDER_CACHE[engine_key] = available
+    return available
 
 
 def _active_recipe_binding_for_device(device_id: int) -> tuple[RecipeProgramState, dict[str, Any]] | tuple[None, None]:
@@ -958,62 +1142,74 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         desired_is_on=state.desired_is_on,
         desired_speed=state.desired_speed,
     )
+    active_recipe_device_ids = _active_recipe_program_device_ids()
+    sequence_lock_required = active_recipe_device_ids is not None and int(device_id) in active_recipe_device_ids
     db.session.commit()
 
     try:
-        if is_huber:
+        lock_context = _manual_recipe_sequence_lock() if sequence_lock_required else _no_sequence_lock()
+        with lock_context as sequence_lock_acquired:
+            if not sequence_lock_acquired:
+                state = db.session.get(DeviceManualState, device_id)
+                if state is not None:
+                    state.next_poll_at = _now_utc() + timedelta(milliseconds=250)
+                    _release_manual_state_lease(state, status="queued")
+                    db.session.commit()
+                return
+
+            if is_huber:
+                if desired_pending:
+                    raise RuntimeError("Queued manual-state writes are not supported for Huber devices.")
+                telemetry = _read_huber_status(device)
+                state = db.session.get(DeviceManualState, device_id)
+                if state is None:
+                    db.session.rollback()
+                    return
+
+                _refresh_state_from_huber_telemetry(state)
+                _persist_huber_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
+                state.last_error = None
+                if watch_active:
+                    state.next_poll_at = _now_utc() + _manual_poll_interval(app)
+                else:
+                    state.next_poll_at = _now_utc() + bg_interval
+                _release_manual_state_lease(state, status="idle")
+                db.session.commit()
+                return
+
             if desired_pending:
-                raise RuntimeError("Queued manual-state writes are not supported for Huber devices.")
-            telemetry = _read_huber_status(device)
+                _apply_desired_ika_state(device, desired_snapshot)
+
+            telemetry = _read_ika_status(device)
             state = db.session.get(DeviceManualState, device_id)
             if state is None:
                 db.session.rollback()
                 return
 
-            _refresh_state_from_huber_telemetry(state)
-            _persist_huber_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
+            _refresh_state_from_telemetry(state, telemetry)
+            _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
+            if desired_pending:
+                # Final sanity check: if the desired state was ON but the setpoint
+                # came back as None in the post-apply telemetry, the device silently
+                # dropped our command (e.g. a second boot glitch).  Do NOT mark as
+                # applied so the reconciler retries on the next cycle.
+                if bool(state.desired_is_on) and state.reported_setpoint_rpm is None:
+                    raise RuntimeError(
+                        "Stirrer accepted the START command but setpoint reads as "
+                        "None in the subsequent telemetry poll. The device may have "
+                        "reset. Will retry automatically."
+                    )
+                state.applied_version = processed_version
             state.last_error = None
+            # When a UI session is active use the fast live-poll interval.
+            # Otherwise fall back to the slower background poll interval so
+            # telemetry keeps being stored continuously even with no browser open.
             if watch_active:
                 state.next_poll_at = _now_utc() + _manual_poll_interval(app)
             else:
                 state.next_poll_at = _now_utc() + bg_interval
             _release_manual_state_lease(state, status="idle")
             db.session.commit()
-            return
-
-        if desired_pending:
-            _apply_desired_ika_state(device, desired_snapshot)
-
-        telemetry = _read_ika_status(device)
-        state = db.session.get(DeviceManualState, device_id)
-        if state is None:
-            db.session.rollback()
-            return
-
-        _refresh_state_from_telemetry(state, telemetry)
-        _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
-        if desired_pending:
-            # Final sanity check: if the desired state was ON but the setpoint
-            # came back as None in the post-apply telemetry, the device silently
-            # dropped our command (e.g. a second boot glitch).  Do NOT mark as
-            # applied so the reconciler retries on the next cycle.
-            if bool(state.desired_is_on) and state.reported_setpoint_rpm is None:
-                raise RuntimeError(
-                    "Stirrer accepted the START command but setpoint reads as "
-                    "None in the subsequent telemetry poll. The device may have "
-                    "reset. Will retry automatically."
-                )
-            state.applied_version = processed_version
-        state.last_error = None
-        # When a UI session is active use the fast live-poll interval.
-        # Otherwise fall back to the slower background poll interval so
-        # telemetry keeps being stored continuously even with no browser open.
-        if watch_active:
-            state.next_poll_at = _now_utc() + _manual_poll_interval(app)
-        else:
-            state.next_poll_at = _now_utc() + bg_interval
-        _release_manual_state_lease(state, status="idle")
-        db.session.commit()
     except Exception as exc:
         db.session.rollback()
         state = db.session.get(DeviceManualState, device_id)
@@ -1038,8 +1234,20 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     # Background telemetry cutoff: poll even without an active UI session.
     bg_cutoff = now - _background_poll_interval(app)
     active_recipe_device_ids = _active_recipe_program_device_ids()
+    active_recipe_priority_order = _active_recipe_device_priority_order(now)
+    include_port_order = _manual_claim_port_order_available()
+    selected_columns = [
+        DeviceManualState.device_id,
+        DeviceManualState.desired_version,
+        DeviceManualState.applied_version,
+        DeviceManualState.next_poll_at,
+        DeviceManualState.last_desired_at,
+    ]
+    if include_port_order:
+        selected_columns.append(DeviceConnection.port_number)
+
     candidate_query = (
-        db.session.query(DeviceManualState.device_id)
+        db.session.query(*selected_columns)
         .join(Device, Device.device_id == DeviceManualState.device_id)
         .filter(
             Device.is_active.is_(True),
@@ -1080,23 +1288,42 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
             ),
         )
     )
+    if include_port_order:
+        candidate_query = (
+            candidate_query
+            .outerjoin(DeviceBindingCurrent, DeviceBindingCurrent.device_id == DeviceManualState.device_id)
+            .outerjoin(DeviceConnection, DeviceConnection.connection_id == DeviceBindingCurrent.connection_id)
+        )
     if active_recipe_device_ids is not None:
         if not active_recipe_device_ids:
             return None
         candidate_query = candidate_query.filter(DeviceManualState.device_id.in_(active_recipe_device_ids))
+    order_by_columns = [
+        case((DeviceManualState.desired_version > DeviceManualState.applied_version, 0), else_=1),
+        DeviceManualState.next_poll_at.asc(),
+        DeviceManualState.last_desired_at.asc(),
+    ]
+    if include_port_order:
+        order_by_columns.append(DeviceConnection.port_number.asc())
+    order_by_columns.append(DeviceManualState.device_id.asc())
+
     candidates = (
-        candidate_query.order_by(
-            case((DeviceManualState.desired_version > DeviceManualState.applied_version, 0), else_=1),
-            DeviceManualState.next_poll_at.asc(),
-            DeviceManualState.last_desired_at.asc(),
-            DeviceManualState.device_id.asc(),
-        )
+        candidate_query.order_by(*order_by_columns)
         .limit(16)
         .all()
     )
+    candidates = sorted(
+        candidates,
+        key=lambda row: _manual_claim_candidate_sort_key(
+            row,
+            active_recipe_priority_order=active_recipe_priority_order,
+            active_recipe=active_recipe_device_ids is not None,
+        ),
+    )
 
     lease_until = now + _manual_lease_duration(app)
-    for (device_id,) in candidates:  # noqa: variable reuse
+    for row in candidates:  # noqa: variable reuse
+        device_id = int(row[0])
         try:
             claimed = (
                 db.session.query(DeviceManualState)
