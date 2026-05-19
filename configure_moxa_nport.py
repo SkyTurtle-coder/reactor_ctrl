@@ -12,23 +12,6 @@ from typing import Any
 
 _DEVICE_PRESETS = {
     "generic": {},
-    "huber_cc230": {
-        "baud_rate": 9600,
-        "data_bits": 8,
-        "parity": "N",
-        "stop_bits": 1,
-        "flow_control": "none",
-        "read_timeout_ms": 2000,
-        "write_timeout_ms": 2000,
-        "device_protocol": "huber_cc230",
-        "device_type": "thermostat",
-        "notes": "Huber CC230 over MOXA TCP-to-RS232: 9600 baud, 8N1, no handshake. Start with CR line ending.",
-    },
-    "huber_cc230_mock": {
-        "device_protocol": "huber_cc230_mock",
-        "device_type": "thermostat",
-        "notes": "Huber CC230 mock device for UI and recipe testing without real hardware.",
-    },
     "huber_unistat_430": {
         "baud_rate": 9600,
         "data_bits": 8,
@@ -60,7 +43,7 @@ _DEVICE_PRESETS = {
         "stop_bits": 1,
         "flow_control": "none",
         "device_protocol": "ika_eurostar_60",
-        "device_type": "actuator",
+        "device_type": "stirrer",
         "notes": "IKA EUROSTAR 60 RS-232: 9600 baud, 7E1, no flow control.",
     },
 }
@@ -144,8 +127,6 @@ def _default_device_display_name(args: argparse.Namespace, *, port_number: int, 
     if args.device_display_name:
         return args.device_display_name
     labels = {
-        "huber_cc230": "Huber CC230",
-        "huber_cc230_mock": "Huber CC230 Mock",
         "huber_unistat_430": "Huber Unistat 430",
         "huber_pilot_one": "Huber Pilot ONE",
         "ika_eurostar_60": "IKA EUROSTAR 60",
@@ -256,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--device-protocol",
-        choices=("huber_cc230", "huber_cc230_mock", "huber_unistat_430", "huber_pilot_one", "ika_eurostar_60"),
+        choices=("huber_unistat_430", "huber_pilot_one", "ika_eurostar_60"),
         help="Protocol for --bind-device. Defaults to the selected device preset when available.",
     )
     parser.add_argument("--device-asset-serial", help="Stable internal asset serial for --bind-device.")

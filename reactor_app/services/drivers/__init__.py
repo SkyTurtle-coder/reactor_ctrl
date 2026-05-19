@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverNotFoundError, DriverValidationError
-from .huber_cc230 import HuberCC230Client, HuberCC230Driver, HuberCC230MockDriver
 from .huber_unistat import HuberUnistatDriver, HuberUnistatTCP
 from .ika_eurostar import IkaEurostarDriver
 
 
-_DRIVER_TYPES = (HuberUnistatDriver, HuberCC230Driver, HuberCC230MockDriver, IkaEurostarDriver)
+_DRIVER_TYPES = (HuberUnistatDriver, IkaEurostarDriver)
+
+# Erlaubte Protokolle für die UI-Auswahlliste.
+# Nur diese beiden Protokolle sind im System erlaubt.
 _PROTOCOL_LABELS = {
-    "huber_cc230": "Huber CC230",
-    "huber_cc230_mock": "Huber CC230 Mock",
-    "huber_pilot_one": "Huber Pilot ONE",
     "huber_unistat_430": "Huber Unistat 430",
     "ika_eurostar_60": "IKA 60",
 }
@@ -21,15 +20,12 @@ def get_driver(protocol_name: str) -> DeviceDriver:
     for driver_type in _DRIVER_TYPES:
         if normalized in driver_type.protocol_names:
             return driver_type()
-    supported = ", ".join(sorted(list_supported_protocols()))
+    supported = ", ".join(sorted(_PROTOCOL_LABELS.keys()))
     raise DriverNotFoundError(f"Protocol '{protocol_name}' is not supported. Supported protocols: {supported}.")
 
 
 def list_supported_protocols() -> list[str]:
-    protocols: set[str] = set()
-    for driver_type in _DRIVER_TYPES:
-        protocols.update(driver_type.protocol_names)
-    return sorted(protocols)
+    return sorted(_PROTOCOL_LABELS.keys())
 
 
 def protocol_label(protocol_name: str | None) -> str:
@@ -40,7 +36,7 @@ def protocol_label(protocol_name: str | None) -> str:
 
 
 def list_supported_protocol_options() -> list[dict[str, str]]:
-    return [{"id": protocol_id, "label": protocol_label(protocol_id)} for protocol_id in list_supported_protocols()]
+    return [{"id": protocol_id, "label": _PROTOCOL_LABELS[protocol_id]} for protocol_id in sorted(_PROTOCOL_LABELS.keys())]
 
 
 __all__ = [
@@ -50,9 +46,6 @@ __all__ = [
     "DriverError",
     "DriverNotFoundError",
     "DriverValidationError",
-    "HuberCC230Client",
-    "HuberCC230Driver",
-    "HuberCC230MockDriver",
     "HuberUnistatDriver",
     "HuberUnistatTCP",
     "IkaEurostarDriver",

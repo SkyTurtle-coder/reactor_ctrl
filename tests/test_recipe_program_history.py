@@ -528,10 +528,10 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 ],
                 actor_id="HUBER-01",
                 profile_id="hc_system_temperature",
-                protocol="huber_cc230",
+                protocol="huber_unistat_430",
                 device_type="thermostat",
                 symbol_id="hc_system",
-                label="Huber CC230",
+                label="Huber Unistat 430",
             )
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at):
@@ -543,7 +543,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 command_id=390180,
                 command_name="set_setpoint",
                 status="failed",
-                error_message="Keine Antwort vom HUBER CC230.",
+                error_message="Keine Antwort vom Huber Unistat 430.",
             )
 
             def fail_command(*args, **kwargs):
@@ -566,7 +566,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             self.assertIn("step 1 (Heat)", state.last_error)
             self.assertIn("HUBER-01", state.last_error)
             self.assertIn("set_setpoint", state.last_error)
-            self.assertIn("Huber CC230", state.last_error)
+            self.assertIn("Huber Unistat 430", state.last_error)
             self.assertIn("Keine Antwort", state.last_error)
             self.assertEqual(events[-1].event_type, "error")
 

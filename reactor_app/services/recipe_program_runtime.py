@@ -46,14 +46,12 @@ _NUMERIC_TO_PARAM_FIELD = {
 }
 _PRIORITY_MIN = 1
 _PRIORITY_MAX = 10
-_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_cc230_mock"}
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
 _HUBER_MIN_SETPOINT_C = -40.0
 _HUBER_MAX_SETPOINT_C = 150.0
 _HUBER_SETPOINT_LIMITS_BY_PROTOCOL = {
     "huber_unistat_430": (-40.0, 150.0),
     "huber_pilot_one": (-40.0, 150.0),
-    "huber_cc230": (-50.0, 200.0),
-    "huber_cc230_mock": (-50.0, 200.0),
 }
 _SAFE_HUBER_SETPOINT_C = 20.0
 

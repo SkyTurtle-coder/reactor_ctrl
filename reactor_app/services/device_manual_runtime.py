@@ -28,7 +28,7 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
-_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_cc230_mock"}
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
     {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Actual Temperature", "unit": "degC"},
@@ -426,7 +426,18 @@ def queue_manual_state_update(
     desired_speed: int,
     requested_by: str,
 ) -> DeviceManualState:
-    state = _ensure_manual_state(device)
+    _ensure_manual_state(device)
+    # Re-fetch with FOR UPDATE so the reconciler cannot modify the row between
+    # our read and the flush, which would otherwise cause MariaDB error 1020.
+    # no_autoflush prevents pending ControlCommandEvent objects from being
+    # flushed here before their parent ControlCommand INSERT has run.
+    with db.session.no_autoflush:
+        state = (
+            db.session.query(DeviceManualState)
+            .filter_by(device_id=device.device_id)
+            .with_for_update()
+            .one()
+        )
     now = _now_utc()
     state.desired_is_on = bool(desired_is_on)
     state.desired_speed = int(desired_speed)

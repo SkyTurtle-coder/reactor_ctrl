@@ -2218,8 +2218,6 @@
         return (
             protocol === "huber_unistat_430"
             || protocol === "huber_pilot_one"
-            || protocol === "huber_cc230"
-            || protocol === "huber_cc230_mock"
         ) && symbolId === "hc_system";
     }
 
@@ -2229,10 +2227,6 @@
 
 
     function huberSetpointLimits(target) {
-        const protocol = normalizedProtocolName(target?.protocol);
-        if (protocol === "huber_cc230" || protocol === "huber_cc230_mock") {
-            return { min: -50, max: 200 };
-        }
         return { min: -40, max: 150 };
     }
 

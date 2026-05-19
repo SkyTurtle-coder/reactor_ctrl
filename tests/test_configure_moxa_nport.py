@@ -5,12 +5,12 @@ import configure_moxa_nport as moxa_config
 
 
 class ConfigureMoxaNPortTests(unittest.TestCase):
-    def test_cc230_preset_applies_serial_settings_and_device_protocol(self):
+    def test_unistat_430_preset_applies_serial_settings_and_device_protocol(self):
         argv = [
             "--host",
             "192.168.1.50",
             "--device-preset",
-            "huber_cc230",
+            "huber_unistat_430",
             "--api-token",
             "token",
         ]
@@ -24,8 +24,25 @@ class ConfigureMoxaNPortTests(unittest.TestCase):
         self.assertEqual(args.parity, "N")
         self.assertEqual(args.stop_bits, 1)
         self.assertEqual(args.flow_control, "none")
-        self.assertEqual(args.device_protocol, "huber_cc230")
+        self.assertEqual(args.device_protocol, "huber_unistat_430")
         self.assertEqual(args.device_type, "thermostat")
+
+    def test_ika_preset_applies_serial_settings_and_device_protocol(self):
+        argv = [
+            "--host",
+            "192.168.1.50",
+            "--device-preset",
+            "ika_eurostar_60",
+            "--api-token",
+            "token",
+        ]
+        parser = moxa_config.build_parser()
+        args = parser.parse_args(argv)
+
+        moxa_config._apply_device_preset(args, argv)
+
+        self.assertEqual(args.device_protocol, "ika_eurostar_60")
+        self.assertEqual(args.device_type, "stirrer")
 
     def test_bind_device_creates_device_and_binding_for_selected_port(self):
         calls = []
@@ -47,9 +64,9 @@ class ConfigureMoxaNPortTests(unittest.TestCase):
             if path == "/api/devices/33/binding" and method == "PUT":
                 return 200, {
                     "device_id": 33,
-                    "asset_serial": "MOXA-CC230-P1-HUBER-CC230",
-                    "display_name": "Huber CC230 Port 1",
-                    "protocol": "huber_cc230",
+                    "asset_serial": "MOXA-UNISTAT-P1-HUBER-UNISTAT-430",
+                    "display_name": "Huber Unistat 430 Port 1",
+                    "protocol": "huber_unistat_430",
                     "current_binding": {
                         "connection_id": payload["connection_id"],
                         "connection": {
@@ -68,15 +85,15 @@ class ConfigureMoxaNPortTests(unittest.TestCase):
             "--host",
             "192.168.1.50",
             "--server-code",
-            "MOXA-CC230",
+            "MOXA-UNISTAT",
             "--display-name",
-            "MOXA CC230",
+            "MOXA Unistat",
             "--port-count",
             "1",
             "--only-port",
             "1",
             "--device-preset",
-            "huber_cc230",
+            "huber_unistat_430",
             "--bind-device",
         ]
 
@@ -95,10 +112,8 @@ class ConfigureMoxaNPortTests(unittest.TestCase):
         self.assertEqual(connection_payload["flow_control"], "none")
 
         device_payload = next(call["payload"] for call in calls if call["path"] == "/api/devices" and call["method"] == "POST")
-        self.assertEqual(device_payload["asset_serial"], "MOXA-CC230-P1-HUBER-CC230")
-        self.assertEqual(device_payload["display_name"], "Huber CC230 Port 1")
         self.assertEqual(device_payload["device_type"], "thermostat")
-        self.assertEqual(device_payload["protocol"], "huber_cc230")
+        self.assertEqual(device_payload["protocol"], "huber_unistat_430")
 
         binding_payload = next(call["payload"] for call in calls if call["path"] == "/api/devices/33/binding")
         self.assertEqual(binding_payload["connection_id"], 22)

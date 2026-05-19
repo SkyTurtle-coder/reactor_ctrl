@@ -163,13 +163,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("updateManualDeviceStatus(target, telemetry);", source)
         self.assertIn("setManualStatusFromTelemetry(telemetry, {", source)
 
-    def test_process_view_script_uses_cc230_manual_setpoint_limits(self):
+    def test_process_view_script_uses_unistat_manual_setpoint_limits(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
         source = script_path.read_text(encoding="utf-8")
 
         self.assertIn("function huberSetpointLimits(target)", source)
-        self.assertIn('protocol === "huber_cc230" || protocol === "huber_cc230_mock"', source)
-        self.assertIn("return { min: -50, max: 200 };", source)
+        self.assertIn("return { min: -40, max: 150 };", source)
+        self.assertNotIn('protocol === "huber_cc230"', source)
         self.assertIn("manualSpeedInput.min = String(limits.min);", source)
         self.assertIn("manualSpeedInput.max = String(limits.max);", source)
         self.assertIn("{ temp_c: setpointC, min_setpoint_c: limits.min, max_setpoint_c: limits.max }", source)

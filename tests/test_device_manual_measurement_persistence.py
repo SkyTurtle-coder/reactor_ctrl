@@ -357,7 +357,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 manufacturer_serial="SN-HUBER-IDLE-001",
                 display_name="Idle Huber",
                 device_type="thermostat",
-                protocol="huber_cc230",
+                protocol="huber_unistat_430",
                 is_active=True,
             )
             db.session.add(device)
@@ -383,7 +383,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 manufacturer_serial="SN-HUBER-RECIPE-001",
                 display_name="Recipe Huber",
                 device_type="thermostat",
-                protocol="huber_cc230",
+                protocol="huber_unistat_430",
                 is_active=True,
             )
             unused_device = Device(
@@ -391,7 +391,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 manufacturer_serial="SN-HUBER-UNUSED-001",
                 display_name="Unused Huber",
                 device_type="thermostat",
-                protocol="huber_cc230",
+                protocol="huber_unistat_430",
                 is_active=True,
             )
             db.session.add_all([recipe_device, unused_device])
