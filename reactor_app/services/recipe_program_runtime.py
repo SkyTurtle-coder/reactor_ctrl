@@ -202,26 +202,40 @@ def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
     raw_refs = step.get("actors")
     refs: list[dict[str, Any]] = []
     if isinstance(raw_refs, list):
-        for raw_ref in raw_refs:
+        for index, raw_ref in enumerate(raw_refs):
             if isinstance(raw_ref, str):
                 actor = str(raw_ref or "").strip()
-                priority = None
+                raw_object: dict[str, Any] = {}
             elif isinstance(raw_ref, dict):
                 actor = str(raw_ref.get("actor_id") or raw_ref.get("actor") or "").strip()
-                raw_priority = raw_ref.get("priority")
-                try:
-                    priority = None if raw_priority in (None, "") else int(raw_priority)
-                except (TypeError, ValueError):
-                    priority = None
+                raw_object = raw_ref
             else:
                 continue
             if actor:
-                refs.append({"actor": actor, "priority": priority})
+                refs.append(
+                    {
+                        "actor": actor,
+                        "actor_id": actor,
+                        "actor_type": str(raw_object.get("actor_type") or "").strip(),
+                        "priority": _normalize_actor_priority(raw_object.get("priority"), min(index + 1, _PRIORITY_MAX)),
+                        "params": _actor_params_from_ref(raw_object, step),
+                        "_order": index,
+                    }
+                )
 
     if not refs:
         actor = str(step.get("actor_id") or step.get("actor") or "").strip()
         if actor:
-            refs.append({"actor": actor, "priority": None})
+            refs.append(
+                {
+                    "actor": actor,
+                    "actor_id": actor,
+                    "actor_type": "",
+                    "priority": _normalize_actor_priority(step.get("priority"), 1),
+                    "params": _actor_params_from_ref({}, step),
+                    "_order": 0,
+                }
+            )
 
     deduplicated: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -231,7 +245,16 @@ def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         deduplicated.append(ref)
-    return deduplicated
+    return [
+        ref
+        for _index, ref in sorted(
+            enumerate(deduplicated),
+            key=lambda pair: (
+                _normalize_actor_priority(pair[1].get("priority"), _PRIORITY_MAX) or _PRIORITY_MAX,
+                int(pair[1].get("_order") or pair[0]),
+            ),
+        )
+    ]
 
 
 def _step_actor_ids(step: dict[str, Any]) -> list[str]:
@@ -247,15 +270,15 @@ def _step_actor_target(base_targets: dict[str, dict[str, float]], step: dict[str
     for actor_ref in actor_refs:
         actor = actor_ref["actor"]
         actor_targets = deepcopy(next_targets.get(actor) or _actor_baseline_state())
+        params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
         for field_name in _NUMERIC_FIELDS:
-            params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
             raw_value = params.get(field_name, step.get(field_name))
             if raw_value in (None, ""):
                 continue
             actor_targets[field_name] = round(float(raw_value), 2)
         if actor_ref.get("priority") is not None:
             actor_targets["_priority"] = int(actor_ref["priority"])
-        actor_targets["_order"] = actor_refs.index(actor_ref)
+        actor_targets["_order"] = int(actor_ref.get("_order") or actor_refs.index(actor_ref))
         next_targets[actor] = actor_targets
     return next_targets
 
@@ -574,68 +597,86 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             )
         bindings.append(binding)
 
+    binding_by_actor = {str(binding.get("actor") or "").strip(): binding for binding in bindings}
     huber_temp_initialized: set[str] = set()
     for index, step in enumerate(steps, start=1):
-        step_actor_ids = _step_actor_ids(step)
+        actor_refs = _step_actor_refs(step)
+        step_actor_ids = [ref["actor"] for ref in actor_refs]
 
         step_relevant_fields: set[str] = set()
         step_actor_profiles: dict[str, str] = {}
         step_actor_protocols: dict[str, str] = {}
         for actor in step_actor_ids:
-            binding = next((item for item in bindings if item["actor"] == actor), None)
+            binding = binding_by_actor.get(actor)
             if binding is None:
                 raise ValueError(f"Step {index} references unknown actor '{actor}'.")
             profile_id = str(binding.get("profile_id") or "").strip()
             step_actor_profiles[actor] = profile_id
             step_actor_protocols[actor] = _protocol_for_binding(binding)
-            if profile_id == "motor_rpm":
-                step_relevant_fields.add("rpm")
-            elif profile_id == "hc_system_temperature":
-                step_relevant_fields.add("temp")
+            step_relevant_fields.update(_target_fields_for_profile(profile_id))
 
-        for actor in step_actor_ids:
+        normalized_actor_refs: list[dict[str, Any]] = []
+        for actor_ref in actor_refs:
+            actor = actor_ref["actor"]
             profile_id = step_actor_profiles[actor]
+            target_fields = set(_target_fields_for_profile(profile_id))
+            raw_params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
+            params = {
+                field_name: raw_params.get(field_name)
+                for field_name in _NUMERIC_FIELDS
+            }
+            for field_name, value in list(params.items()):
+                if field_name in target_fields:
+                    continue
+                if field_name not in step_relevant_fields and _has_nonzero_numeric_value(value):
+                    raise ValueError(
+                        f"Step {index} contains non-zero {field_name} for actor '{actor}'. "
+                        f"Actor profile '{profile_id or 'unknown'}' does not support this field."
+                    )
+                params[field_name] = None
+
             if profile_id == "motor_rpm":
-                for field_name in ("temp", "pressure"):
-                    if field_name not in step_relevant_fields and _has_nonzero_numeric_value(step.get(field_name)):
-                        raise ValueError(
-                            f"Step {index} contains non-zero {field_name} for motor actor '{actor}'. "
-                            "Motor recipe actors support RPM values only."
-                        )
-                rpm = step.get("rpm")
+                rpm = params.get("rpm")
                 if rpm is not None and float(rpm) > IKA_EUROSTAR_60_MAX_RPM:
                     raise ValueError(
                         f"Step {index} requests {rpm:g} rpm for actor '{actor}'. "
                         f"IKA EUROSTAR 60 supports up to {IKA_EUROSTAR_60_MAX_RPM} rpm."
                     )
-                continue
-
-            if profile_id == "hc_system_temperature":
-                for field_name in ("rpm", "pressure"):
-                    if field_name not in step_relevant_fields and _has_nonzero_numeric_value(step.get(field_name)):
-                        raise ValueError(
-                            f"Step {index} contains non-zero {field_name} for H/C actor '{actor}'. "
-                            "H/C recipe actors support temperature values only."
-                        )
-                temp = step.get("temp")
+            elif profile_id == "hc_system_temperature":
+                temp = params.get("temp")
                 if temp is None:
                     if actor not in huber_temp_initialized:
                         raise ValueError(
                             f"Step {index} for H/C actor '{actor}' must define a temperature before it can hold or ramp."
                         )
-                    continue
-                temp_value = float(temp)
-                min_setpoint, max_setpoint = _huber_setpoint_limits(step_actor_protocols.get(actor))
-                if temp_value < min_setpoint or temp_value > max_setpoint:
-                    raise ValueError(
-                        f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
-                        f"Huber setpoints are limited to {min_setpoint:g}..{max_setpoint:g} degC."
-                    )
-                huber_temp_initialized.add(actor)
+                else:
+                    temp_value = float(temp)
+                    min_setpoint, max_setpoint = _huber_setpoint_limits(step_actor_protocols.get(actor))
+                    if temp_value < min_setpoint or temp_value > max_setpoint:
+                        raise ValueError(
+                            f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
+                            f"Huber setpoints are limited to {min_setpoint:g}..{max_setpoint:g} degC."
+                        )
+                    huber_temp_initialized.add(actor)
 
+            normalized_actor_refs.append(
+                {
+                    "actor": actor,
+                    "actor_id": actor,
+                    "actor_type": str(actor_ref.get("actor_type") or "").strip(),
+                    "priority": _normalize_actor_priority(actor_ref.get("priority"), len(normalized_actor_refs) + 1),
+                    "params": {
+                        "target_temp_c": params.get("temp"),
+                        "pressure_mbar_a": params.get("pressure"),
+                        "rpm": params.get("rpm"),
+                    },
+                }
+            )
+
+        step["actor"] = normalized_actor_refs[0]["actor"] if normalized_actor_refs else ""
+        step["actors"] = normalized_actor_refs
         for field_name in _NUMERIC_FIELDS:
-            if field_name not in step_relevant_fields:
-                step[field_name] = None
+            step[field_name] = None
 
     return {
         "recipe_id": recipe.recipe_id,
@@ -721,7 +762,15 @@ def _current_targets_payload(
 ) -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     binding_lookup = _binding_lookup_from_snapshot(snapshot)
-    for actor in sorted((targets or {}).keys(), key=lambda value: value.lower()):
+    ordered_targets = sorted(
+        (targets or {}).items(),
+        key=lambda item: (
+            int((item[1] or {}).get("_priority") or _PRIORITY_MAX) if isinstance(item[1], dict) else _PRIORITY_MAX,
+            int((item[1] or {}).get("_order") or 0) if isinstance(item[1], dict) else 0,
+            str(item[0]).lower(),
+        ),
+    )
+    for actor, actor_targets in ordered_targets:
         actor_targets = targets.get(actor) if isinstance(targets.get(actor), dict) else {}
         binding = binding_lookup.get(actor) or {}
         profile_id = str(binding.get("profile_id") or "").strip()
@@ -1049,6 +1098,31 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
     return state
 
 
+def _publish_program_stop_request(state: RecipeProgramState) -> None:
+    if str(state.status or "").strip().lower() != _LEASE_STATUS_RUNNING:
+        return
+    state.stop_requested = True
+    state.lease_owner = None
+    state.lease_expires_at = None
+    # Commit before sending safe-stop commands so a claimed worker can see the abort.
+    db.session.flush()
+    db.session.commit()
+
+
+def _program_claim_allows_target_application(state: RecipeProgramState, worker_id: str | None) -> bool:
+    if not worker_id:
+        return True
+    try:
+        db.session.refresh(state)
+    except Exception:
+        return False
+    return (
+        state.lease_owner == worker_id
+        and str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING
+        and not bool(state.stop_requested)
+    )
+
+
 def _profile_id_for_binding(binding: dict[str, Any] | None) -> str:
     return str((binding or {}).get("profile_id") or "").strip()
 
@@ -1178,6 +1252,7 @@ def _apply_safe_stop_to_binding(
 def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     state = _ensure_program_state()
     run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
+    _publish_program_stop_request(state)
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
     safe_targets: dict[str, dict[str, Any]] = {}
@@ -1226,7 +1301,12 @@ def _apply_current_targets(
     app: Flask,
     state: RecipeProgramState,
     current_targets: dict[str, dict[str, float]],
-) -> list[dict[str, Any]]:
+    *,
+    worker_id: str | None = None,
+) -> list[dict[str, Any]] | None:
+    if not _program_claim_allows_target_application(state, worker_id):
+        return None
+
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
     binding_lookup = {
@@ -1238,17 +1318,18 @@ def _apply_current_targets(
     next_applied_lookup: dict[str, dict[str, Any]] = deepcopy(applied_lookup)
     applied_changes: list[dict[str, Any]] = []
 
-    # Priority is optional per step actor. Equal or missing priorities remain
-    # deterministic by actor id; this keeps concurrent multi-actor steps ordered
-    # without adding database locks around unrelated devices.
     ordered_targets = sorted(
         current_targets.items(),
         key=lambda item: (
-            int((item[1] or {}).get("_priority") or 0) if isinstance(item[1], dict) else 0,
+            int((item[1] or {}).get("_priority") or _PRIORITY_MAX) if isinstance(item[1], dict) else _PRIORITY_MAX,
+            int((item[1] or {}).get("_order") or 0) if isinstance(item[1], dict) else 0,
             str(item[0]).lower(),
         ),
     )
     for actor, targets in ordered_targets:
+        if not _program_claim_allows_target_application(state, worker_id):
+            return None
+
         binding = binding_lookup.get(actor)
         if binding is None:
             continue
@@ -1357,6 +1438,7 @@ def _claim_program_state(app: Flask, worker_id: str) -> bool:
             .filter(
                 RecipeProgramState.recipe_program_state_id == _PROGRAM_STATE_ID,
                 RecipeProgramState.status == _LEASE_STATUS_RUNNING,
+                RecipeProgramState.stop_requested.is_(False),
                 or_(RecipeProgramState.lease_expires_at.is_(None), RecipeProgramState.lease_expires_at < now),
             )
             .update(
@@ -1383,7 +1465,7 @@ def _release_program_lease(state: RecipeProgramState) -> None:
 
 def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
     state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
-    if state is None or state.lease_owner != worker_id or str(state.status or "") != _LEASE_STATUS_RUNNING:
+    if state is None or not _program_claim_allows_target_application(state, worker_id):
         return
 
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
@@ -1397,7 +1479,17 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
             step_started_at=state.step_started_at,
             now=_now_utc(),
         )
-        applied_changes = _apply_current_targets(app, state, evaluation.get("current_targets") or {})
+        if not _program_claim_allows_target_application(state, worker_id):
+            return
+        applied_changes = _apply_current_targets(
+            app,
+            state,
+            evaluation.get("current_targets") or {},
+            worker_id=worker_id,
+        )
+        if applied_changes is None:
+            db.session.rollback()
+            return
 
         state.active_step_index = int(evaluation.get("active_step_index") or 0)
         state.step_started_at = evaluation.get("step_started_at")

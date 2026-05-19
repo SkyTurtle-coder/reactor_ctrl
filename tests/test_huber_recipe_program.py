@@ -17,6 +17,9 @@ class _FakeSession:
             return self.device
         return None
 
+    def refresh(self, item):
+        return None
+
 
 class HuberRecipeProgramTests(unittest.TestCase):
     def _recipe(self, steps):
@@ -78,7 +81,8 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
         self.assertEqual(snapshot["bindings"][0]["profile_id"], "hc_system_temperature")
         self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_unistat_430")
-        self.assertEqual(snapshot["steps"][0]["temp"], -10)
+        self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["target_temp_c"], -10)
+        self.assertIsNone(snapshot["steps"][0]["temp"])
         self.assertIsNone(snapshot["steps"][0]["rpm"])
         self.assertIsNone(snapshot["steps"][1]["pressure"])
 
@@ -94,7 +98,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
             "_build_target_lookup",
             return_value={"Huber_01": self._binding()},
         ):
-            with self.assertRaisesRegex(ValueError, "temperature values only"):
+            with self.assertRaisesRegex(ValueError, "does not support this field"):
                 recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
 
     def test_cc230_recipe_actor_uses_wider_temperature_range(self):
@@ -112,7 +116,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
 
         self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_cc230")
-        self.assertEqual(snapshot["steps"][0]["temp"], 180)
+        self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["target_temp_c"], 180)
 
     def test_unistat_recipe_actor_keeps_existing_temperature_range(self):
         recipe = self._recipe(
@@ -150,12 +154,14 @@ class HuberRecipeProgramTests(unittest.TestCase):
         ):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
 
-        self.assertEqual(
-            snapshot["steps"][0]["actors"],
-            [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
-        )
-        self.assertEqual(snapshot["steps"][0]["temp"], 35)
-        self.assertEqual(snapshot["steps"][0]["rpm"], 300)
+        actors = snapshot["steps"][0]["actors"]
+        self.assertEqual([(actor["actor"], actor["priority"]) for actor in actors], [("Huber_01", 1), ("Stirrer_01", 2)])
+        self.assertEqual(actors[0]["params"]["target_temp_c"], 35)
+        self.assertIsNone(actors[0]["params"]["rpm"])
+        self.assertEqual(actors[1]["params"]["rpm"], 300)
+        self.assertIsNone(actors[1]["params"]["target_temp_c"])
+        self.assertIsNone(snapshot["steps"][0]["temp"])
+        self.assertIsNone(snapshot["steps"][0]["rpm"])
         self.assertIsNone(snapshot["steps"][0]["pressure"])
         self.assertEqual({binding["actor"] for binding in snapshot["bindings"]}, {"Huber_01", "Stirrer_01"})
 
@@ -212,6 +218,31 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(payload["temp_c"], 180)
         self.assertEqual(payload["min_setpoint_c"], -50.0)
         self.assertEqual(payload["max_setpoint_c"], 200.0)
+
+    def test_target_application_aborts_when_stop_was_requested(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+        state = RecipeProgramState(status="running", lease_owner="worker-1", stop_requested=True)
+        state.snapshot_json = {"bindings": [self._binding()]}
+        state.last_applied_targets_json = {}
+
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                changes = recipe_program_runtime._apply_current_targets(
+                    app,
+                    state,
+                    {"Huber_01": {"temp": 21.25, "pressure": 0, "rpm": 0}},
+                    worker_id="worker-1",
+                )
+
+        self.assertIsNone(changes)
+        execute_command.assert_not_called()
 
     def test_huber_safe_stop_sets_twenty_degrees_before_stop(self):
         app = Flask(__name__)

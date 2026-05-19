@@ -128,6 +128,72 @@ class RecipeEditorTests(unittest.TestCase):
                 allowed_actor_lookup=allowed,
             )
 
+    def test_recipe_api_priority_validation_allows_duplicates_but_rejects_invalid_values(self):
+        allowed = {
+            "Huber_01": {"actor": "Huber_01", "profile_id": "hc_system_temperature", "symbol_id": "hc_system"},
+            "Stirrer_01": {"actor": "Stirrer_01", "profile_id": "motor_rpm", "symbol_id": "motor"},
+        }
+
+        steps = recipe_api._validate_recipe_steps(
+            [
+                {
+                    "actors": [
+                        {
+                            "actor": "Huber_01",
+                            "priority": 1,
+                            "params": {"target_temp_c": 25},
+                        },
+                        {
+                            "actor": "Stirrer_01",
+                            "priority": 1,
+                            "params": {"rpm": 150},
+                        },
+                    ],
+                    "task": "Same priority",
+                    "delta_time": 0,
+                },
+            ],
+            allowed_actor_lookup=allowed,
+        )
+
+        self.assertEqual([actor["priority"] for actor in steps[0]["actors"]], [1, 1])
+
+        with self.assertRaisesRegex(ValueError, "between 1 and 10"):
+            recipe_api._validate_recipe_steps(
+                [
+                    {
+                        "actors": [
+                            {
+                                "actor": "Huber_01",
+                                "priority": 11,
+                                "params": {"target_temp_c": 25},
+                            }
+                        ],
+                        "task": "Invalid priority",
+                        "delta_time": 0,
+                    },
+                ],
+                allowed_actor_lookup=allowed,
+            )
+
+        with self.assertRaisesRegex(ValueError, "integer from 1 to 10"):
+            recipe_api._validate_recipe_steps(
+                [
+                    {
+                        "actors": [
+                            {
+                                "actor": "Huber_01",
+                                "priority": 1.5,
+                                "params": {"target_temp_c": 25},
+                            }
+                        ],
+                        "task": "Invalid decimal priority",
+                        "delta_time": 0,
+                    },
+                ],
+                allowed_actor_lookup=allowed,
+            )
+
     def test_recipe_styles_cover_actor_dropdown_and_hint(self):
         source = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
 

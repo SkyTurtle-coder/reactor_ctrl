@@ -91,7 +91,8 @@ class IkaRpmLimitTests(unittest.TestCase):
         with patch.object(recipe_program_runtime, "_build_target_lookup", return_value={"Stirrer_01": binding}):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, build)
 
-        self.assertEqual(snapshot["steps"][0]["rpm"], IKA_EUROSTAR_60_MAX_RPM)
+        self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["rpm"], IKA_EUROSTAR_60_MAX_RPM)
+        self.assertIsNone(snapshot["steps"][0]["rpm"])
 
     def test_recipe_runtime_accepts_motor_step_with_zero_temp_and_pressure(self):
         recipe = Recipe(
@@ -125,7 +126,8 @@ class IkaRpmLimitTests(unittest.TestCase):
         with patch.object(recipe_program_runtime, "_build_target_lookup", return_value={"Stirrer_01": binding}):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, build)
 
-        self.assertEqual(snapshot["steps"][0]["rpm"], 500)
+        self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["rpm"], 500)
+        self.assertIsNone(snapshot["steps"][0]["rpm"])
         self.assertIsNone(snapshot["steps"][0]["temp"])
         self.assertIsNone(snapshot["steps"][0]["pressure"])
 
