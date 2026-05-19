@@ -114,9 +114,16 @@ def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_L
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
+    command_id = command.command_id
+    if command_id is None:
+        db.session.flush([command])
+        command_id = command.command_id
+    if command_id is None:
+        raise RuntimeError("Cannot add command event: ControlCommand has no command_id")
+
     db.session.add(
         ControlCommandEvent(
-            command_id=command.command_id,
+            command_id=command_id,
             event_type=event_type,
             event_payload=event_payload,
         )

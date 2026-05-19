@@ -30,8 +30,11 @@ class _FakeCommandEventSession:
         else:
             self.operations.append(("add", type(item).__name__))
 
-    def flush(self):
-        for item in self.objects:
+    def flush(self, *args, **kwargs):
+        targets = args[0] if args else self.objects
+        if targets is None:
+            targets = self.objects
+        for item in targets:
             if isinstance(item, ControlCommand) and item.command_id is None:
                 item.command_id = 123
         self.operations.append(("flush", None))
@@ -93,6 +96,23 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         event = next(item for item in session.objects if isinstance(item, ControlCommandEvent))
         self.assertEqual(event.command_id, 123)
         self.assertEqual(session.operations, [("add_event", 123)])
+
+    def test_add_command_event_flushes_command_id_when_not_assigned(self):
+        session = _FakeCommandEventSession()
+        command = ControlCommand(
+            device_id=7,
+            request_uuid="request-2",
+            requested_by="test",
+            command_name="manual_text",
+            status="queued",
+        )
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            device_runtime._add_command_event(command, "queued", {"requested_by": "test"})
+
+        event = next(item for item in session.objects if isinstance(item, ControlCommandEvent))
+        self.assertEqual(event.command_id, 123)
+        self.assertEqual(session.operations, [("flush", None), ("add_event", 123)])
 
     def test_describe_device_command_error_prefers_persisted_device_detail(self):
         command = ControlCommand(
