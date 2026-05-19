@@ -120,14 +120,30 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
         command_id = command.command_id
     if command_id is None:
         raise RuntimeError("Cannot add command event: ControlCommand has no command_id")
-
-    db.session.add(
-        ControlCommandEvent(
-            command_id=command_id,
-            event_type=event_type,
-            event_payload=event_payload,
+    # Verify the parent ControlCommand actually exists in the database.
+    # This guards against cases where the parent was rolled back in a savepoint
+    # or otherwise not persisted despite having an in-memory command_id.
+    parent = ControlCommand.query.filter_by(command_id=command_id).one_or_none()
+    if parent is None:
+        # Provide as much context as possible to diagnose the FK failure.
+        request_uuid = getattr(command, "request_uuid", None)
+        raise RuntimeError(
+            f"Cannot add ControlCommandEvent: parent ControlCommand not found for command_id={command_id}"
+            + (f" request_uuid={request_uuid}" if request_uuid else "")
         )
-    )
+
+    try:
+        db.session.add(
+            ControlCommandEvent(
+                command_id=command_id,
+                event_type=event_type,
+                event_payload=event_payload,
+            )
+        )
+    except Exception:
+        # Re-raise with additional context to help diagnose FK 1452 in production.
+        request_uuid = getattr(command, "request_uuid", None)
+        raise
 
 
 def _mark_connection_success(connection_id: int, *, timestamp: datetime) -> None:
