@@ -853,26 +853,164 @@ def _read_huber_status(device: Device) -> dict[str, float | None]:
     }
 
 
-def _refresh_state_from_telemetry(state: DeviceManualState, telemetry: dict[str, float | None]) -> None:
-    now = _now_utc()
+def _manual_state_next_poll_at(app: Flask, *, watch_active: bool, bg_interval: timedelta, measured_at: datetime) -> datetime:
+    if watch_active:
+        return measured_at + _manual_poll_interval(app)
+    return measured_at + bg_interval
+
+
+def _reported_ika_values(telemetry: dict[str, float | None]) -> dict[str, Any]:
     setpoint = telemetry.get("setpoint_rpm")
     actual = telemetry.get("actual_rpm")
     torque = telemetry.get("torque_ncm")
-    state.reported_setpoint_rpm = None if setpoint is None else max(0, int(round(setpoint)))
-    state.actual_rpm = actual
-    state.torque_ncm = torque
-    state.reported_is_on = bool(actual is not None and actual > 0.5)
-    state.last_reported_at = now
-
-    if state.desired_version == 0 and state.desired_is_on is None:
-        state.desired_is_on = bool(state.reported_is_on)
-        state.desired_speed = state.reported_setpoint_rpm or 0
+    reported_setpoint = None if setpoint is None else max(0, int(round(setpoint)))
+    return {
+        "reported_setpoint_rpm": reported_setpoint,
+        "actual_rpm": actual,
+        "torque_ncm": torque,
+        "reported_is_on": bool(actual is not None and actual > 0.5),
+    }
 
 
-def _refresh_state_from_huber_telemetry(state: DeviceManualState) -> None:
-    state.last_reported_at = _now_utc()
-    if state.desired_version == 0:
-        state.applied_version = 0
+def _update_manual_state_row(
+    device_id: int,
+    *,
+    values_factory,
+    memory_update,
+) -> DeviceManualState:
+    session = db.session
+    if not hasattr(session, "query"):
+        state = session.get(DeviceManualState, device_id)
+        if state is None:
+            raise RuntimeError(f"DeviceManualState for device {device_id} disappeared during manual-state update.")
+        memory_update(state)
+        session.commit()
+        return state
+
+    def operation() -> DeviceManualState:
+        updated = (
+            db.session.query(DeviceManualState)
+            .filter_by(device_id=device_id)
+            .update(values_factory(), synchronize_session=False)
+        )
+        if not updated:
+            raise RuntimeError(f"DeviceManualState for device {device_id} could not be updated.")
+        db.session.commit()
+        if hasattr(db.session, "expire_all"):
+            db.session.expire_all()
+        state = db.session.get(DeviceManualState, device_id)
+        if state is None:
+            raise RuntimeError(f"DeviceManualState for device {device_id} disappeared after manual-state update.")
+        return state
+
+    return _run_with_transient_db_retry(operation)
+
+
+def _commit_ika_manual_state_success(
+    app: Flask,
+    *,
+    device_id: int,
+    telemetry: dict[str, float | None],
+    measured_at: datetime,
+    desired_pending: bool,
+    processed_version: int,
+    watch_active: bool,
+    bg_interval: timedelta,
+) -> DeviceManualState:
+    reported = _reported_ika_values(telemetry)
+    next_poll_at = _manual_state_next_poll_at(
+        app,
+        watch_active=watch_active,
+        bg_interval=bg_interval,
+        measured_at=measured_at,
+    )
+    initial_desired_speed = int(reported["reported_setpoint_rpm"] or 0)
+
+    def values_factory() -> dict[Any, Any]:
+        initial_condition = and_(
+            DeviceManualState.desired_version == 0,
+            DeviceManualState.desired_is_on.is_(None),
+        )
+        values: dict[Any, Any] = {
+            DeviceManualState.reported_setpoint_rpm: reported["reported_setpoint_rpm"],
+            DeviceManualState.actual_rpm: reported["actual_rpm"],
+            DeviceManualState.torque_ncm: reported["torque_ncm"],
+            DeviceManualState.reported_is_on: reported["reported_is_on"],
+            DeviceManualState.last_reported_at: measured_at,
+            DeviceManualState.desired_is_on: case(
+                (initial_condition, reported["reported_is_on"]),
+                else_=DeviceManualState.desired_is_on,
+            ),
+            DeviceManualState.desired_speed: case(
+                (initial_condition, initial_desired_speed),
+                else_=DeviceManualState.desired_speed,
+            ),
+            DeviceManualState.last_error: None,
+            DeviceManualState.next_poll_at: next_poll_at,
+            DeviceManualState.queue_status: "idle",
+            DeviceManualState.lease_owner: None,
+            DeviceManualState.lease_expires_at: None,
+        }
+        if desired_pending:
+            values[DeviceManualState.applied_version] = int(processed_version)
+        return values
+
+    def memory_update(state: DeviceManualState) -> None:
+        state.reported_setpoint_rpm = reported["reported_setpoint_rpm"]
+        state.actual_rpm = reported["actual_rpm"]
+        state.torque_ncm = reported["torque_ncm"]
+        state.reported_is_on = reported["reported_is_on"]
+        state.last_reported_at = measured_at
+        if state.desired_version == 0 and state.desired_is_on is None:
+            state.desired_is_on = bool(state.reported_is_on)
+            state.desired_speed = initial_desired_speed
+        if desired_pending:
+            state.applied_version = int(processed_version)
+        state.last_error = None
+        state.next_poll_at = next_poll_at
+        _release_manual_state_lease(state, status="idle")
+
+    return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
+
+
+def _commit_huber_manual_state_success(
+    app: Flask,
+    *,
+    device_id: int,
+    measured_at: datetime,
+    watch_active: bool,
+    bg_interval: timedelta,
+) -> DeviceManualState:
+    next_poll_at = _manual_state_next_poll_at(
+        app,
+        watch_active=watch_active,
+        bg_interval=bg_interval,
+        measured_at=measured_at,
+    )
+
+    def values_factory() -> dict[Any, Any]:
+        return {
+            DeviceManualState.last_reported_at: measured_at,
+            DeviceManualState.applied_version: case(
+                (DeviceManualState.desired_version == 0, 0),
+                else_=DeviceManualState.applied_version,
+            ),
+            DeviceManualState.last_error: None,
+            DeviceManualState.next_poll_at: next_poll_at,
+            DeviceManualState.queue_status: "idle",
+            DeviceManualState.lease_owner: None,
+            DeviceManualState.lease_expires_at: None,
+        }
+
+    def memory_update(state: DeviceManualState) -> None:
+        state.last_reported_at = measured_at
+        if state.desired_version == 0:
+            state.applied_version = 0
+        state.last_error = None
+        state.next_poll_at = next_poll_at
+        _release_manual_state_lease(state, status="idle")
+
+    return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
 
 
 def _persist_telemetry_as_measurements(
@@ -948,16 +1086,23 @@ def _persist_ika_telemetry_as_measurements_best_effort(
     measured_at: datetime,
 ) -> None:
     session = db.session
-    if not all(hasattr(session, attr) for attr in ("query", "add", "flush")):
+    if not all(hasattr(session, attr) for attr in ("query", "add", "flush", "commit", "rollback")):
         # Simplified unit-test doubles may not implement the full SQLAlchemy
         # session API. Skip history persistence there so the control-state path
         # can still be exercised independently.
         return
 
     try:
-        with session.begin_nested():
+        def operation() -> None:
             _persist_ika_telemetry_as_measurements(device, telemetry, measured_at)
+            db.session.commit()
+
+        _run_with_transient_db_retry(operation, retry_duplicate_key=True)
     except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         app.logger.warning(
             "Measurement persistence failed for device %s; keeping live manual-state update and retrying history on the next poll.",
             device.device_id,
@@ -972,13 +1117,20 @@ def _persist_huber_telemetry_as_measurements_best_effort(
     measured_at: datetime,
 ) -> None:
     session = db.session
-    if not all(hasattr(session, attr) for attr in ("query", "add", "flush")):
+    if not all(hasattr(session, attr) for attr in ("query", "add", "flush", "commit", "rollback")):
         return
 
     try:
-        with session.begin_nested():
+        def operation() -> None:
             _persist_huber_telemetry_as_measurements(device, telemetry, measured_at)
+            db.session.commit()
+
+        _run_with_transient_db_retry(operation, retry_duplicate_key=True)
     except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
         app.logger.warning(
             "Measurement persistence failed for Huber device %s; keeping live state update and retrying history on the next poll.",
             device.device_id,
@@ -1161,55 +1313,45 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                 if desired_pending:
                     raise RuntimeError("Queued manual-state writes are not supported for Huber devices.")
                 telemetry = _read_huber_status(device)
-                state = db.session.get(DeviceManualState, device_id)
-                if state is None:
-                    db.session.rollback()
-                    return
-
-                _refresh_state_from_huber_telemetry(state)
-                _persist_huber_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
-                state.last_error = None
-                if watch_active:
-                    state.next_poll_at = _now_utc() + _manual_poll_interval(app)
-                else:
-                    state.next_poll_at = _now_utc() + bg_interval
-                _release_manual_state_lease(state, status="idle")
-                db.session.commit()
+                measured_at = _now_utc()
+                _commit_huber_manual_state_success(
+                    app,
+                    device_id=device_id,
+                    measured_at=measured_at,
+                    watch_active=watch_active,
+                    bg_interval=bg_interval,
+                )
+                _persist_huber_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
                 return
 
             if desired_pending:
                 _apply_desired_ika_state(device, desired_snapshot)
 
             telemetry = _read_ika_status(device)
-            state = db.session.get(DeviceManualState, device_id)
-            if state is None:
-                db.session.rollback()
-                return
-
-            _refresh_state_from_telemetry(state, telemetry)
-            _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, state.last_reported_at)
+            measured_at = _now_utc()
+            reported = _reported_ika_values(telemetry)
             if desired_pending:
                 # Final sanity check: if the desired state was ON but the setpoint
                 # came back as None in the post-apply telemetry, the device silently
                 # dropped our command (e.g. a second boot glitch).  Do NOT mark as
                 # applied so the reconciler retries on the next cycle.
-                if bool(state.desired_is_on) and state.reported_setpoint_rpm is None:
+                if bool(desired_snapshot.desired_is_on) and reported["reported_setpoint_rpm"] is None:
                     raise RuntimeError(
                         "Stirrer accepted the START command but setpoint reads as "
                         "None in the subsequent telemetry poll. The device may have "
                         "reset. Will retry automatically."
                     )
-                state.applied_version = processed_version
-            state.last_error = None
-            # When a UI session is active use the fast live-poll interval.
-            # Otherwise fall back to the slower background poll interval so
-            # telemetry keeps being stored continuously even with no browser open.
-            if watch_active:
-                state.next_poll_at = _now_utc() + _manual_poll_interval(app)
-            else:
-                state.next_poll_at = _now_utc() + bg_interval
-            _release_manual_state_lease(state, status="idle")
-            db.session.commit()
+            _commit_ika_manual_state_success(
+                app,
+                device_id=device_id,
+                telemetry=telemetry,
+                measured_at=measured_at,
+                desired_pending=desired_pending,
+                processed_version=processed_version,
+                watch_active=watch_active,
+                bg_interval=bg_interval,
+            )
+            _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
     except Exception as exc:
         db.session.rollback()
         state = db.session.get(DeviceManualState, device_id)

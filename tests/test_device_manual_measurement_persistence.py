@@ -257,6 +257,51 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
             )
             self.assertTrue(all(item.source == "poller" for item in measurements))
 
+    def test_measurement_failure_does_not_poison_live_manual_state_update(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="IKA-PERSIST-FAIL-001",
+                manufacturer_serial="SN-PERSIST-FAIL-001",
+                display_name="IKA Persist Failure Test",
+                device_type="actuator",
+                protocol="ika_eurostar_60",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+
+            state = DeviceManualState(
+                device_id=device.device_id,
+                queue_status="running",
+                desired_version=0,
+                applied_version=0,
+                lease_owner="worker-1",
+            )
+            state.watch_expires_at = datetime.now(timezone.utc) + timedelta(seconds=30)
+            state.next_poll_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            db.session.add(state)
+            db.session.commit()
+
+            with patch.object(
+                device_manual_runtime,
+                "_read_ika_status",
+                return_value={"setpoint_rpm": 612.0, "actual_rpm": 608.77, "torque_ncm": 1.4},
+            ):
+                with patch.object(
+                    device_manual_runtime,
+                    "_persist_ika_telemetry_as_measurements",
+                    side_effect=RuntimeError("simulated measurement write failure"),
+                ):
+                    device_manual_runtime._process_manual_state(self.app, device_id=device.device_id, worker_id="worker-1")
+
+            state = db.session.get(DeviceManualState, device.device_id)
+            self.assertEqual(state.queue_status, "idle")
+            self.assertIsNone(state.lease_owner)
+            self.assertIsNone(state.last_error)
+            self.assertEqual(state.reported_setpoint_rpm, 612)
+            self.assertAlmostEqual(state.actual_rpm, 608.77)
+            self.assertEqual(Measurement.query.count(), 0)
+
     def test_active_ika_discovery_seeds_manual_state_and_measurement_channels(self):
         with self.app.app_context():
             device = Device(

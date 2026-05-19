@@ -73,6 +73,83 @@ class _FakeSessionForRetry:
         self.rollback_calls += 1
 
 
+class _FakeManualStateUpdateQuery:
+    def __init__(self, session, update_side_effects):
+        self._session = session
+        self._update_side_effects = update_side_effects
+
+    def filter_by(self, **_kwargs):
+        return self
+
+    def update(self, values, synchronize_session=False):
+        self._session.update_calls += 1
+        if synchronize_session is not False:
+            raise AssertionError("manual-state updates must not synchronize stale ORM state")
+        if self._update_side_effects:
+            effect = self._update_side_effects.pop(0)
+            if isinstance(effect, Exception):
+                raise effect
+            if not effect:
+                return int(effect)
+
+        for column, value in values.items():
+            name = getattr(column, "key", None)
+            if not name:
+                continue
+            if name in {"desired_is_on", "desired_speed"} and not isinstance(value, (bool, int, type(None))):
+                continue
+            setattr(self._session._state, name, value)
+        return 1
+
+
+class _FakeSessionForManualStateUpdate:
+    def __init__(self, *, state, update_side_effects=()):
+        self._state = state
+        self._update_side_effects = list(update_side_effects)
+        self.update_calls = 0
+        self.commit_calls = 0
+        self.rollback_calls = 0
+        self.expire_all_calls = 0
+
+    def query(self, *_args):
+        return _FakeManualStateUpdateQuery(self, self._update_side_effects)
+
+    def get(self, model, _device_id):
+        if model is DeviceManualState:
+            return self._state
+        raise AssertionError(f"Unexpected model lookup: {model}")
+
+    def commit(self):
+        self.commit_calls += 1
+
+    def rollback(self):
+        self.rollback_calls += 1
+
+    def expire_all(self):
+        self.expire_all_calls += 1
+
+
+class _FakeSessionForMeasurementBestEffort:
+    def __init__(self):
+        self.commit_calls = 0
+        self.rollback_calls = 0
+
+    def query(self, *_args):
+        raise AssertionError("query should not be reached when persistence is patched")
+
+    def add(self, *_args):
+        raise AssertionError("add should not be reached when persistence is patched")
+
+    def flush(self):
+        raise AssertionError("flush should not be reached when persistence is patched")
+
+    def commit(self):
+        self.commit_calls += 1
+
+    def rollback(self):
+        self.rollback_calls += 1
+
+
 class DeviceManualRuntimeTests(unittest.TestCase):
     def test_manual_state_to_dict_normalizes_naive_datetimes_to_utc(self):
         naive = datetime(2026, 4, 13, 15, 20, 53, 123000)
@@ -164,6 +241,70 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(calls["count"], 2)
         self.assertEqual(fake_session.rollback_calls, 1)
+
+    def test_ika_success_state_update_retries_mysql_record_changed(self):
+        app = Flask(__name__)
+        state = DeviceManualState(
+            device_id=3,
+            queue_status="running",
+            desired_version=2,
+            applied_version=1,
+            desired_is_on=True,
+            desired_speed=600,
+            lease_owner="worker-1",
+        )
+        original = Exception(1020, "Record has changed since last read in table 'device_manual_state'")
+        conflict_error = OperationalError("UPDATE device_manual_state ...", {}, original)
+        fake_session = _FakeSessionForManualStateUpdate(
+            state=state,
+            update_side_effects=[conflict_error, 1],
+        )
+        measured_at = datetime.now(timezone.utc)
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime.time, "sleep"):
+                updated = device_manual_runtime._commit_ika_manual_state_success(
+                    app,
+                    device_id=3,
+                    telemetry={"setpoint_rpm": 612.0, "actual_rpm": 608.77, "torque_ncm": 1.4},
+                    measured_at=measured_at,
+                    desired_pending=True,
+                    processed_version=2,
+                    watch_active=False,
+                    bg_interval=timedelta(seconds=30),
+                )
+
+        self.assertIs(updated, state)
+        self.assertEqual(fake_session.rollback_calls, 1)
+        self.assertEqual(fake_session.commit_calls, 1)
+        self.assertEqual(fake_session.update_calls, 2)
+        self.assertEqual(state.applied_version, 2)
+        self.assertEqual(state.reported_setpoint_rpm, 612)
+        self.assertAlmostEqual(state.actual_rpm, 608.77)
+        self.assertEqual(state.queue_status, "idle")
+        self.assertIsNone(state.lease_owner)
+        self.assertIsNone(state.last_error)
+
+    def test_measurement_best_effort_rolls_back_failed_session_without_raising(self):
+        app = Flask(__name__)
+        device = Device(device_id=3, display_name="IKA", protocol="ika_eurostar_60")
+        fake_session = _FakeSessionForMeasurementBestEffort()
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(
+                device_manual_runtime,
+                "_persist_ika_telemetry_as_measurements",
+                side_effect=RuntimeError("measurement flush failed"),
+            ):
+                device_manual_runtime._persist_ika_telemetry_as_measurements_best_effort(
+                    app,
+                    device,
+                    {"setpoint_rpm": 612.0, "actual_rpm": 608.77, "torque_ncm": 1.4},
+                    datetime.now(timezone.utc),
+                )
+
+        self.assertEqual(fake_session.rollback_calls, 1)
+        self.assertEqual(fake_session.commit_calls, 0)
 
     def test_manual_claim_sort_uses_port_number_when_no_recipe_priority_exists(self):
         rows = [
