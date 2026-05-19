@@ -121,28 +121,17 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
         command_id = command.command_id
     if command_id is None:
         raise RuntimeError("Cannot add command event: ControlCommand has no command_id")
-    # Verify the parent ControlCommand actually exists in the database.
-    # This guards against cases where the parent was rolled back in a savepoint
-    # or otherwise not persisted despite having an in-memory command_id.
-    parent = ControlCommand.query.filter_by(command_id=command_id).one_or_none()
-    if parent is None:
-        # Provide as much context as possible to diagnose the FK failure.
-        request_uuid = getattr(command, "request_uuid", None)
-        raise RuntimeError(
-            f"Cannot add ControlCommandEvent: parent ControlCommand not found for command_id={command_id}"
-            + (f" request_uuid={request_uuid}" if request_uuid else "")
-        )
 
     try:
         db.session.add(
             ControlCommandEvent(
+                command=command,
                 command_id=command_id,
                 event_type=event_type,
                 event_payload=event_payload,
             )
         )
     except Exception as exc:
-        # If we still get an IntegrityError at DB-level, capture diagnostics.
         logger = logging.getLogger(__name__)
         request_uuid = getattr(command, "request_uuid", None)
         logger.exception(
@@ -151,14 +140,6 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
             request_uuid,
             exc,
         )
-        # Re-check the parent existence to provide clearer error messages.
-        parent = ControlCommand.query.filter_by(command_id=command_id).one_or_none()
-        if parent is None:
-            raise RuntimeError(
-                f"FK failure: parent ControlCommand missing for command_id={command_id}"
-                + (f" request_uuid={request_uuid}" if request_uuid else "")
-            ) from exc
-        # Parent exists: re-raise the original exception
         raise
 
 
