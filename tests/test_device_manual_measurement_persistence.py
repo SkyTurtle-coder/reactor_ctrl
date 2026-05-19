@@ -9,7 +9,7 @@ from sqlalchemy import text
 
 from reactor_app import create_app
 from reactor_app.extensions import db
-from reactor_app.models import Device, DeviceManualState, Measurement, MeasurementChannel
+from reactor_app.models import Device, DeviceManualState, Measurement, MeasurementChannel, RecipeProgramState
 from reactor_app.services import device_manual_runtime
 
 
@@ -22,6 +22,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
         cls._original_api_auth_required = app_config.Config.API_AUTH_REQUIRED
         cls._original_manual_reconciler_enabled = app_config.Config.DEVICE_MANUAL_RECONCILER_ENABLED
         cls._original_program_reconciler_enabled = app_config.Config.RECIPE_PROGRAM_RECONCILER_ENABLED
+        cls._original_background_huber_enabled = app_config.Config.MEASUREMENT_POLLER_BACKGROUND_HUBER_ENABLED
 
         cls._tmpdir = tempfile.TemporaryDirectory()
         db_path = Path(cls._tmpdir.name) / "device_manual_measurements.sqlite"
@@ -31,6 +32,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
         app_config.Config.API_AUTH_REQUIRED = False
         app_config.Config.DEVICE_MANUAL_RECONCILER_ENABLED = False
         app_config.Config.RECIPE_PROGRAM_RECONCILER_ENABLED = False
+        app_config.Config.MEASUREMENT_POLLER_BACKGROUND_HUBER_ENABLED = False
 
         cls.app = create_app()
 
@@ -119,12 +121,41 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                     """
                 )
             )
+            db.session.execute(
+                text(
+                    """
+                    CREATE TABLE recipe_program_state (
+                        recipe_program_state_id INTEGER PRIMARY KEY,
+                        recipe_id INTEGER,
+                        reactor_build_id INTEGER,
+                        status TEXT NOT NULL DEFAULT 'idle',
+                        requested_by TEXT NOT NULL DEFAULT 'system',
+                        recipe_title TEXT,
+                        operator_name TEXT,
+                        snapshot_json TEXT,
+                        last_applied_targets_json TEXT,
+                        active_step_index INTEGER NOT NULL DEFAULT 0,
+                        step_started_at TEXT,
+                        started_at TEXT,
+                        finished_at TEXT,
+                        last_progress_at TEXT,
+                        stop_requested INTEGER NOT NULL DEFAULT 0,
+                        last_error TEXT,
+                        lease_owner TEXT,
+                        lease_expires_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
             db.session.commit()
 
     @classmethod
     def tearDownClass(cls):
         with cls.app.app_context():
             db.session.remove()
+            db.session.execute(text("DROP TABLE IF EXISTS recipe_program_state"))
             db.session.execute(text("DROP TABLE IF EXISTS measurement"))
             db.session.execute(text("DROP TABLE IF EXISTS measurement_channel"))
             db.session.execute(text("DROP TABLE IF EXISTS device_manual_state"))
@@ -139,9 +170,11 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
         app_config.Config.API_AUTH_REQUIRED = cls._original_api_auth_required
         app_config.Config.DEVICE_MANUAL_RECONCILER_ENABLED = cls._original_manual_reconciler_enabled
         app_config.Config.RECIPE_PROGRAM_RECONCILER_ENABLED = cls._original_program_reconciler_enabled
+        app_config.Config.MEASUREMENT_POLLER_BACKGROUND_HUBER_ENABLED = cls._original_background_huber_enabled
 
     def setUp(self):
         with self.app.app_context():
+            RecipeProgramState.query.delete()
             Measurement.query.delete()
             MeasurementChannel.query.delete()
             DeviceManualState.query.delete()
@@ -316,6 +349,79 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 [channel.channel_code for channel in channels],
                 ["actual_temp_C", "setpoint_C"],
             )
+
+    def test_background_huber_polling_is_not_claimed_without_watch_or_recipe(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="HUBER-IDLE-001",
+                manufacturer_serial="SN-HUBER-IDLE-001",
+                display_name="Idle Huber",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            db.session.add(
+                DeviceManualState(
+                    device_id=device.device_id,
+                    queue_status="idle",
+                    desired_version=0,
+                    applied_version=0,
+                )
+            )
+            db.session.commit()
+
+            claimed = device_manual_runtime._claim_next_device_id(self.app, "worker-1")
+
+            self.assertIsNone(claimed)
+
+    def test_running_recipe_limits_polling_to_recipe_bound_devices(self):
+        with self.app.app_context():
+            recipe_device = Device(
+                asset_serial="HUBER-RECIPE-001",
+                manufacturer_serial="SN-HUBER-RECIPE-001",
+                display_name="Recipe Huber",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            unused_device = Device(
+                asset_serial="HUBER-UNUSED-001",
+                manufacturer_serial="SN-HUBER-UNUSED-001",
+                display_name="Unused Huber",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            db.session.add_all([recipe_device, unused_device])
+            db.session.flush()
+            db.session.add_all(
+                [
+                    DeviceManualState(
+                        device_id=recipe_device.device_id,
+                        queue_status="idle",
+                        desired_version=0,
+                        applied_version=0,
+                    ),
+                    DeviceManualState(
+                        device_id=unused_device.device_id,
+                        queue_status="idle",
+                        desired_version=0,
+                        applied_version=0,
+                    ),
+                    RecipeProgramState(
+                        recipe_program_state_id=1,
+                        status="running",
+                        snapshot_json={"bindings": [{"device_id": recipe_device.device_id}]},
+                    ),
+                ]
+            )
+            db.session.commit()
+
+            claimed = device_manual_runtime._claim_next_device_id(self.app, "worker-1")
+
+            self.assertEqual(claimed, recipe_device.device_id)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ class _FakeSessionForClaim:
         self.rollback_calls = 0
 
         self._candidates_query = MagicMock()
+        self._candidates_query.join.return_value = self._candidates_query
         self._candidates_query.filter.return_value = self._candidates_query
         self._candidates_query.order_by.return_value = self._candidates_query
         self._candidates_query.limit.return_value = self._candidates_query

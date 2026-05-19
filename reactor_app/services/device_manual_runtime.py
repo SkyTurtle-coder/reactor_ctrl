@@ -11,12 +11,14 @@ from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from ..extensions import db
-from ..models import Device, DeviceManualState, Measurement, MeasurementChannel
+from ..models import Device, DeviceManualState, Measurement, MeasurementChannel, RecipeProgramState
 from .device_runtime import DeviceCommandError, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
 _DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for newly active supported devices
+_RECIPE_PROGRAM_STATE_ID = 1
+_RECIPE_PROGRAM_RUNNING_STATUS = "running"
 
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle. channel_code values are part of the
@@ -105,6 +107,10 @@ def _background_poll_interval(app: Flask) -> timedelta:
     return timedelta(seconds=seconds)
 
 
+def _background_huber_poll_enabled(app: Flask) -> bool:
+    return bool(app.config.get("MEASUREMENT_POLLER_BACKGROUND_HUBER_ENABLED", False))
+
+
 def _manual_lease_duration(app: Flask) -> timedelta:
     seconds = max(3, int(app.config.get("DEVICE_MANUAL_RECONCILER_LEASE_SECONDS", 15)))
     return timedelta(seconds=seconds)
@@ -149,6 +155,30 @@ def _is_ika_device(device: Device | None) -> bool:
 
 def _is_huber_device(device: Device | None) -> bool:
     return str(getattr(device, "protocol", "") or "").strip().lower() in _HUBER_PROTOCOLS
+
+
+def _active_recipe_program_device_ids() -> set[int] | None:
+    try:
+        state = db.session.get(RecipeProgramState, _RECIPE_PROGRAM_STATE_ID)
+    except Exception:
+        return None
+    if state is None or str(state.status or "").strip().lower() != _RECIPE_PROGRAM_RUNNING_STATUS:
+        return None
+
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    device_ids: set[int] = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        raw_device_id = binding.get("device_id")
+        try:
+            device_id = int(raw_device_id)
+        except (TypeError, ValueError):
+            continue
+        if device_id > 0:
+            device_ids.add(device_id)
+    return device_ids
 
 
 def _load_ika_measurement_channels(device_id: int) -> dict[str, MeasurementChannel]:
@@ -617,11 +647,16 @@ def _ensure_manual_states_for_active_devices(app: Flask) -> None:
     concurrent Gunicorn worker inserting the same row does not roll back all
     other devices.
     """
-    active_devices = (
-        db.session.query(Device)
-        .filter(Device.protocol.in_(("ika_eurostar_60", *_HUBER_PROTOCOLS)), Device.is_active.is_(True))
-        .all()
+    active_recipe_device_ids = _active_recipe_program_device_ids()
+    active_devices_query = db.session.query(Device).filter(
+        Device.protocol.in_(("ika_eurostar_60", *_HUBER_PROTOCOLS)),
+        Device.is_active.is_(True),
     )
+    if active_recipe_device_ids is not None:
+        if not active_recipe_device_ids:
+            return
+        active_devices_query = active_devices_query.filter(Device.device_id.in_(active_recipe_device_ids))
+    active_devices = active_devices_query.all()
     seeded_states = 0
     seeded_channels = 0
     for device in active_devices:
@@ -784,9 +819,13 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     now = _now_utc()
     # Background telemetry cutoff: poll even without an active UI session.
     bg_cutoff = now - _background_poll_interval(app)
-    candidates = (
+    active_recipe_device_ids = _active_recipe_program_device_ids()
+    candidate_query = (
         db.session.query(DeviceManualState.device_id)
+        .join(Device, Device.device_id == DeviceManualState.device_id)
         .filter(
+            Device.is_active.is_(True),
+            Device.protocol.in_(("ika_eurostar_60", *_HUBER_PROTOCOLS)),
             or_(DeviceManualState.lease_expires_at.is_(None), DeviceManualState.lease_expires_at < now),
             or_(
                 # Explicit command pending
@@ -803,6 +842,15 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                 # prevents hammering an unreachable device.
                 and_(
                     or_(
+                        Device.protocol == "ika_eurostar_60",
+                        and_(
+                            DeviceManualState.watch_expires_at.is_not(None),
+                            DeviceManualState.watch_expires_at > now,
+                        ),
+                        Device.device_id.in_(active_recipe_device_ids or []),
+                        _background_huber_poll_enabled(app),
+                    ),
+                    or_(
                         DeviceManualState.last_reported_at.is_(None),
                         DeviceManualState.last_reported_at <= bg_cutoff,
                     ),
@@ -813,7 +861,13 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                 ),
             ),
         )
-        .order_by(
+    )
+    if active_recipe_device_ids is not None:
+        if not active_recipe_device_ids:
+            return None
+        candidate_query = candidate_query.filter(DeviceManualState.device_id.in_(active_recipe_device_ids))
+    candidates = (
+        candidate_query.order_by(
             case((DeviceManualState.desired_version > DeviceManualState.applied_version, 0), else_=1),
             DeviceManualState.next_poll_at.asc(),
             DeviceManualState.last_desired_at.asc(),
