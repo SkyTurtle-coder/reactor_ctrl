@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import text
 
 from ..extensions import db
+import logging
 from ..models import ControlCommand, ControlCommandEvent, Device, Measurement, MeasurementChannel
 from .drivers import DeviceCommandRequest, DeviceCommandResult, DriverError, DriverNotFoundError, DriverValidationError, get_driver
 from .transports import TcpSocketConfig, TcpSocketTransport
@@ -140,9 +141,24 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
                 event_payload=event_payload,
             )
         )
-    except Exception:
-        # Re-raise with additional context to help diagnose FK 1452 in production.
+    except Exception as exc:
+        # If we still get an IntegrityError at DB-level, capture diagnostics.
+        logger = logging.getLogger(__name__)
         request_uuid = getattr(command, "request_uuid", None)
+        logger.exception(
+            "Failed to add ControlCommandEvent(command_id=%s, request_uuid=%s): %s",
+            command_id,
+            request_uuid,
+            exc,
+        )
+        # Re-check the parent existence to provide clearer error messages.
+        parent = ControlCommand.query.filter_by(command_id=command_id).one_or_none()
+        if parent is None:
+            raise RuntimeError(
+                f"FK failure: parent ControlCommand missing for command_id={command_id}"
+                + (f" request_uuid={request_uuid}" if request_uuid else "")
+            ) from exc
+        # Parent exists: re-raise the original exception
         raise
 
 
