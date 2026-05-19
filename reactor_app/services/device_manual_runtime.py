@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from ..extensions import db
 from ..models import Device, DeviceManualState, Measurement, MeasurementChannel, RecipeProgramState
-from .device_runtime import DeviceCommandError, execute_device_command
+from .device_runtime import DeviceCommandError, describe_device_command_error, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
@@ -902,7 +902,8 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         if state is None:
             return
         recipe_program_error = _fail_active_recipe_program_for_device(app, device, exc)
-        state.last_error = recipe_program_error or str(exc)
+        fallback_error = describe_device_command_error(exc) if isinstance(exc, DeviceCommandError) else str(exc)
+        state.last_error = recipe_program_error or fallback_error
         if recipe_program_error and desired_pending:
             state.applied_version = processed_version
         # Use the background interval for retry when no UI session is watching so

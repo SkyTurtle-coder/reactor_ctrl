@@ -1,4 +1,9 @@
-from .device_runtime import DeviceCommandError, ExecutedDeviceCommand, execute_device_command
+from .device_runtime import (
+    DeviceCommandError,
+    ExecutedDeviceCommand,
+    describe_device_command_error,
+    execute_device_command,
+)
 from .device_manual_runtime import (
     ensure_manual_state_snapshot,
     manual_state_to_dict,
@@ -20,6 +25,7 @@ from .transports import TcpSocketConfig, TcpSocketProbeResult, TcpSocketTranspor
 __all__ = [
     "DeviceCommandError",
     "ExecutedDeviceCommand",
+    "describe_device_command_error",
     "NPortSimulator",
     "SimulatedNPortPort",
     "SimulatedTextDevice",

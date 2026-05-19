@@ -101,6 +101,30 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
             ],
         )
 
+    def test_describe_device_command_error_prefers_persisted_device_detail(self):
+        command = ControlCommand(
+            command_id=391267,
+            device_id=3,
+            request_uuid="request-391267",
+            requested_by="process_manual",
+            command_name="get_status",
+            status="failed",
+            error_message="Huber PB address mismatch: sent 0A, got 00.",
+        )
+        exc = device_runtime.DeviceCommandError(
+            "Device command execution failed.",
+            status_code=502,
+            command=command,
+        )
+
+        message = device_runtime.describe_device_command_error(exc)
+
+        self.assertIn("command 'get_status'", message)
+        self.assertIn("command_id=391267", message)
+        self.assertIn("device_id=3", message)
+        self.assertIn("Huber PB address mismatch: sent 0A, got 00.", message)
+        self.assertNotEqual(message, "Device command execution failed.")
+
 
 if __name__ == "__main__":
     unittest.main()

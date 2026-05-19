@@ -16,6 +16,7 @@ _HEX_4_RE = re.compile(r"^[0-9A-Fa-f]{4}$")
 _NOT_AVAILABLE_VALUE = "7FFF"
 _DEFAULT_MIN_SETPOINT_C = -40.0
 _DEFAULT_MAX_SETPOINT_C = 150.0
+_MAX_STALE_PB_RESPONSES = 3
 _PB_NAMES = {
     "setpoint": "00",
     "internal_temp": "01",
@@ -69,6 +70,24 @@ def _normalize_value16(value: Any) -> str:
     if not _HEX_4_RE.fullmatch(normalized):
         raise DriverValidationError("PB value must be a four-digit hex value.")
     return normalized
+
+
+def _pb_response_address(response_text: str) -> str | None:
+    response = str(response_text or "").strip()
+    if not response.startswith("{S") or len(response) < 4:
+        return None
+    addr = response[2:4].upper()
+    return addr if _HEX_2_RE.fullmatch(addr) else None
+
+
+def _is_address_mismatch_response(response_text: str, addr_hex: str) -> bool:
+    response_addr = _pb_response_address(response_text)
+    return response_addr is not None and response_addr != _normalize_addr(addr_hex)
+
+
+def _split_response_lines(response_bytes: bytes) -> list[bytes]:
+    lines = [line for line in response_bytes.splitlines(keepends=True) if line.strip()]
+    return lines or [response_bytes]
 
 
 def _coerce_float(value: Any, *, field_name: str, default: float | None = None) -> float:
@@ -274,11 +293,33 @@ class _TransportHuberClient:
         request_bytes = request_text.encode("ascii")
         LOGGER.debug("Huber PB send: %r", request_text)
         self.transport.send(request_bytes)
-        response_bytes = self.transport.receive_until(b"\n", max_bytes=max(self.transport.config.recv_size, 64))
-        response_text = response_bytes.decode("ascii", errors="replace")
-        LOGGER.debug("Huber PB recv: %r", response_text)
-        value_response = HuberUnistatTCP.validate_response(response_text, addr)
-        return value_response, request_bytes, response_bytes
+        stale_responses: list[str] = []
+        last_mismatch: DriverError | None = None
+
+        for _ in range(_MAX_STALE_PB_RESPONSES + 1):
+            response_bytes = self.transport.receive_until(b"\n", max_bytes=max(self.transport.config.recv_size, 64))
+            for response_line in _split_response_lines(response_bytes):
+                response_text = response_line.decode("ascii", errors="replace")
+                LOGGER.debug("Huber PB recv: %r", response_text)
+                try:
+                    value_response = HuberUnistatTCP.validate_response(response_text, addr)
+                except DriverError as exc:
+                    if _is_address_mismatch_response(response_text, addr):
+                        stale_responses.append(response_text.strip())
+                        last_mismatch = exc
+                        LOGGER.warning(
+                            "Skipping stale Huber PB response while waiting for address %s: %r",
+                            addr,
+                            response_text,
+                        )
+                        continue
+                    raise
+                return value_response, request_bytes, response_line
+
+        if last_mismatch is not None:
+            skipped = "; ".join(stale_responses)
+            raise DriverError(f"{last_mismatch} Skipped stale response(s): {skipped}.") from last_mismatch
+        raise DriverError(f"Huber PB did not return a response for address {addr}.")
 
     def read_var(self, addr_hex: str) -> tuple[str, bytes, bytes]:
         return self.request(addr_hex, "****")

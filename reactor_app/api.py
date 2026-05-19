@@ -30,6 +30,7 @@ from .models import (
 from .services import (
     DeviceCommandError,
     TcpSocketConfig,
+    describe_device_command_error,
     ensure_manual_state_snapshot,
     execute_device_command,
     list_supported_protocol_options,
@@ -1692,13 +1693,14 @@ def execute_command_for_device(device_id: int):
         )
     except DeviceCommandError as exc:
         if exc.command is not None:
+            message = describe_device_command_error(exc)
             ok, error_response = _commit()
             if not ok:
                 return error_response
             return (
                 jsonify(
                     {
-                        "error": str(exc),
+                        "error": message,
                         "details": exc.details,
                         "command": _control_command_to_dict(exc.command, include_events=True),
                     }
@@ -2454,7 +2456,7 @@ def stop_process_program():
     try:
         item = stop_recipe_program(current_app, requested_by=requested_by)
     except DeviceCommandError as exc:
-        return _json_error(str(exc), exc.status_code, str(exc.details) if exc.details else None)
+        return _json_error(describe_device_command_error(exc), exc.status_code, str(exc.details) if exc.details else None)
     except ValueError as exc:
         return _json_error(str(exc), 400)
 

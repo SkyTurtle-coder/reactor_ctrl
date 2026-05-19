@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import socket
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -16,6 +18,9 @@ from .transports import TcpSocketConfig, TcpSocketTransport
 
 _MEASUREMENT_PARSERS = {"text", "float", "int", "bool"}
 _MEASUREMENT_SOURCES = {"poller", "event", "manual", "import"}
+_DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS = 5.0
+_DEVICE_COMMAND_LOCKS: dict[int, threading.RLock] = {}
+_DEVICE_COMMAND_LOCKS_GUARD = threading.Lock()
 
 
 def _now_utc() -> datetime:
@@ -55,6 +60,87 @@ class DeviceCommandError(RuntimeError):
         self.status_code = status_code
         self.command = command
         self.details = details
+
+
+def describe_device_command_error(exc: DeviceCommandError) -> str:
+    command = getattr(exc, "command", None)
+    command_name = str(getattr(command, "command_name", "") or "").strip()
+    command_id = getattr(command, "command_id", None)
+    device_id = getattr(command, "device_id", None)
+    detail = str(getattr(command, "error_message", "") or "").strip()
+    base_message = str(exc).strip() or "Device command failed."
+
+    parts: list[str] = []
+    if command_name:
+        parts.append(f"command '{command_name}'")
+    if command_id:
+        parts.append(f"command_id={command_id}")
+    if device_id:
+        parts.append(f"device_id={device_id}")
+
+    prefix = "Device command failed"
+    if parts:
+        prefix = f"{prefix} ({', '.join(parts)})"
+    if detail and detail != base_message:
+        return f"{prefix}: {detail}"
+    return f"{prefix}: {base_message}"
+
+
+def _db_dialect_name() -> str:
+    try:
+        bind = db.session.get_bind()
+    except Exception:
+        return ""
+    return str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+
+
+def _local_device_command_lock(device_id: int) -> threading.RLock:
+    normalized_device_id = int(device_id)
+    with _DEVICE_COMMAND_LOCKS_GUARD:
+        lock = _DEVICE_COMMAND_LOCKS.get(normalized_device_id)
+        if lock is None:
+            lock = threading.RLock()
+            _DEVICE_COMMAND_LOCKS[normalized_device_id] = lock
+        return lock
+
+
+@contextmanager
+def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS):
+    normalized_device_id = int(device_id)
+    timeout_seconds = max(1, int(round(float(timeout_s))))
+    dialect_name = _db_dialect_name()
+
+    if dialect_name in {"mysql", "mariadb"}:
+        lock_name = f"reactor_ctrl:device_command:{normalized_device_id}"
+        result = db.session.execute(
+            text("SELECT GET_LOCK(:lock_name, :timeout_s)"),
+            {"lock_name": lock_name, "timeout_s": timeout_seconds},
+        ).scalar()
+        if result != 1:
+            raise DeviceCommandError(
+                f"Device {normalized_device_id} is busy executing another command.",
+                status_code=409,
+            )
+        try:
+            yield
+        finally:
+            try:
+                db.session.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
+            except Exception:
+                pass
+        return
+
+    lock = _local_device_command_lock(normalized_device_id)
+    acquired = lock.acquire(timeout=timeout_seconds)
+    if not acquired:
+        raise DeviceCommandError(
+            f"Device {normalized_device_id} is busy executing another command.",
+            status_code=409,
+        )
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
@@ -152,6 +238,14 @@ def _fail_command(command: ControlCommand, *, status: str, message: str, connect
     if binding is not None:
         db.session.expire(binding, ["is_online"])
 
+    _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
+
+
+def _fail_command_without_connection_health(command: ControlCommand, *, status: str, message: str) -> None:
+    finished_at = _now_utc()
+    command.status = status
+    command.error_message = message
+    command.finished_at = finished_at
     _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
 
 
@@ -425,18 +519,22 @@ def execute_device_command(
     sent_at = _now_utc()
 
     try:
-        if driver.uses_transport:
-            assert transport_config is not None
-            with TcpSocketTransport(transport_config) as transport:
+        with _device_command_lock(device.device_id):
+            if driver.uses_transport:
+                assert transport_config is not None
+                with TcpSocketTransport(transport_config) as transport:
+                    command.status = "sent"
+                    command.sent_at = sent_at
+                    _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
+                    result = driver.execute(transport=transport, request=request)
+            else:
                 command.status = "sent"
                 command.sent_at = sent_at
                 _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
-                result = driver.execute(transport=transport, request=request)
-        else:
-            command.status = "sent"
-            command.sent_at = sent_at
-            _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
-            result = driver.execute(transport=None, request=request)
+                result = driver.execute(transport=None, request=request)
+    except DeviceCommandError as exc:
+        _fail_command_without_connection_health(command, status="failed", message=str(exc))
+        raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=exc.details) from exc
     except socket.timeout as exc:
         _fail_command(command, status="timeout", message=str(exc), connection=connection, binding=binding)
         raise DeviceCommandError("Timed out while waiting for a device response.", status_code=504, command=command) from exc

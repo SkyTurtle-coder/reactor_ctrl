@@ -102,6 +102,27 @@ class HuberUnistatDriverTests(unittest.TestCase):
             [b"{M0A****\r\n", b"{M05****\r\n", b"{M06****\r\n", b"{M140001\r\n"],
         )
 
+    def test_get_status_skips_stale_mismatched_response(self):
+        transport = _FakeTransport([b"{S000A92\r\n", b"{S0A0001\r\n"])
+        result = HuberUnistatDriver().execute(
+            transport=transport,
+            request=DeviceCommandRequest(command_name="get_status", payload={}),
+        )
+
+        self.assertEqual(transport.sent, [b"{M0A****\r\n"])
+        self.assertEqual(result.metadata["value"]["raw"], 1)
+        self.assertTrue(result.metadata["value"]["temperature_control_active"])
+
+    def test_get_status_skips_stale_mismatched_response_in_same_read(self):
+        transport = _FakeTransport([b"{S000A92\r\n{S0A0001\r\n"])
+        result = HuberUnistatDriver().execute(
+            transport=transport,
+            request=DeviceCommandRequest(command_name="get_status", payload={}),
+        )
+
+        self.assertEqual(transport.sent, [b"{M0A****\r\n"])
+        self.assertEqual(result.metadata["value"]["raw"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
