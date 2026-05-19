@@ -454,6 +454,32 @@ def _build_target_lookup(item: ReactorBuild | None) -> dict[str, dict[str, Any]]
                 connection_lookup.pop(connection_key, None)
                 ambiguous_connection_keys.add(connection_key)
 
+    # Expunge DeviceConnection and DeviceServer objects now that all needed
+    # metadata has been read above.  The background device runtime updates
+    # last_seen_at / last_error / updated_at on these rows via raw SQL
+    # concurrently.  Leaving the ORM objects in the session risks a stale-value
+    # flush that races with those writes and triggers MySQL error 1020
+    # ("Record has changed since last read").
+    _expunged_server_ids: set[int] = set()
+    for device in devices:
+        binding = device.current_binding
+        if binding is None:
+            continue
+        connection = binding.connection
+        if connection is None:
+            continue
+        server = connection.device_server
+        if server is not None and server.device_server_id not in _expunged_server_ids:
+            try:
+                db.session.expunge(server)
+                _expunged_server_ids.add(server.device_server_id)
+            except Exception:
+                pass
+        try:
+            db.session.expunge(connection)
+        except Exception:
+            pass
+
     targets: dict[str, dict[str, Any]] = {}
     for raw_node in allowed_nodes:
         instance_id = str(raw_node.get("instance_id") or "").strip()
