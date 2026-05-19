@@ -64,6 +64,14 @@ class _FakeSessionForClaim:
         self.rollback_calls += 1
 
 
+class _FakeSessionForRetry:
+    def __init__(self):
+        self.rollback_calls = 0
+
+    def rollback(self):
+        self.rollback_calls += 1
+
+
 class DeviceManualRuntimeTests(unittest.TestCase):
     def test_manual_state_to_dict_normalizes_naive_datetimes_to_utc(self):
         naive = datetime(2026, 4, 13, 15, 20, 53, 123000)
@@ -118,7 +126,7 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         self.assertEqual(state.queue_status, "idle")
         self.assertIsNone(state.lease_owner)
         self.assertIsNone(state.lease_expires_at)
-        self.assertEqual(fake_session.commit_calls, 1)
+        self.assertEqual(fake_session.commit_calls, 2)
 
     def test_claim_next_device_id_retries_after_mysql_record_changed(self):
         app = Flask(__name__)
@@ -135,6 +143,26 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         self.assertEqual(claimed, 3)
         self.assertEqual(fake_session.rollback_calls, 1)
         self.assertEqual(fake_session.commit_calls, 1)
+
+    def test_transient_db_retry_handles_mysql_record_changed(self):
+        original = Exception(1020, "Record has changed since last read in table 'device_manual_state'")
+        conflict_error = OperationalError("UPDATE device_manual_state ...", {}, original)
+        fake_session = _FakeSessionForRetry()
+        calls = {"count": 0}
+
+        def operation():
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise conflict_error
+            return "ok"
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime.time, "sleep"):
+                result = device_manual_runtime._run_with_transient_db_retry(operation)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(fake_session.rollback_calls, 1)
 
 
 class ParseIkaNumericResponseTests(unittest.TestCase):

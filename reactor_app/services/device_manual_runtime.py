@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -19,6 +20,8 @@ _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
 _DEVICE_DISCOVERY_INTERVAL_SECONDS = 60  # how often to scan for newly active supported devices
 _RECIPE_PROGRAM_STATE_ID = 1
 _RECIPE_PROGRAM_RUNNING_STATUS = "running"
+_TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
+_DUPLICATE_KEY_ERROR_CODES = {1062}
 
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle. channel_code values are part of the
@@ -64,8 +67,50 @@ def _mysql_error_code(exc: OperationalError) -> int | None:
         return None
 
 
-def _is_mysql_record_changed_error(exc: OperationalError) -> bool:
-    return _mysql_error_code(exc) == 1020
+def _mysql_integrity_error_code(exc: IntegrityError) -> int | None:
+    original = getattr(exc, "orig", None)
+    args = getattr(original, "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_transient_mysql_error(exc: OperationalError) -> bool:
+    return _mysql_error_code(exc) in _TRANSIENT_MYSQL_ERROR_CODES
+
+
+def _is_duplicate_key_error(exc: IntegrityError) -> bool:
+    code = _mysql_integrity_error_code(exc)
+    if code in _DUPLICATE_KEY_ERROR_CODES:
+        return True
+    message = str(getattr(exc, "orig", exc))
+    return "UNIQUE constraint failed" in message or "Duplicate entry" in message
+
+
+def _run_with_transient_db_retry(
+    operation,
+    *,
+    attempts: int = 3,
+    retry_duplicate_key: bool = False,
+):
+    max_attempts = max(1, int(attempts))
+    for attempt_index in range(max_attempts):
+        try:
+            return operation()
+        except OperationalError as exc:
+            db.session.rollback()
+            if not _is_transient_mysql_error(exc) or attempt_index >= max_attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt_index + 1))
+        except IntegrityError as exc:
+            db.session.rollback()
+            if not retry_duplicate_key or not _is_duplicate_key_error(exc) or attempt_index >= max_attempts - 1:
+                raise
+            time.sleep(0.05 * (attempt_index + 1))
+    raise RuntimeError("Transient database retry exhausted unexpectedly.")
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -366,6 +411,21 @@ def _ensure_manual_state(device: Device) -> DeviceManualState:
     return state
 
 
+def _ensure_manual_state_row(device_id: int) -> None:
+    state = db.session.get(DeviceManualState, device_id)
+    if state is not None:
+        return
+    db.session.add(
+        DeviceManualState(
+            device_id=device_id,
+            queue_status="idle",
+            desired_version=0,
+            applied_version=0,
+        )
+    )
+    db.session.flush()
+
+
 def _telemetry_to_snapshot(state: DeviceManualState) -> dict[str, Any]:
     return {
         "is_on": bool(state.reported_is_on) if state.reported_is_on is not None else None,
@@ -406,16 +466,45 @@ def ensure_manual_state_snapshot(
     watch: bool,
     refresh: bool,
 ) -> DeviceManualState:
-    state = _ensure_manual_state(device)
-    now = _now_utc()
-    if watch:
-        state.watch_expires_at = now + _manual_watch_ttl(app)
-    if refresh or state.last_reported_at is None:
-        state.next_poll_at = now
-        if state.queue_status != "running":
-            state.queue_status = "queued"
-    db.session.flush()
-    return state
+    device_id = int(device.device_id)
+
+    def operation() -> DeviceManualState:
+        _ensure_manual_state_row(device_id)
+        now = _now_utc()
+        values: dict[Any, Any] = {}
+        if watch:
+            values[DeviceManualState.watch_expires_at] = now + _manual_watch_ttl(app)
+        if refresh:
+            values[DeviceManualState.next_poll_at] = now
+            values[DeviceManualState.queue_status] = case(
+                (DeviceManualState.queue_status != "running", "queued"),
+                else_=DeviceManualState.queue_status,
+            )
+        else:
+            values[DeviceManualState.next_poll_at] = case(
+                (DeviceManualState.last_reported_at.is_(None), now),
+                else_=DeviceManualState.next_poll_at,
+            )
+            values[DeviceManualState.queue_status] = case(
+                (
+                    and_(
+                        DeviceManualState.last_reported_at.is_(None),
+                        DeviceManualState.queue_status != "running",
+                    ),
+                    "queued",
+                ),
+                else_=DeviceManualState.queue_status,
+            )
+        if values:
+            db.session.query(DeviceManualState).filter_by(device_id=device_id).update(values, synchronize_session=False)
+        db.session.flush()
+        db.session.expire_all()
+        state = db.session.get(DeviceManualState, device_id)
+        if state is None:
+            raise RuntimeError(f"DeviceManualState for device {device_id} disappeared during snapshot update.")
+        return state
+
+    return _run_with_transient_db_retry(operation, retry_duplicate_key=True)
 
 
 def queue_manual_state_update(
@@ -426,31 +515,42 @@ def queue_manual_state_update(
     desired_speed: int,
     requested_by: str,
 ) -> DeviceManualState:
-    _ensure_manual_state(device)
-    # Re-fetch with FOR UPDATE so the reconciler cannot modify the row between
-    # our read and the flush, which would otherwise cause MariaDB error 1020.
-    # no_autoflush prevents pending ControlCommandEvent objects from being
-    # flushed here before their parent ControlCommand INSERT has run.
-    with db.session.no_autoflush:
-        state = (
+    device_id = int(device.device_id)
+
+    def operation() -> DeviceManualState:
+        _ensure_manual_state_row(device_id)
+        now = _now_utc()
+        updated = (
             db.session.query(DeviceManualState)
-            .filter_by(device_id=device.device_id)
-            .with_for_update()
-            .one()
+            .filter_by(device_id=device_id)
+            .update(
+                {
+                    DeviceManualState.desired_is_on: bool(desired_is_on),
+                    DeviceManualState.desired_speed: int(desired_speed),
+                    DeviceManualState.desired_version: DeviceManualState.desired_version + 1,
+                    DeviceManualState.requested_by: requested_by,
+                    DeviceManualState.last_desired_at: now,
+                    DeviceManualState.watch_expires_at: now + _manual_watch_ttl(app),
+                    DeviceManualState.next_poll_at: now,
+                    DeviceManualState.queue_status: case(
+                        (DeviceManualState.queue_status != "running", "queued"),
+                        else_=DeviceManualState.queue_status,
+                    ),
+                    DeviceManualState.last_error: None,
+                },
+                synchronize_session=False,
+            )
         )
-    now = _now_utc()
-    state.desired_is_on = bool(desired_is_on)
-    state.desired_speed = int(desired_speed)
-    state.desired_version = int(state.desired_version or 0) + 1
-    state.requested_by = requested_by
-    state.last_desired_at = now
-    state.watch_expires_at = now + _manual_watch_ttl(app)
-    state.next_poll_at = now
-    if state.queue_status != "running":
-        state.queue_status = "queued"
-    state.last_error = None
-    db.session.flush()
-    return state
+        if not updated:
+            raise RuntimeError(f"DeviceManualState for device {device_id} could not be queued.")
+        db.session.flush()
+        db.session.expire_all()
+        state = db.session.get(DeviceManualState, device_id)
+        if state is None:
+            raise RuntimeError(f"DeviceManualState for device {device_id} disappeared during queue update.")
+        return state
+
+    return _run_with_transient_db_retry(operation, retry_duplicate_key=True)
 
 
 def wait_for_manual_state_refresh(
@@ -846,6 +946,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         _release_manual_state_lease(state, status="error")
         db.session.commit()
         return
+    is_huber = _is_huber_device(device)
 
     if not desired_pending and not poll_due:
         _release_manual_state_lease(state, status="idle")
@@ -853,8 +954,14 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         return
 
     processed_version = int(state.desired_version or 0)
+    desired_snapshot = SimpleNamespace(
+        desired_is_on=state.desired_is_on,
+        desired_speed=state.desired_speed,
+    )
+    db.session.commit()
+
     try:
-        if _is_huber_device(device):
+        if is_huber:
             if desired_pending:
                 raise RuntimeError("Queued manual-state writes are not supported for Huber devices.")
             telemetry = _read_huber_status(device)
@@ -875,7 +982,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
             return
 
         if desired_pending:
-            _apply_desired_ika_state(device, state)
+            _apply_desired_ika_state(device, desired_snapshot)
 
         telemetry = _read_ika_status(device)
         state = db.session.get(DeviceManualState, device_id)
@@ -1009,7 +1116,8 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
             db.session.commit()
         except OperationalError as exc:
             db.session.rollback()
-            if _is_mysql_record_changed_error(exc):
+            if _is_transient_mysql_error(exc):
+                time.sleep(0.05)
                 continue
             raise
         if claimed:

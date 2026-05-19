@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import socket
 import threading
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import inspect as sa_inspect, text
 
 from ..extensions import db
-import logging
 from ..models import ControlCommand, ControlCommandEvent, Device, Measurement, MeasurementChannel
 from .drivers import DeviceCommandRequest, DeviceCommandResult, DriverError, DriverNotFoundError, DriverValidationError, get_driver
 from .transports import TcpSocketConfig, TcpSocketTransport
@@ -87,6 +87,14 @@ def describe_device_command_error(exc: DeviceCommandError) -> str:
     return f"{prefix}: {base_message}"
 
 
+def _db_dialect_name() -> str:
+    try:
+        bind = db.session.get_bind()
+    except Exception:
+        return ""
+    return str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
+
+
 def _local_device_command_lock(device_id: int) -> threading.RLock:
     normalized_device_id = int(device_id)
     with _DEVICE_COMMAND_LOCKS_GUARD:
@@ -101,6 +109,32 @@ def _local_device_command_lock(device_id: int) -> threading.RLock:
 def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS):
     normalized_device_id = int(device_id)
     timeout_seconds = max(1, int(round(float(timeout_s))))
+    dialect_name = _db_dialect_name()
+
+    if dialect_name in {"mysql", "mariadb"}:
+        lock_name = f"reactor_ctrl:device_command:{normalized_device_id}"
+        result = db.session.execute(
+            text("SELECT GET_LOCK(:lock_name, :timeout_s)"),
+            {"lock_name": lock_name, "timeout_s": timeout_seconds},
+        ).scalar()
+        if result != 1:
+            raise DeviceCommandError(
+                f"Device {normalized_device_id} is busy executing another command.",
+                status_code=409,
+            )
+        try:
+            yield
+        finally:
+            try:
+                db.session.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "Failed to release device command lock for device %s.",
+                    normalized_device_id,
+                    exc_info=True,
+                )
+        return
+
     lock = _local_device_command_lock(normalized_device_id)
     acquired = lock.acquire(timeout=timeout_seconds)
     if not acquired:
@@ -115,28 +149,32 @@ def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_L
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
-    command_id = command.command_id
-    if command_id is None:
+    logger = logging.getLogger(__name__)
+    try:
+        command_state = sa_inspect(command)
+        if command_state.detached:
+            raise RuntimeError("Cannot add command event: ControlCommand is detached from the active session.")
+        if command_state.transient:
+            db.session.add(command)
+
         db.session.flush([command])
         command_id = command.command_id
-    if command_id is None:
-        raise RuntimeError("Cannot add command event: ControlCommand has no command_id")
+        if command_id is None:
+            raise RuntimeError("Cannot add command event: ControlCommand has no command_id after flush.")
 
-    try:
-        db.session.add(
-            ControlCommandEvent(
-                command=command,
-                command_id=command_id,
-                event_type=event_type,
-                event_payload=event_payload,
-            )
+        event = ControlCommandEvent(
+            command=command,
+            command_id=command_id,
+            event_type=event_type,
+            event_payload=event_payload,
         )
+        db.session.add(event)
+        db.session.flush([event])
     except Exception as exc:
-        logger = logging.getLogger(__name__)
         request_uuid = getattr(command, "request_uuid", None)
         logger.exception(
             "Failed to add ControlCommandEvent(command_id=%s, request_uuid=%s): %s",
-            command_id,
+            getattr(command, "command_id", None),
             request_uuid,
             exc,
         )

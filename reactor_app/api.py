@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, verify_scoped_token
 from .actuator_profiles import get_default_profile_id, normalize_control_definition
@@ -514,6 +514,17 @@ def _get_or_404(model, pk: int, label: str):
     return item, None
 
 
+def _mysql_operational_error_code(exc: OperationalError) -> int | None:
+    original = getattr(exc, "orig", None)
+    args = getattr(original, "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
+
+
 def _commit() -> tuple[bool, Any]:
     try:
         db.session.commit()
@@ -521,6 +532,13 @@ def _commit() -> tuple[bool, Any]:
     except IntegrityError as exc:
         db.session.rollback()
         return False, _json_error("Database constraint violated.", 409, str(exc.orig))
+    except OperationalError as exc:
+        db.session.rollback()
+        if _mysql_operational_error_code(exc) in {1020, 1205, 1213}:
+            current_app.logger.warning("Transient database concurrency conflict during commit: %s", exc)
+            return False, _json_error("Database concurrency conflict. Please retry the operation.", 409, str(exc.orig))
+        current_app.logger.exception("Database commit failed.")
+        return False, _json_error("Database operation failed.", 500)
     except SQLAlchemyError:
         db.session.rollback()
         current_app.logger.exception("Database commit failed.")

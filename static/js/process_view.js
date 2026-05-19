@@ -2443,10 +2443,8 @@
         }
 
         try {
-            const [setpointValue, statusValue] = await Promise.all([
-                executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 }),
-                executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 }),
-            ]);
+            const setpointValue = await executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 });
+            const statusValue = await executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 });
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
             }
