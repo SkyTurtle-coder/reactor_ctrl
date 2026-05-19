@@ -86,14 +86,6 @@ def describe_device_command_error(exc: DeviceCommandError) -> str:
     return f"{prefix}: {base_message}"
 
 
-def _db_dialect_name() -> str:
-    try:
-        bind = db.session.get_bind()
-    except Exception:
-        return ""
-    return str(getattr(getattr(bind, "dialect", None), "name", "") or "").lower()
-
-
 def _local_device_command_lock(device_id: int) -> threading.RLock:
     normalized_device_id = int(device_id)
     with _DEVICE_COMMAND_LOCKS_GUARD:
@@ -108,28 +100,6 @@ def _local_device_command_lock(device_id: int) -> threading.RLock:
 def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS):
     normalized_device_id = int(device_id)
     timeout_seconds = max(1, int(round(float(timeout_s))))
-    dialect_name = _db_dialect_name()
-
-    if dialect_name in {"mysql", "mariadb"}:
-        lock_name = f"reactor_ctrl:device_command:{normalized_device_id}"
-        result = db.session.execute(
-            text("SELECT GET_LOCK(:lock_name, :timeout_s)"),
-            {"lock_name": lock_name, "timeout_s": timeout_seconds},
-        ).scalar()
-        if result != 1:
-            raise DeviceCommandError(
-                f"Device {normalized_device_id} is busy executing another command.",
-                status_code=409,
-            )
-        try:
-            yield
-        finally:
-            try:
-                db.session.execute(text("SELECT RELEASE_LOCK(:lock_name)"), {"lock_name": lock_name})
-            except Exception:
-                pass
-        return
-
     lock = _local_device_command_lock(normalized_device_id)
     acquired = lock.acquire(timeout=timeout_seconds)
     if not acquired:
@@ -144,16 +114,13 @@ def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_L
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
-    if command.command_id is None:
-        db.session.add(command)
-        db.session.flush()
-    event = ControlCommandEvent(
-        command_id=command.command_id,
-        event_type=event_type,
-        event_payload=event_payload,
+    db.session.add(
+        ControlCommandEvent(
+            command=command,
+            event_type=event_type,
+            event_payload=event_payload,
+        )
     )
-    db.session.add(event)
-    db.session.flush()
 
 
 def _mark_connection_success(connection_id: int, *, timestamp: datetime) -> None:

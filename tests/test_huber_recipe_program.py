@@ -252,7 +252,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertIn("Huber CC230", message)
         self.assertIn("390180", message)
         self.assertIn("Keine Antwort", message)
-        self.assertEqual(fake_session.commit_calls, 1)
+        self.assertEqual(fake_session.commit_calls, 0)
 
     def test_huber_current_target_respects_stop_before_start_command(self):
         app = Flask(__name__)

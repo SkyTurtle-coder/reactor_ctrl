@@ -76,7 +76,7 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertIn("WHERE device_id=:did AND connection_id=:cid", binding_sql)
         self.assertEqual(binding_params, {"did": 7, "cid": 3})
 
-    def test_add_command_event_flushes_parent_command_before_child_event(self):
+    def test_add_command_event_uses_orm_relationship_without_flush(self):
         session = _FakeCommandEventSession()
         command = ControlCommand(
             device_id=7,
@@ -90,16 +90,8 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
             device_runtime._add_command_event(command, "queued", {"requested_by": "test"})
 
         event = next(item for item in session.objects if isinstance(item, ControlCommandEvent))
-        self.assertEqual(event.command_id, 123)
-        self.assertEqual(
-            session.operations,
-            [
-                ("add_command", None),
-                ("flush", None),
-                ("add_event", 123),
-                ("flush", None),
-            ],
-        )
+        self.assertIs(event.command, command)
+        self.assertEqual(session.operations, [("add_event", None)])
 
     def test_describe_device_command_error_prefers_persisted_device_detail(self):
         command = ControlCommand(

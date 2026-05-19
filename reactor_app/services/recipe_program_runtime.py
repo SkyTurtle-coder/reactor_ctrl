@@ -1261,15 +1261,6 @@ def _execute_recipe_device_command(
             requested_by=requested_by,
         )
     except DeviceCommandError as exc:
-        if getattr(exc, "command", None) is not None:
-            try:
-                db.session.flush()
-                db.session.commit()
-            except Exception:
-                try:
-                    db.session.rollback()
-                except Exception:
-                    pass
         raise RecipeProgramDeviceCommandError(
             _device_command_failure_message(
                 exc,

@@ -2482,7 +2482,9 @@
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
             }
-            setManualStatus(error?.message || "Current thermostat state could not be loaded.", "error");
+            if (!settings.skipStatus) {
+                setManualStatus(error?.message || "Current thermostat state could not be loaded.", "error");
+            }
         } finally {
             if (requestId === state.manualRequestId && state.selectedNodeId === nodeId) {
                 state.isManualBusy = false;
@@ -3050,6 +3052,10 @@
         }
         const node = getNodeById(nodeId);
         const target = selectedTarget();
+        if (isHuberThermostatTarget(node, target) && target?.device_id) {
+            void loadManualStateSnapshot(nodeId, { quiet: true, skipStatus: true });
+            return;
+        }
         if (!canLoadIkaSettings(node, target)) {
             return;
         }
