@@ -631,6 +631,25 @@
         return `<div class="recipe-priority-warning">Duplicate priority ${escapeHtml(duplicates.join(", "))}. Equal priorities run in table order.</div>`;
     }
 
+    function makeActorInlineBlock(ref, index, disabled) {
+        const actorId = actorIdForRef(ref);
+        const activeFields = targetFieldsForActor(actorId);
+        const hasStatus = statusSupportedForActor(actorId);
+        let html = `<div class="recipe-actor-inline">`;
+        html += actorDisplayHtml(ref);
+        html += `<span class="recipe-actor-inline-controls">`;
+        html += `<span class="recipe-priority-cell">${makePriorityInput(ref, index, disabled)}</span>`;
+        if (hasStatus) {
+            html += `<span class="recipe-status-cell">${makeActorStatusSelect(ref, index, disabled)}</span>`;
+        }
+        for (const field of activeFields) {
+            html += `<span class="recipe-param-cell">${makeActorParamInput(ref, field, index, disabled)}</span>`;
+        }
+        html += `<button type="button" class="recipe-actor-remove" data-row="${index}" data-actor="${escapeHtml(actorId)}" title="Remove actor"${disabled ? " disabled" : ""}>×</button>`;
+        html += `</span></div>`;
+        return html;
+    }
+
     function renderTable() {
         if (!dom.tableBody) {
             return;
@@ -643,45 +662,35 @@
             const step = state.steps[index];
             const actorRequired = Boolean(state.reactorBuildId) && !stepActorsValid(step);
             const refs = sortedActorRefsForStep(step);
-            const visibleActorRows = Math.max(refs.length, 1);
-            const rowSpan = visibleActorRows + 1;
 
-            for (let actorIndex = 0; actorIndex < visibleActorRows; actorIndex += 1) {
-                const ref = refs[actorIndex] || null;
-                html += `<tr class="${actorIndex === 0 ? "recipe-step-start-row" : "recipe-actor-subrow"}" data-row="${index}">`;
-                if (actorIndex === 0) {
-                    html += `<td class="recipe-num-cell recipe-step-cell" rowspan="${rowSpan}"><span>${index + 1}</span><button class="btn recipe-del-btn" data-del="${index}" type="button" title="Delete step"${controlsDisabled ? " disabled" : ""}>X</button></td>`;
-                    html += `<td class="recipe-step-cell" rowspan="${rowSpan}">${makeTextInput(step.task, "task", index, false, "", controlsDisabled)}</td>`;
-                    html += `<td class="recipe-step-cell" rowspan="${rowSpan}">${makeStepNumericInput(step.delta_time, "delta_time", index, false, controlsDisabled)}</td>`;
-                }
-                if (ref) {
-                    html += `<td class="recipe-actor-cell${actorRequired ? " recipe-cell-required" : ""}">${actorDisplayHtml(ref)}</td>`;
-                    html += `<td class="recipe-priority-cell">${makePriorityInput(ref, index, controlsDisabled)}</td>`;
-                    html += `<td class="recipe-status-cell">${makeActorStatusSelect(ref, index, controlsDisabled)}</td>`;
-                    html += `<td class="recipe-param-cell">${makeActorParamInput(ref, "target_temp_c", index, controlsDisabled)}</td>`;
-                    html += `<td class="recipe-param-cell">${makeActorParamInput(ref, "pressure_mbar_a", index, controlsDisabled)}</td>`;
-                    html += `<td class="recipe-param-cell">${makeActorParamInput(ref, "rpm", index, controlsDisabled)}</td>`;
-                    html += `<td class="recipe-action-cell"><button type="button" class="recipe-actor-remove" data-row="${index}" data-actor="${escapeHtml(actorIdForRef(ref))}" title="Remove actor"${controlsDisabled ? " disabled" : ""}>x</button></td>`;
-                } else {
-                    html += `<td class="recipe-actor-cell recipe-cell-required"><span class="recipe-actor-placeholder">No actor selected</span></td>`;
-                    html += '<td class="recipe-muted-cell recipe-priority-cell">-</td><td class="recipe-muted-cell recipe-status-cell">-</td><td class="recipe-muted-cell recipe-param-cell">-</td><td class="recipe-muted-cell recipe-param-cell">-</td><td class="recipe-muted-cell recipe-param-cell">-</td><td class="recipe-action-cell"></td>';
-                }
-                html += "</tr>";
+            html += `<tr class="recipe-step-row" data-row="${index}">`;
+            html += `<td class="recipe-num-cell recipe-step-cell">`;
+            html += `<span>${index + 1}</span>`;
+            html += `<button class="btn recipe-del-btn" data-del="${index}" type="button" title="Delete step"${controlsDisabled ? " disabled" : ""}>×</button>`;
+            html += `</td>`;
+            html += `<td class="recipe-step-cell recipe-task-cell">${makeTextInput(step.task, "task", index, false, "", controlsDisabled)}</td>`;
+            html += `<td class="recipe-step-cell recipe-delta-cell">${makeStepNumericInput(step.delta_time, "delta_time", index, false, controlsDisabled)}</td>`;
+            html += `<td class="recipe-actors-combined-cell${actorRequired ? " recipe-cell-required" : ""}">`;
+            for (const ref of refs) {
+                html += makeActorInlineBlock(ref, index, controlsDisabled);
             }
-
-            html += `<tr class="recipe-add-actor-row" data-row="${index}">`;
-            html += `<td colspan="7">${makeActorPicker(step, index, false, controlsDisabled)}${duplicatePriorityWarningHtml(step)}</td>`;
-            html += "</tr>";
+            if (!refs.length) {
+                html += `<div class="recipe-actor-placeholder-row"><span class="recipe-actor-placeholder">No actor selected</span></div>`;
+            }
+            html += makeActorPicker(step, index, false, controlsDisabled);
+            html += duplicatePriorityWarningHtml(step);
+            html += `</td>`;
+            html += `</tr>`;
         }
 
         const emptyRowIndex = state.steps.length;
         const emptyDraftStep = emptyStep();
         html += `<tr class="recipe-empty-row" data-row="${emptyRowIndex}">`;
-        html += '<td class="recipe-num-cell recipe-num-cell-empty">.</td>';
+        html += `<td class="recipe-num-cell recipe-num-cell-empty">+</td>`;
         html += `<td>${makeTextInput("", "task", emptyRowIndex, true, "Click to add step...", controlsDisabled)}</td>`;
         html += `<td>${makeStepNumericInput("", "delta_time", emptyRowIndex, true, controlsDisabled)}</td>`;
-        html += `<td colspan="7">${makeActorPicker(emptyDraftStep, emptyRowIndex, true, controlsDisabled)}</td>`;
-        html += "</tr>";
+        html += `<td>${makeActorPicker(emptyDraftStep, emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += `</tr>`;
 
         dom.tableBody.innerHTML = html;
         updateStepCount();

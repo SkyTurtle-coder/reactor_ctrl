@@ -2785,6 +2785,14 @@ html[data-theme="dark"] .recipe-add-actor-row td {
     background: rgba(253, 231, 14, 0.04);
 }
 
+html[data-theme="dark"] .recipe-table thead th {
+    background: var(--surface);
+}
+
+html[data-theme="dark"] .recipe-actor-inline {
+    border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
 html[data-theme="dark"] .recipe-cell-required {
     background: rgba(240, 143, 132, 0.12);
 }
@@ -3104,12 +3112,17 @@ html[data-theme="dark"] textarea {
 .recipe-steps-scroll {
     width: 100%;
     overflow-x: auto;
+    overflow-y: auto;
+    /* Bounded height so the table scrolls inside the card without needing to
+       scroll the whole page first. */
+    max-height: clamp(320px, calc(100dvh - 370px), 9999px);
     scrollbar-gutter: stable both-edges;
 }
 
 .recipe-table {
-    min-width: 1280px;
-    table-layout: fixed;
+    min-width: 560px;
+    width: 100%;
+    table-layout: auto;
 }
 
 .recipe-table th,
@@ -3118,40 +3131,33 @@ html[data-theme="dark"] textarea {
     vertical-align: middle;
 }
 
+/* Sticky column header so labels stay visible while scrolling */
+.recipe-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--surface);
+    box-shadow: 0 1px 0 var(--border);
+}
+
 .recipe-col-num {
-    width: 4.25rem;
+    width: 3.6rem;
     text-align: center;
-}
-
-.recipe-col-task {
-    width: 15rem;
-}
-
-.recipe-col-actor {
-    width: 18rem;
-}
-
-.recipe-col-priority {
-    width: 4.75rem;
-    text-align: center;
-}
-
-.recipe-col-status {
-    width: 7.4rem;
-    text-align: center;
-}
-
-.recipe-col-num-val {
-    width: 7.4rem;
     white-space: nowrap;
 }
 
-.recipe-col-pressure {
-    width: 8.6rem;
+.recipe-col-task {
+    width: 14rem;
+    min-width: 8rem;
 }
 
-.recipe-col-del {
-    width: 3.4rem;
+.recipe-col-delta {
+    width: 5.5rem;
+    white-space: nowrap;
+}
+
+.recipe-col-actors {
+    width: auto;
 }
 
 .recipe-num-cell {
@@ -3175,35 +3181,54 @@ html[data-theme="dark"] textarea {
     margin-top: 0.35rem;
 }
 
-.recipe-actor-subrow td {
-    border-top-color: rgba(0, 0, 0, 0.05);
-}
-
-.recipe-add-actor-row td {
-    padding: 0.62rem 0.58rem 0.76rem;
-    background: rgba(248, 242, 232, 0.2);
+.recipe-actors-combined-cell {
     vertical-align: top;
+    min-width: 280px;
 }
 
-.recipe-actor-cell,
+/* Inline actor row within the combined actors cell */
+.recipe-actor-inline {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.7rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.recipe-actor-inline:last-of-type {
+    border-bottom: none;
+}
+
+.recipe-actor-inline-controls {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.recipe-actor-inline .recipe-priority-input {
+    width: 3.5rem;
+}
+
+.recipe-actor-inline .recipe-num-input {
+    width: 7rem;
+}
+
+.recipe-actor-inline .recipe-status-select {
+    width: auto;
+}
+
+.recipe-actor-placeholder-row {
+    padding: 0.3rem 0;
+}
+
+/* Keep these for JS inline usage (span wrappers inside makeActorInlineBlock) */
 .recipe-param-cell,
-.recipe-status-cell,
 .recipe-priority-cell,
+.recipe-status-cell,
 .recipe-action-cell {
     min-width: 0;
-}
-
-.recipe-param-cell,
-.recipe-priority-cell,
-.recipe-status-cell,
-.recipe-action-cell,
-.recipe-muted-cell {
-    text-align: center;
-}
-
-.recipe-param-cell .recipe-num-input {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
 }
 
 .recipe-num-cell-empty {
