@@ -80,8 +80,17 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
                 protocol="generic_text",
             )
             db.session.add(device)
+            second_device = Device(
+                asset_serial="TEST-DEVICE-002",
+                manufacturer_serial="SN-002",
+                display_name="Second Sensor",
+                device_type="sensor",
+                protocol="generic_text",
+            )
+            db.session.add(second_device)
             db.session.commit()
             cls.device_id = device.device_id
+            cls.second_device_id = second_device.device_id
 
     @classmethod
     def tearDownClass(cls):
@@ -105,11 +114,18 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
             Measurement.query.delete()
             db.session.commit()
 
-    def _insert_measurement_at(self, *, measured_at: datetime, value: float, channel_code: str = "temp") -> None:
+    def _insert_measurement_at(
+        self,
+        *,
+        measured_at: datetime,
+        value: float,
+        channel_code: str = "temp",
+        device_id: int | None = None,
+    ) -> None:
         with self.app.app_context():
             db.session.add(
                 Measurement(
-                    device_id=self.device_id,
+                    device_id=device_id or self.device_id,
                     channel_code=channel_code,
                     measured_at=measured_at,
                     numeric_value=value,
@@ -225,6 +241,58 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("window_end", response.get_json()["error"])
+
+    def test_live_plot_series_endpoint_batches_multiple_devices_with_shared_window(self):
+        window_end = datetime(2026, 5, 20, 13, 0, 0, tzinfo=timezone.utc)
+        self._insert_measurement_at(
+            measured_at=window_end - timedelta(seconds=30),
+            value=101.0,
+            channel_code="rpm",
+            device_id=self.device_id,
+        )
+        self._insert_measurement_at(
+            measured_at=window_end - timedelta(seconds=20),
+            value=25.5,
+            channel_code="temp",
+            device_id=self.second_device_id,
+        )
+        self._insert_measurement_at(
+            measured_at=window_end + timedelta(seconds=1),
+            value=999.0,
+            channel_code="temp",
+            device_id=self.second_device_id,
+        )
+
+        response = self.client.get(
+            "/api/plot-series/live",
+            query_string=[
+                ("series", f"{self.device_id}:rpm"),
+                ("series", f"{self.second_device_id}:temp"),
+                ("since_minutes", "5"),
+                ("max_points", "120"),
+                ("window_end", window_end.isoformat()),
+                ("cache_seconds", "1"),
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        self.assertEqual(payload["window_start"], (window_end - timedelta(minutes=5)).isoformat())
+        self.assertEqual(payload["window_end"], window_end.isoformat())
+        self.assertEqual(payload["cache_seconds"], 1.0)
+        self.assertFalse(payload["cache_hit"])
+        self.assertEqual(len(payload["series"]), 2)
+        self.assertEqual(payload["series"][0]["device_id"], self.device_id)
+        self.assertEqual(payload["series"][0]["channel_code"], "rpm")
+        self.assertEqual(payload["series"][0]["items"][0]["numeric_value"], 101.0)
+        self.assertEqual(payload["series"][1]["device_id"], self.second_device_id)
+        self.assertEqual(payload["series"][1]["channel_code"], "temp")
+        self.assertEqual([item["numeric_value"] for item in payload["series"][1]["items"]], [25.5])
+
+    def test_live_plot_series_endpoint_rejects_missing_series(self):
+        response = self.client.get("/api/plot-series/live?since_minutes=5&max_points=20")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("series", response.get_json()["error"])
 
     def test_plot_series_endpoint_rejects_missing_channel_code(self):
         response = self.client.get(

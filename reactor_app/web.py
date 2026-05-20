@@ -285,6 +285,7 @@ def _resolve_process_device_targets(
             "is_online": False,
             "quality_state": "",
             "last_seen_at": None,
+            "port_number": None,
             "channels": [],
         }
 
@@ -353,6 +354,7 @@ def _resolve_process_device_targets(
                     if connection is not None
                     else connection_label
                 ),
+                "port_number": connection.port_number if connection is not None else None,
                 "protocol": resolved_protocol,
                 "is_resolved": True,
                 "device_id": device.device_id,

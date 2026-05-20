@@ -64,7 +64,9 @@
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
-    const PROCESS_PLOT_REFRESH_MS = 5000;
+    const PROCESS_PLOT_REFRESH_MS = 1000;
+    const PROCESS_PLOT_ERROR_BACKOFF_MS = 5000;
+    const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;
     const PROCESS_PLOT_STALE_AFTER_MS = 60000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
@@ -111,6 +113,20 @@
     function asString(value, fallback) {
         const text = String(value ?? "").trim();
         return text || fallback;
+    }
+
+    function portNumberFromTarget(target) {
+        const directPort = Number(target?.port_number);
+        if (Number.isInteger(directPort) && directPort > 0) {
+            return directPort;
+        }
+        const label = asString(target?.connection_label, "");
+        const match = label.match(/\bport\s*(\d+)\b/i);
+        if (!match) {
+            return null;
+        }
+        const parsedPort = Number(match[1]);
+        return Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : null;
     }
 
     function normalizePlotRangeId(value) {
@@ -1115,6 +1131,10 @@
                     nodeLabel: asString(target?.instance_id, asString(target?.label, nodeId)),
                     nodeSubtitle: asString(target?.label, asString(target?.symbol_id, "Element")),
                     category: asString(target?.category, ""),
+                    isResolved: Boolean(target?.is_resolved),
+                    isOnline: Boolean(target?.is_online),
+                    qualityState: asString(target?.quality_state, ""),
+                    portNumber: portNumberFromTarget(target),
                     deviceId,
                     deviceDisplayName: asString(target?.device_display_name, `Device ${deviceId}`),
                     channelCode,
@@ -1130,6 +1150,11 @@
             const byCategory = left.category.localeCompare(right.category);
             if (byCategory !== 0) {
                 return byCategory;
+            }
+            const leftPort = Number.isInteger(left.portNumber) ? left.portNumber : 9999;
+            const rightPort = Number.isInteger(right.portNumber) ? right.portNumber : 9999;
+            if (leftPort !== rightPort) {
+                return leftPort - rightPort;
             }
             const byNode = left.nodeLabel.localeCompare(right.nodeLabel);
             if (byNode !== 0) {
@@ -1194,6 +1219,23 @@
     function selectedPlotSeriesOptions() {
         syncSelectedPlotSeriesIds();
         return state.selectedPlotSeriesIds.map((item) => plotSeriesOptionMap.get(item)).filter(Boolean);
+    }
+
+    function defaultLivePlotSeriesIds() {
+        return plotSeriesOptions
+            .filter((option) => option.isResolved && option.isOnline)
+            .sort((left, right) => {
+                const leftPort = Number.isInteger(left.portNumber) ? left.portNumber : 9999;
+                const rightPort = Number.isInteger(right.portNumber) ? right.portNumber : 9999;
+                if (leftPort !== rightPort) {
+                    return leftPort - rightPort;
+                }
+                if (left.deviceId !== right.deviceId) {
+                    return left.deviceId - right.deviceId;
+                }
+                return left.channelLabel.localeCompare(right.channelLabel);
+            })
+            .map((option) => option.id);
     }
 
     function updatePlotSelectionSummary() {
@@ -1291,7 +1333,8 @@
     }
 
     function normalizePlotWindow(payloads, requestedWindowEndIso, rangeOption) {
-        const firstPayload = (Array.isArray(payloads) ? payloads : []).find((payload) => payload?.window_start && payload?.window_end);
+        const payloadList = Array.isArray(payloads) ? payloads : (payloads ? [payloads] : []);
+        const firstPayload = payloadList.find((payload) => payload?.window_start && payload?.window_end);
         const requestedWindowEndMs = Date.parse(asString(requestedWindowEndIso, ""));
         const fallbackEndMs = Number.isFinite(requestedWindowEndMs) ? requestedWindowEndMs : Date.now();
         const fallbackStartMs = fallbackEndMs - (Number(rangeOption?.sinceMinutes) || 60) * 60000;
@@ -1687,6 +1730,10 @@
         plotChartStack.appendChild(fragment);
     }
 
+    function plotSeriesRequestKey(option) {
+        return `${option.deviceId}:${option.channelCode}`;
+    }
+
     async function loadPlotMeasurements(options) {
         const settings = options || {};
         if (!plotChartStack || !plotStatus) {
@@ -1722,48 +1769,45 @@
         }
 
         try {
-            const storedGroups = groupStoredPlotOptionsByDevice(selectedOptions);
-            const payloads = await Promise.all(
-                storedGroups.map((group) => {
-                    const params = new URLSearchParams();
-                    const seenChannelCodes = new Set();
-                    for (const option of group.options) {
-                        if (seenChannelCodes.has(option.channelCode)) {
-                            continue;
-                        }
-                        seenChannelCodes.add(option.channelCode);
-                        params.append("channel_code", option.channelCode);
-                    }
-                    params.set("since_minutes", String(rangeOption.sinceMinutes));
-                    params.set("max_points", String(rangeOption.maxPoints));
-                    params.set("window_end", requestedWindowEndIso);
-                    return fetchJson(
-                        `/api/devices/${group.deviceId}/plot-series?${params.toString()}`,
-                        { timeoutMs: 16000, maxRetries: 1 },
-                    );
-                }),
+            const params = new URLSearchParams();
+            const seenSeriesKeys = new Set();
+            for (const option of selectedOptions) {
+                const seriesKey = plotSeriesRequestKey(option);
+                if (seenSeriesKeys.has(seriesKey)) {
+                    continue;
+                }
+                seenSeriesKeys.add(seriesKey);
+                params.append("series", seriesKey);
+            }
+            params.set("since_minutes", String(rangeOption.sinceMinutes));
+            params.set("max_points", String(rangeOption.maxPoints));
+            params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));
+            const payload = await fetchJson(
+                `/api/plot-series/live?${params.toString()}`,
+                { timeoutMs: 5000, maxRetries: 1 },
             );
             if (requestId !== state.plotRequestId) {
                 return;
             }
 
-            const plotWindow = normalizePlotWindow(payloads, requestedWindowEndIso, rangeOption);
+            const plotWindow = normalizePlotWindow(payload, requestedWindowEndIso, rangeOption);
             const storedSeriesById = new Map();
-            storedGroups.forEach((group, index) => {
-                const payloadSeries = Array.isArray(payloads[index]?.series) ? payloads[index].series : [];
-                const payloadSeriesByCode = new Map(
-                    payloadSeries
-                        .map((series) => {
-                            const channelCode = asString(series?.channel_code, "");
-                            return channelCode ? [channelCode, series] : null;
-                        })
-                        .filter(Boolean),
-                );
-                for (const option of group.options) {
-                    const payloadSeriesItem = payloadSeriesByCode.get(option.channelCode) || { items: [] };
-                    storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem));
-                }
-            });
+            const payloadSeries = Array.isArray(payload?.series) ? payload.series : [];
+            const payloadSeriesByKey = new Map(
+                payloadSeries
+                    .map((series) => {
+                        const deviceId = Number(series?.device_id);
+                        const channelCode = asString(series?.channel_code, "");
+                        return Number.isInteger(deviceId) && deviceId > 0 && channelCode
+                            ? [`${deviceId}:${channelCode}`, series]
+                            : null;
+                    })
+                    .filter(Boolean),
+            );
+            for (const option of selectedOptions) {
+                const payloadSeriesItem = payloadSeriesByKey.get(plotSeriesRequestKey(option)) || { items: [] };
+                storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem));
+            }
             const storedSeries = selectedOptions.map(
                 (option) => storedSeriesById.get(option.id) || { ...option, points: [] },
             );
@@ -1785,10 +1829,12 @@
                     "muted",
                 );
             }
+            state.plotBackoffUntil = 0;
         } catch (error) {
             if (requestId !== state.plotRequestId) {
                 return;
             }
+            state.plotBackoffUntil = Date.now() + PROCESS_PLOT_ERROR_BACKOFF_MS;
             setPlotStatus(error?.message || "Plot data could not be loaded.", "error");
         } finally {
             if (requestId === state.plotRequestId) {
@@ -2962,11 +3008,13 @@
     const plotSeriesOptions = buildPlotSeriesOptions(plotTargetData);
     const plotSeriesOptionMap = new Map(plotSeriesOptions.map((option) => [option.id, option]));
     const plotNodeGroups = buildPlotNodeGroups(plotTargetData, plotSeriesOptions);
-    const restoredPlotSeriesIds = canRestorePersistedState && Array.isArray(persistedViewState?.selectedPlotSeriesIds)
+    const liveDefaultPlotSeriesIds = defaultLivePlotSeriesIds();
+    const persistedPlotSeriesIds = canRestorePersistedState && Array.isArray(persistedViewState?.selectedPlotSeriesIds)
         ? persistedViewState.selectedPlotSeriesIds
               .map((item) => asString(item, ""))
               .filter((item) => item && plotSeriesOptionMap.has(item))
         : [];
+    const restoredPlotSeriesIds = Array.from(new Set([...liveDefaultPlotSeriesIds, ...persistedPlotSeriesIds]));
     const restoredPlotRangeId = canRestorePersistedState
         ? normalizePlotRangeId(persistedViewState?.selectedPlotRangeId)
         : DEFAULT_PROCESS_PLOT_RANGE_ID;
@@ -2986,6 +3034,7 @@
         plotPanelOpen: restoredPlotPanelOpen,
         plotSeriesData: [],
         plotWindow: null,
+        plotBackoffUntil: 0,
         isPlotBusy: false,
         plotRequestId: 0,
         inputsDirtyForNodeId: null,
@@ -3268,7 +3317,13 @@
     }, MANUAL_LIVE_POLL_MS);
 
     window.setInterval(() => {
-        if (document.hidden || !plotPanel?.open || state.isPlotBusy || state.selectedPlotSeriesIds.length === 0) {
+        if (
+            document.hidden ||
+            !plotPanel?.open ||
+            state.isPlotBusy ||
+            state.selectedPlotSeriesIds.length === 0 ||
+            Date.now() < (state.plotBackoffUntil || 0)
+        ) {
             return;
         }
         void loadPlotMeasurements({ quiet: true });

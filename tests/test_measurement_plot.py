@@ -70,6 +70,83 @@ class MeasurementPlotServiceTests(unittest.TestCase):
         self.assertEqual(result["bucket_seconds"], 30)
         self.assertEqual(result["series"], [python_series["temp"]])
 
+    def test_batched_plot_window_loader_preserves_requested_order(self):
+        window_end = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+        batched_series = {
+            (2, "temp"): {
+                "device_id": 2,
+                "channel_code": "temp",
+                "unit": "C",
+                "latest_measurement_at": "2026-05-20T11:59:00+00:00",
+                "items": [{"measured_at": "2026-05-20T11:59:00+00:00", "numeric_value": 20.0, "unit": "C"}],
+            },
+            (1, "rpm"): {
+                "device_id": 1,
+                "channel_code": "rpm",
+                "unit": "rpm",
+                "latest_measurement_at": "2026-05-20T11:59:30+00:00",
+                "items": [{"measured_at": "2026-05-20T11:59:30+00:00", "numeric_value": 100.0, "unit": "rpm"}],
+            },
+        }
+
+        with patch.object(measurement_plot, "_db_dialect_name", return_value="sqlite"), patch.object(
+            measurement_plot,
+            "_load_batched_plot_series_python",
+            return_value=batched_series,
+        ) as python_loader:
+            result = measurement_plot.load_batched_device_plot_series_window(
+                series_specs=[
+                    {"device_id": 2, "channel_code": "temp"},
+                    {"device_id": 1, "channel_code": "rpm"},
+                ],
+                since_minutes=10,
+                max_points=60,
+                window_end=window_end,
+            )
+
+        python_loader.assert_called_once()
+        self.assertEqual(result["window_start"], (window_end - timedelta(minutes=10)).isoformat())
+        self.assertEqual(result["window_end"], window_end.isoformat())
+        self.assertEqual([item["device_id"] for item in result["series"]], [2, 1])
+        self.assertEqual([item["channel_code"] for item in result["series"]], ["temp", "rpm"])
+
+    def test_batched_plot_window_loader_uses_cache_for_repeated_window(self):
+        measurement_plot._LIVE_PLOT_CACHE.clear()
+        window_end = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+        batched_series = {
+            (1, "rpm"): {
+                "device_id": 1,
+                "channel_code": "rpm",
+                "unit": "rpm",
+                "latest_measurement_at": None,
+                "items": [],
+            }
+        }
+
+        with patch.object(measurement_plot, "_db_dialect_name", return_value="sqlite"), patch.object(
+            measurement_plot,
+            "_load_batched_plot_series_python",
+            return_value=batched_series,
+        ) as python_loader:
+            first = measurement_plot.load_batched_device_plot_series_window(
+                series_specs=[{"device_id": 1, "channel_code": "rpm"}],
+                since_minutes=10,
+                max_points=60,
+                window_end=window_end,
+                cache_seconds=1,
+            )
+            second = measurement_plot.load_batched_device_plot_series_window(
+                series_specs=[{"device_id": 1, "channel_code": "rpm"}],
+                since_minutes=10,
+                max_points=60,
+                window_end=window_end,
+                cache_seconds=1,
+            )
+
+        self.assertEqual(python_loader.call_count, 1)
+        self.assertFalse(first["cache_hit"])
+        self.assertTrue(second["cache_hit"])
+
 
 if __name__ == "__main__":
     unittest.main()

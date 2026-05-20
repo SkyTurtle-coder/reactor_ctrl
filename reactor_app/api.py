@@ -44,7 +44,11 @@ from .services import (
     wait_for_manual_state_refresh,
 )
 from .services.activity_log import activity_log_item_to_dict, load_activity_logs, summarize_activity_logs
-from .services.measurement_plot import load_device_plot_series, load_device_plot_series_window
+from .services.measurement_plot import (
+    load_batched_device_plot_series_window,
+    load_device_plot_series,
+    load_device_plot_series_window,
+)
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -344,11 +348,17 @@ def _validate_choice(value: str | None, *, field_name: str, allowed: set[str], r
     return normalized
 
 
-def _parse_float(value: Any, *, field_name: str) -> float:
+def _parse_float(value: Any, *, field_name: str, min_value: float | None = None, max_value: float | None = None) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Field '{field_name}' must be a number.") from exc
+
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"Field '{field_name}' must be >= {min_value}.")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"Field '{field_name}' must be <= {max_value}.")
+    return parsed
 
 
 def _normalize_requested_by(value: Any, *, default: str) -> str:
@@ -1589,6 +1599,74 @@ def list_device_plot_series(device_id: int):
             "bucket_seconds": plot_payload["bucket_seconds"],
             "window_start": plot_payload["window_start"],
             "window_end": plot_payload["window_end"],
+            "series": plot_payload["series"],
+        }
+    )
+
+
+@api_bp.get("/plot-series/live")
+def list_live_plot_series():
+    try:
+        since_minutes = _parse_int(
+            request.args.get("since_minutes", 60),
+            field_name="since_minutes",
+            min_value=1,
+            max_value=30 * 24 * 60,
+        )
+        max_points = _parse_int(
+            request.args.get("max_points", 240),
+            field_name="max_points",
+            min_value=2,
+            max_value=2000,
+        )
+        window_end = _parse_datetime(request.args.get("window_end"), field_name="window_end")
+        cache_seconds = _parse_float(
+            request.args.get("cache_seconds", 1),
+            field_name="cache_seconds",
+            min_value=0,
+            max_value=5,
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    series_specs = []
+    for raw_value in request.args.getlist("series"):
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        if ":" not in value:
+            return _json_error("Each 'series' value must use '<device_id>:<channel_code>'.", 400)
+        raw_device_id, raw_channel_code = value.split(":", 1)
+        try:
+            device_id = _parse_int(raw_device_id, field_name="series.device_id", min_value=1)
+        except ValueError as exc:
+            return _json_error(str(exc), 400)
+        channel_code = _clean_string(raw_channel_code, field_name="series.channel_code")
+        if not channel_code:
+            return _json_error("Each 'series' value must include a channel code.", 400)
+        series_specs.append({"device_id": device_id, "channel_code": channel_code})
+
+    if not series_specs:
+        return _json_error("At least one 'series' query parameter is required.", 400)
+    if len(series_specs) > 120:
+        return _json_error("At most 120 series values may be requested at once.", 400)
+
+    plot_payload = load_batched_device_plot_series_window(
+        series_specs=series_specs,
+        since_minutes=since_minutes,
+        max_points=max_points,
+        window_end=window_end,
+        cache_seconds=cache_seconds,
+    )
+    return jsonify(
+        {
+            "since_minutes": since_minutes,
+            "max_points": max_points,
+            "bucket_seconds": plot_payload["bucket_seconds"],
+            "window_start": plot_payload["window_start"],
+            "window_end": plot_payload["window_end"],
+            "cache_hit": plot_payload["cache_hit"],
+            "cache_seconds": cache_seconds,
             "series": plot_payload["series"],
         }
     )
