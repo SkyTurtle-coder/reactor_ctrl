@@ -418,6 +418,102 @@ def _load_batched_plot_series_python(
     return bucket
 
 
+def _load_last_known_batched_mysql(
+    *,
+    specs: list[tuple[int, str]],
+) -> dict[tuple[int, str], dict[str, Any]]:
+    """One query: the single most-recent measurement per spec, no time restriction."""
+    spec_where_sql, spec_params = _series_spec_where_sql(specs)
+    sql = text(
+        f"""
+        SELECT device_id, channel_code, measured_at, numeric_value, unit
+        FROM (
+            SELECT
+                device_id,
+                channel_code,
+                measured_at,
+                numeric_value,
+                unit,
+                ROW_NUMBER() OVER (
+                    PARTITION BY device_id, channel_code
+                    ORDER BY measured_at DESC, measurement_id DESC
+                ) AS rn
+            FROM measurement
+            WHERE ({spec_where_sql})
+              AND numeric_value IS NOT NULL
+        ) ranked
+        WHERE rn = 1
+        """
+    )
+    rows = db.session.execute(sql, spec_params).mappings()
+    bucket: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        _append_batched_series_item(
+            bucket,
+            device_id=int(row["device_id"]),
+            channel_code=str(row["channel_code"]),
+            measured_at=row["measured_at"],
+            numeric_value=float(row["numeric_value"]),
+            unit=row["unit"],
+        )
+    return bucket
+
+
+def _load_last_known_batched_python(
+    *,
+    specs: list[tuple[int, str]],
+) -> dict[tuple[int, str], dict[str, Any]]:
+    """Get the most recent measurement per spec using a streaming query, no time restriction."""
+    bucket: dict[tuple[int, str], dict[str, Any]] = {}
+    allowed_keys = set(specs)
+    if not allowed_keys:
+        return bucket
+
+    conditions = [
+        and_(Measurement.device_id == device_id, Measurement.channel_code == channel_code)
+        for device_id, channel_code in specs
+    ]
+    query = (
+        Measurement.query.with_entities(
+            Measurement.device_id,
+            Measurement.channel_code,
+            Measurement.measured_at,
+            Measurement.numeric_value,
+            Measurement.unit,
+            Measurement.measurement_id,
+        )
+        .filter(or_(*conditions), Measurement.numeric_value.is_not(None))
+        .order_by(
+            Measurement.device_id.asc(),
+            Measurement.channel_code.asc(),
+            Measurement.measured_at.desc(),
+            Measurement.measurement_id.desc(),
+        )
+    )
+
+    seen_keys: set[tuple[int, str]] = set()
+    for row in query.yield_per(200):
+        key = (int(row.device_id), str(row.channel_code))
+        if key not in allowed_keys or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        measured_at = _as_utc_datetime(row.measured_at)
+        if measured_at is None:
+            continue
+        _append_batched_series_item(
+            bucket,
+            device_id=key[0],
+            channel_code=key[1],
+            measured_at=measured_at,
+            numeric_value=float(row.numeric_value),
+            unit=row.unit,
+        )
+        if len(seen_keys) >= len(allowed_keys):
+            break
+
+    return bucket
+
+
 def _normalize_channel_codes(channel_codes: list[str]) -> list[str]:
     normalized_codes = []
     seen_codes: set[str] = set()
@@ -635,6 +731,24 @@ def load_batched_device_plot_series_window(
             window_end=normalized_window_end,
             bucket_seconds=bucket_seconds,
         )
+
+    # Fallback: for specs with no data in the time window, show the most recent
+    # available measurement regardless of age so the last-known state is always
+    # visible even when polling was paused or the selected range has no data.
+    empty_specs = [
+        key for key in normalized_specs
+        if not series_by_key.get(key, {}).get("items")
+    ]
+    if empty_specs:
+        try:
+            if dialect_name == "mysql":
+                last_known = _load_last_known_batched_mysql(specs=empty_specs)
+            else:
+                last_known = _load_last_known_batched_python(specs=empty_specs)
+            for key, series in last_known.items():
+                series_by_key[key] = series
+        except SQLAlchemyError:
+            db.session.rollback()
 
     payload = {
         "window_start": window_start.isoformat(),

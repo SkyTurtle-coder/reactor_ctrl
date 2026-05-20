@@ -395,7 +395,9 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 ["actual_temp_C", "setpoint_C"],
             )
 
-    def test_background_huber_polling_is_not_claimed_without_watch_or_recipe(self):
+    def test_background_huber_polling_is_claimed_without_watch_or_recipe(self):
+        # Huber devices are always eligible for background polling (same as IKA),
+        # so a device with stale last_reported_at must be claimed.
         with self.app.app_context():
             device = Device(
                 asset_serial="HUBER-IDLE-001",
@@ -419,7 +421,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
 
             claimed = device_manual_runtime._claim_next_device_id(self.app, "worker-1")
 
-            self.assertIsNone(claimed)
+            self.assertEqual(claimed, device.device_id)
 
     def test_running_recipe_limits_polling_to_recipe_bound_devices(self):
         with self.app.app_context():

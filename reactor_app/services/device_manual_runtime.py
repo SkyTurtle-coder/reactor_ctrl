@@ -1411,12 +1411,12 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                 and_(
                     or_(
                         Device.protocol == "ika_eurostar_60",
+                        Device.protocol.in_(list(_HUBER_PROTOCOLS)),
                         and_(
                             DeviceManualState.watch_expires_at.is_not(None),
                             DeviceManualState.watch_expires_at > now,
                         ),
                         Device.device_id.in_(active_recipe_device_ids or []),
-                        _background_huber_poll_enabled(app),
                     ),
                     or_(
                         DeviceManualState.last_reported_at.is_(None),

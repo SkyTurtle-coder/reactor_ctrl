@@ -64,9 +64,9 @@
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
-    const PROCESS_PLOT_REFRESH_MS = 1000;
-    const PROCESS_PLOT_ERROR_BACKOFF_MS = 5000;
-    const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;
+    const PROCESS_PLOT_REFRESH_MS = 5000;
+    const PROCESS_PLOT_ERROR_BACKOFF_MS = 15000;
+    const PROCESS_PLOT_LIVE_CACHE_SECONDS = 3;
     const PROCESS_PLOT_STALE_AFTER_MS = 60000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";

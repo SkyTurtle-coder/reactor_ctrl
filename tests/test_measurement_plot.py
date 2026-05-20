@@ -127,7 +127,11 @@ class MeasurementPlotServiceTests(unittest.TestCase):
             measurement_plot,
             "_load_batched_plot_series_python",
             return_value=batched_series,
-        ) as python_loader:
+        ) as python_loader, patch.object(
+            measurement_plot,
+            "_load_last_known_batched_python",
+            return_value={},
+        ):
             first = measurement_plot.load_batched_device_plot_series_window(
                 series_specs=[{"device_id": 1, "channel_code": "rpm"}],
                 since_minutes=10,

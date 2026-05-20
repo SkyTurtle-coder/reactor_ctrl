@@ -184,7 +184,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function defaultLivePlotSeriesIds()", source)
         self.assertIn("function renderPlotSelection()", source)
         self.assertIn("function loadPlotMeasurements(options)", source)
-        self.assertIn("const PROCESS_PLOT_REFRESH_MS = 1000;", source)
+        self.assertIn("const PROCESS_PLOT_REFRESH_MS = 5000;", source)
         self.assertIn('document.getElementById("process-plot-range-select")', source)
         self.assertIn('params.set("since_minutes", String(rangeOption.sinceMinutes));', source)
         self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
