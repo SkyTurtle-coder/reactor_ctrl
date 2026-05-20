@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from reactor_app.services import measurement_plot
@@ -36,6 +37,38 @@ class MeasurementPlotServiceTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["channel_code"], "ika_actual_rpm")
         self.assertEqual(len(result[0]["items"]), 1)
+
+    def test_plot_window_loader_returns_shared_window_metadata(self):
+        window_end = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+        python_series = {
+            "temp": {
+                "channel_code": "temp",
+                "unit": "C",
+                "latest_measurement_at": None,
+                "items": [],
+            }
+        }
+
+        with patch.object(measurement_plot, "_db_dialect_name", return_value="sqlite"), patch.object(
+            measurement_plot,
+            "_load_plot_series_python",
+            return_value=python_series,
+        ) as python_loader:
+            result = measurement_plot.load_device_plot_series_window(
+                device_id=1,
+                channel_codes=["temp"],
+                since_minutes=60,
+                max_points=120,
+                window_end=window_end,
+            )
+
+        python_loader.assert_called_once()
+        self.assertEqual(python_loader.call_args.kwargs["window_start"], window_end - timedelta(minutes=60))
+        self.assertEqual(python_loader.call_args.kwargs["window_end"], window_end)
+        self.assertEqual(result["window_start"], (window_end - timedelta(minutes=60)).isoformat())
+        self.assertEqual(result["window_end"], window_end.isoformat())
+        self.assertEqual(result["bucket_seconds"], 30)
+        self.assertEqual(result["series"], [python_series["temp"]])
 
 
 if __name__ == "__main__":

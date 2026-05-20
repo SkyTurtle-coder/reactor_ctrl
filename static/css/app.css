@@ -1027,11 +1027,104 @@ pre {
     height: 0.85rem;
     border-radius: 999px;
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+    flex: 0 0 auto;
+}
+
+.process-plot-freshness {
+    flex: 0 0 auto;
+    padding: 0.14rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.72);
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+
+.process-plot-freshness.is-fresh {
+    border-color: rgba(21, 128, 61, 0.22);
+    background: rgba(21, 128, 61, 0.08);
+    color: #166534;
+}
+
+.process-plot-freshness.is-stale {
+    border-color: rgba(202, 138, 4, 0.28);
+    background: rgba(202, 138, 4, 0.1);
+    color: #854d0e;
 }
 
 .process-plot-chart-frame {
     position: relative;
     min-width: 0;
+}
+
+.process-plot-hover-zone {
+    cursor: crosshair;
+    pointer-events: all;
+}
+
+.process-plot-hover-marker,
+.process-plot-chart-svg [data-plot-crosshair] {
+    pointer-events: none;
+}
+
+.process-plot-tooltip {
+    position: absolute;
+    z-index: 4;
+    min-width: 15rem;
+    max-width: min(22rem, calc(100% - 1rem));
+    padding: 0.7rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: var(--shadow);
+    color: var(--text);
+    font-size: 0.82rem;
+    pointer-events: none;
+}
+
+.process-plot-tooltip strong {
+    display: block;
+    margin-bottom: 0.45rem;
+}
+
+.process-plot-tooltip ul {
+    display: grid;
+    gap: 0.45rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.process-plot-tooltip li {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.35rem 0.5rem;
+    align-items: center;
+}
+
+.process-plot-tooltip li > span:nth-child(2) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.process-plot-tooltip li > strong {
+    margin: 0;
+    white-space: nowrap;
+}
+
+.process-plot-tooltip li > small {
+    grid-column: 2 / -1;
+    color: var(--muted);
+}
+
+.process-plot-tooltip-swatch {
+    width: 0.7rem;
+    height: 0.7rem;
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
 }
 
 .process-plot-chart-svg {
@@ -2587,6 +2680,22 @@ html[data-theme="dark"] .process-plot-chart-svg {
     background:
         linear-gradient(180deg, rgba(253, 231, 14, 0.05), rgba(12, 16, 21, 0.98)),
         var(--surface);
+}
+
+html[data-theme="dark"] .process-plot-tooltip,
+html[data-theme="dark"] .process-plot-freshness {
+    background: rgba(24, 29, 36, 0.96);
+    border-color: var(--border);
+}
+
+html[data-theme="dark"] .process-plot-freshness.is-fresh {
+    background: rgba(59, 191, 117, 0.14);
+    color: #9be7b8;
+}
+
+html[data-theme="dark"] .process-plot-freshness.is-stale {
+    background: rgba(255, 196, 87, 0.14);
+    color: #ffd389;
 }
 
 html[data-theme="dark"] .builder-canvas,

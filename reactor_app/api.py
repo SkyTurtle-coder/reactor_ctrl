@@ -44,7 +44,7 @@ from .services import (
     wait_for_manual_state_refresh,
 )
 from .services.activity_log import activity_log_item_to_dict, load_activity_logs, summarize_activity_logs
-from .services.measurement_plot import load_device_plot_series
+from .services.measurement_plot import load_device_plot_series, load_device_plot_series_window
 
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
@@ -315,7 +315,7 @@ def _parse_datetime(value: Any, *, field_name: str) -> datetime | None:
         return value
     if isinstance(value, str):
         try:
-            return datetime.fromisoformat(value)
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
         except ValueError as exc:
             raise ValueError(f"Field '{field_name}' must be an ISO datetime string.") from exc
     raise ValueError(f"Field '{field_name}' must be an ISO datetime string.")
@@ -1560,6 +1560,7 @@ def list_device_plot_series(device_id: int):
             min_value=2,
             max_value=2000,
         )
+        window_end = _parse_datetime(request.args.get("window_end"), field_name="window_end")
     except ValueError as exc:
         return _json_error(str(exc), 400)
 
@@ -1573,18 +1574,22 @@ def list_device_plot_series(device_id: int):
     if len(channel_codes) > 24:
         return _json_error("At most 24 channel_code values may be requested at once.", 400)
 
-    series = load_device_plot_series(
+    plot_payload = load_device_plot_series_window(
         device_id=device.device_id,
         channel_codes=channel_codes,
         since_minutes=since_minutes,
         max_points=max_points,
+        window_end=window_end,
     )
     return jsonify(
         {
             "device_id": device.device_id,
             "since_minutes": since_minutes,
             "max_points": max_points,
-            "series": series,
+            "bucket_seconds": plot_payload["bucket_seconds"],
+            "window_start": plot_payload["window_start"],
+            "window_end": plot_payload["window_end"],
+            "series": plot_payload["series"],
         }
     )
 

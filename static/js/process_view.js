@@ -65,6 +65,7 @@
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
     const PROCESS_PLOT_REFRESH_MS = 5000;
+    const PROCESS_PLOT_STALE_AFTER_MS = 60000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
     const PROCESS_PLOT_RANGE_OPTIONS = Object.freeze([
@@ -1289,8 +1290,28 @@
         plotSelection.appendChild(fragment);
     }
 
-    function normalizePlotMeasurements(option, items) {
-        const points = (Array.isArray(items) ? items : [])
+    function normalizePlotWindow(payloads, requestedWindowEndIso, rangeOption) {
+        const firstPayload = (Array.isArray(payloads) ? payloads : []).find((payload) => payload?.window_start && payload?.window_end);
+        const requestedWindowEndMs = Date.parse(asString(requestedWindowEndIso, ""));
+        const fallbackEndMs = Number.isFinite(requestedWindowEndMs) ? requestedWindowEndMs : Date.now();
+        const fallbackStartMs = fallbackEndMs - (Number(rangeOption?.sinceMinutes) || 60) * 60000;
+        const startMs = Date.parse(asString(firstPayload?.window_start, ""));
+        const endMs = Date.parse(asString(firstPayload?.window_end, ""));
+        const normalizedStartMs = Number.isFinite(startMs) ? startMs : fallbackStartMs;
+        const normalizedEndMs = Number.isFinite(endMs) && endMs > normalizedStartMs ? endMs : fallbackEndMs;
+        return {
+            startMs: normalizedStartMs,
+            endMs: normalizedEndMs,
+            bucketSeconds: asNumber(firstPayload?.bucket_seconds, null),
+            requestedAtMs: fallbackEndMs,
+            rangeLabel: asString(rangeOption?.label, "selected range"),
+        };
+    }
+
+    function normalizePlotMeasurements(option, payloadSeriesItem) {
+        const items = Array.isArray(payloadSeriesItem?.items) ? payloadSeriesItem.items : [];
+        const latestMeasurementMs = Date.parse(asString(payloadSeriesItem?.latest_measurement_at, ""));
+        const points = items
             .map((item) => {
                 const timestamp = Date.parse(asString(item?.measured_at, ""));
                 const numericValue = asNumber(item?.numeric_value, null);
@@ -1307,7 +1328,10 @@
 
         return {
             ...option,
-            unit: asString((Array.isArray(items) && items[0]?.unit) || option.unit, option.unit),
+            unit: asString(payloadSeriesItem?.unit || items[0]?.unit || option.unit, option.unit),
+            latestMeasurementMs: Number.isFinite(latestMeasurementMs)
+                ? latestMeasurementMs
+                : (points[points.length - 1]?.x ?? null),
             points,
         };
     }
@@ -1330,7 +1354,174 @@
             .join(" ");
     }
 
-    function renderPlotChartCard(unitKey, seriesItems) {
+    function plotPointToSvg(point, bounds) {
+        return {
+            x: bounds.left + ((point.x - bounds.minX) / (bounds.maxX - bounds.minX)) * bounds.width,
+            y: bounds.top + (1 - (point.y - bounds.minY) / (bounds.maxY - bounds.minY)) * bounds.height,
+        };
+    }
+
+    function buildPlotTimeTicks(minX, maxX, count) {
+        const tickCount = Math.max(2, count || 5);
+        return Array.from({ length: tickCount }, (_item, index) => {
+            const ratio = index / (tickCount - 1);
+            return {
+                value: minX + (maxX - minX) * ratio,
+                xRatio: ratio,
+            };
+        });
+    }
+
+    function formatPlotHoverTimestamp(timestampMs) {
+        if (!Number.isFinite(timestampMs)) {
+            return "";
+        }
+        return new Date(timestampMs).toLocaleString([], {
+            day: "2-digit",
+            month: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+        });
+    }
+
+    function nearestPlotPoint(series, targetX) {
+        if (!Array.isArray(series?.points) || !series.points.length || !Number.isFinite(targetX)) {
+            return null;
+        }
+        let nearest = series.points[0];
+        let nearestDistance = Math.abs(nearest.x - targetX);
+        for (const point of series.points) {
+            const distance = Math.abs(point.x - targetX);
+            if (distance < nearestDistance) {
+                nearest = point;
+                nearestDistance = distance;
+            }
+        }
+        return nearest;
+    }
+
+    function plotSeriesFreshness(series, plotWindow) {
+        const latestMs = Number.isFinite(series?.latestMeasurementMs)
+            ? series.latestMeasurementMs
+            : (series?.points?.[series.points.length - 1]?.x ?? null);
+        if (!Number.isFinite(latestMs)) {
+            return { status: "no-data", label: "no data" };
+        }
+        const ageMs = Math.max(0, (plotWindow?.endMs ?? Date.now()) - latestMs);
+        if (ageMs > PROCESS_PLOT_STALE_AFTER_MS) {
+            return { status: "stale", label: `last ${formatPlotTimestamp(latestMs)}` };
+        }
+        return { status: "fresh", label: `live ${formatPlotTimestamp(latestMs)}` };
+    }
+
+    function attachPlotHover(frame, seriesItems, bounds) {
+        const svg = frame.querySelector(".process-plot-chart-svg");
+        const crosshair = frame.querySelector("[data-plot-crosshair]");
+        const tooltip = frame.querySelector(".process-plot-tooltip");
+        if (!svg || !crosshair || !tooltip) {
+            return;
+        }
+        const markers = new Map(
+            Array.from(frame.querySelectorAll("[data-plot-hover-marker]")).map((marker) => [
+                Number(marker.getAttribute("data-plot-hover-marker")),
+                marker,
+            ]),
+        );
+
+        const hideHover = () => {
+            crosshair.setAttribute("visibility", "hidden");
+            tooltip.hidden = true;
+            markers.forEach((marker) => {
+                marker.setAttribute("visibility", "hidden");
+            });
+        };
+
+        const showHover = (event) => {
+            const svgRect = svg.getBoundingClientRect();
+            if (svgRect.width <= 0 || svgRect.height <= 0) {
+                hideHover();
+                return;
+            }
+            const svgX = ((event.clientX - svgRect.left) / svgRect.width) * bounds.viewBoxWidth;
+            if (svgX < bounds.left || svgX > bounds.left + bounds.width) {
+                hideHover();
+                return;
+            }
+            const ratio = clamp((svgX - bounds.left) / bounds.width, 0, 1);
+            const targetX = bounds.minX + (bounds.maxX - bounds.minX) * ratio;
+            const hoverItems = seriesItems
+                .map((series, index) => {
+                    const point = nearestPlotPoint(series, targetX);
+                    if (!point) {
+                        return null;
+                    }
+                    return {
+                        index,
+                        series,
+                        point,
+                        position: plotPointToSvg(point, bounds),
+                    };
+                })
+                .filter(Boolean);
+
+            if (!hoverItems.length) {
+                hideHover();
+                return;
+            }
+
+            const crosshairX = bounds.left + ratio * bounds.width;
+            crosshair.setAttribute("x1", crosshairX.toFixed(2));
+            crosshair.setAttribute("x2", crosshairX.toFixed(2));
+            crosshair.setAttribute("visibility", "visible");
+
+            markers.forEach((marker) => {
+                marker.setAttribute("visibility", "hidden");
+            });
+            for (const item of hoverItems) {
+                const marker = markers.get(item.index);
+                if (!marker) {
+                    continue;
+                }
+                marker.setAttribute("cx", item.position.x.toFixed(2));
+                marker.setAttribute("cy", item.position.y.toFixed(2));
+                marker.setAttribute("visibility", "visible");
+            }
+
+            tooltip.innerHTML = `
+                <strong>${escapeHtml(formatPlotHoverTimestamp(targetX))}</strong>
+                <ul>
+                    ${hoverItems
+                        .map(
+                            (item) => `
+                                <li>
+                                    <span class="process-plot-tooltip-swatch" style="background:${plotColor(item.index)}"></span>
+                                    <span>${escapeHtml(item.series.nodeLabel)} | ${escapeHtml(item.series.channelLabel)}</span>
+                                    <strong>${escapeHtml(formatPlotValue(item.point.y, item.series.unit))}</strong>
+                                    <small>${escapeHtml(formatPlotHoverTimestamp(item.point.x))}</small>
+                                </li>
+                            `,
+                        )
+                        .join("")}
+                </ul>
+            `;
+            tooltip.hidden = false;
+
+            const frameRect = frame.getBoundingClientRect();
+            const tooltipWidth = tooltip.offsetWidth || 240;
+            const tooltipHeight = tooltip.offsetHeight || 120;
+            const left = clamp(event.clientX - frameRect.left + 12, 8, Math.max(8, frameRect.width - tooltipWidth - 8));
+            const top = clamp(event.clientY - frameRect.top + 12, 8, Math.max(8, frameRect.height - tooltipHeight - 8));
+            tooltip.style.left = `${left}px`;
+            tooltip.style.top = `${top}px`;
+        };
+
+        frame.addEventListener("pointermove", showHover);
+        frame.addEventListener("pointerleave", hideHover);
+        frame.addEventListener("pointercancel", hideHover);
+    }
+
+    function renderPlotChartCard(unitKey, seriesItems, plotWindow) {
         const card = document.createElement("article");
         card.className = "process-plot-chart-card";
         const unitLabel = unitKey || "unitless";
@@ -1352,31 +1543,22 @@
         legend.className = "process-plot-legend";
         seriesItems.forEach((series, index) => {
             const latestPoint = series.points[series.points.length - 1] || null;
+            const freshness = plotSeriesFreshness(series, plotWindow);
             const item = document.createElement("li");
             item.innerHTML = `
                 <span class="process-plot-legend-swatch" style="background:${plotColor(index)}"></span>
                 <span>${escapeHtml(series.nodeLabel)} | ${escapeHtml(series.channelLabel)}${latestPoint ? ` (${escapeHtml(formatPlotValue(latestPoint.y, series.unit))})` : " (no data)"}</span>
+                <span class="process-plot-freshness is-${escapeHtml(freshness.status)}">${escapeHtml(freshness.label)}</span>
             `;
             legend.appendChild(item);
         });
         card.appendChild(legend);
 
-        if (!points.length) {
-            const empty = document.createElement("p");
-            empty.className = "process-plot-chart-empty";
-            empty.textContent = "No stored measurements are available for the selected series in this unit group yet.";
-            card.appendChild(empty);
-            return card;
-        }
-
-        let minX = Math.min(...points.map((point) => point.x));
-        let maxX = Math.max(...points.map((point) => point.x));
-        let minY = Math.min(...points.map((point) => point.y));
-        let maxY = Math.max(...points.map((point) => point.y));
-        if (minX === maxX) {
-            minX -= 60000;
-            maxX += 60000;
-        }
+        const fallbackEndMs = Date.now();
+        const minX = Number.isFinite(plotWindow?.startMs) ? plotWindow.startMs : fallbackEndMs - 60 * 60000;
+        const maxX = Number.isFinite(plotWindow?.endMs) && plotWindow.endMs > minX ? plotWindow.endMs : fallbackEndMs;
+        let minY = points.length ? Math.min(...points.map((point) => point.y)) : 0;
+        let maxY = points.length ? Math.max(...points.map((point) => point.y)) : 1;
         if (minY === maxY) {
             const padding = Math.max(Math.abs(minY) * 0.1, 1);
             minY -= padding;
@@ -1398,6 +1580,8 @@
             maxX,
             minY,
             maxY,
+            viewBoxWidth,
+            viewBoxHeight,
         };
 
         const yTicks = Array.from({ length: 5 }, (_item, index) => {
@@ -1406,12 +1590,10 @@
             const y = bounds.top + bounds.height * ratio;
             return { value, y };
         });
-        const xTicks = Array.from({ length: 5 }, (_item, index) => {
-            const ratio = index / 4;
-            const value = minX + (maxX - minX) * ratio;
-            const x = bounds.left + bounds.width * ratio;
-            return { value, x };
-        });
+        const xTicks = buildPlotTimeTicks(minX, maxX, 5).map((tick) => ({
+            value: tick.value,
+            x: bounds.left + bounds.width * tick.xRatio,
+        }));
 
         const gridLines = yTicks
             .map((tick) => `<line x1="${bounds.left}" y1="${tick.y.toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${tick.y.toFixed(2)}" stroke="${theme.gridY}" stroke-width="1"/>`)
@@ -1425,15 +1607,23 @@
                     return "";
                 }
                 const latestPoint = series.points[series.points.length - 1];
-                const lastX = bounds.left + ((latestPoint.x - bounds.minX) / (bounds.maxX - bounds.minX)) * bounds.width;
-                const lastY = bounds.top + (1 - (latestPoint.y - bounds.minY) / (bounds.maxY - bounds.minY)) * bounds.height;
+                const latestPosition = plotPointToSvg(latestPoint, bounds);
                 const pointPath = buildPlotPath(series, bounds);
                 return `
                     <path d="${pointPath}" fill="none" stroke="${plotColor(index)}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-                    <circle cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="4.5" fill="${plotColor(index)}" stroke="${theme.pointStroke}" stroke-width="2"/>
+                    <circle cx="${latestPosition.x.toFixed(2)}" cy="${latestPosition.y.toFixed(2)}" r="4.5" fill="${plotColor(index)}" stroke="${theme.pointStroke}" stroke-width="2"/>
                 `;
             })
             .join("");
+        const hoverMarkers = seriesItems
+            .map(
+                (_series, index) =>
+                    `<circle class="process-plot-hover-marker" data-plot-hover-marker="${index}" cx="0" cy="0" r="5.5" fill="${plotColor(index)}" stroke="${theme.pointStroke}" stroke-width="2.4" visibility="hidden"/>`,
+            )
+            .join("");
+        const emptyOverlay = points.length
+            ? ""
+            : `<text x="${(bounds.left + bounds.width / 2).toFixed(2)}" y="${(bounds.top + bounds.height / 2).toFixed(2)}" text-anchor="middle" fill="${theme.label}" font-size="13">No data in this window</text>`;
         const yLabels = yTicks
             .map((tick) => `<text x="${bounds.left - 10}" y="${(tick.y + 4).toFixed(2)}" text-anchor="end" fill="${theme.label}" font-size="11">${escapeHtml(formatPlotValue(tick.value, unitKey))}</text>`)
             .join("");
@@ -1450,15 +1640,21 @@
                 ${xLines}
                 <line x1="${bounds.left}" y1="${(bounds.top + bounds.height).toFixed(2)}" x2="${(bounds.left + bounds.width).toFixed(2)}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="${theme.axis}" stroke-width="1.2"/>
                 ${paths}
+                ${hoverMarkers}
+                ${emptyOverlay}
+                <line data-plot-crosshair x1="${bounds.left}" y1="${bounds.top}" x2="${bounds.left}" y2="${(bounds.top + bounds.height).toFixed(2)}" stroke="${theme.axis}" stroke-width="1.2" stroke-dasharray="4 4" visibility="hidden"/>
+                <rect class="process-plot-hover-zone" x="${bounds.left}" y="${bounds.top}" width="${bounds.width}" height="${bounds.height}" fill="transparent"/>
                 ${yLabels}
                 ${xLabels}
             </svg>
+            <div class="process-plot-tooltip" hidden></div>
         `;
         card.appendChild(frame);
+        attachPlotHover(frame, seriesItems, bounds);
         return card;
     }
 
-    function renderPlotCharts(seriesItems) {
+    function renderPlotCharts(seriesItems, plotWindow) {
         if (!plotChartStack) {
             return;
         }
@@ -1486,7 +1682,7 @@
 
         const fragment = document.createDocumentFragment();
         for (const [unitKey, group] of seriesGroups.entries()) {
-            fragment.appendChild(renderPlotChartCard(unitKey, group));
+            fragment.appendChild(renderPlotChartCard(unitKey, group, plotWindow || state.plotWindow));
         }
         plotChartStack.appendChild(fragment);
     }
@@ -1503,6 +1699,7 @@
         const selectedOptions = selectedPlotSeriesOptions();
         if (!selectedOptions.length) {
             state.plotSeriesData = [];
+            state.plotWindow = null;
             renderPlotCharts([]);
             setPlotStatus(
                 activeBuildId
@@ -1519,6 +1716,7 @@
         state.plotRequestId = requestId;
         state.isPlotBusy = true;
         const rangeOption = selectedPlotRangeOption();
+        const requestedWindowEndIso = new Date().toISOString();
         if (!settings.quiet) {
             setPlotStatus(`Loading trend data for ${rangeOption.label.toLowerCase()}...`, "muted");
         }
@@ -1538,6 +1736,7 @@
                     }
                     params.set("since_minutes", String(rangeOption.sinceMinutes));
                     params.set("max_points", String(rangeOption.maxPoints));
+                    params.set("window_end", requestedWindowEndIso);
                     return fetchJson(
                         `/api/devices/${group.deviceId}/plot-series?${params.toString()}`,
                         { timeoutMs: 16000, maxRetries: 1 },
@@ -1548,6 +1747,7 @@
                 return;
             }
 
+            const plotWindow = normalizePlotWindow(payloads, requestedWindowEndIso, rangeOption);
             const storedSeriesById = new Map();
             storedGroups.forEach((group, index) => {
                 const payloadSeries = Array.isArray(payloads[index]?.series) ? payloads[index].series : [];
@@ -1561,7 +1761,7 @@
                 );
                 for (const option of group.options) {
                     const payloadSeriesItem = payloadSeriesByCode.get(option.channelCode) || { items: [] };
-                    storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem.items));
+                    storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem));
                 }
             });
             const storedSeries = selectedOptions.map(
@@ -1569,12 +1769,14 @@
             );
             const seriesItems = storedSeries;
             state.plotSeriesData = seriesItems;
-            renderPlotCharts(seriesItems);
+            state.plotWindow = plotWindow;
+            renderPlotCharts(seriesItems, plotWindow);
 
             const populatedSeries = seriesItems.filter((series) => series.points.length > 0).length;
+            const staleSeries = seriesItems.filter((series) => plotSeriesFreshness(series, plotWindow).status === "stale").length;
             if (populatedSeries > 0) {
                 setPlotStatus(
-                    `Plot updated for ${rangeOption.label.toLowerCase()}. ${populatedSeries} selected series currently contain trend data.`,
+                    `Plot updated for ${rangeOption.label.toLowerCase()} ending ${formatPlotTimestamp(plotWindow.endMs)}. ${populatedSeries} selected series contain trend data${staleSeries ? `, ${staleSeries} stale` : ""}.`,
                     settings.quiet ? "muted" : "success",
                 );
             } else {
@@ -2783,6 +2985,7 @@
         selectedPlotRangeId: restoredPlotRangeId,
         plotPanelOpen: restoredPlotPanelOpen,
         plotSeriesData: [],
+        plotWindow: null,
         isPlotBusy: false,
         plotRequestId: 0,
         inputsDirtyForNodeId: null,
@@ -2832,13 +3035,14 @@
                 return;
             }
             state.plotSeriesData = [];
+            state.plotWindow = null;
             renderPlotCharts([]);
         });
     }
 
     window.addEventListener("reactor:themechange", () => {
         if (plotChartStack) {
-            renderPlotCharts(state.plotSeriesData);
+            renderPlotCharts(state.plotSeriesData, state.plotWindow);
         }
     });
 
@@ -3088,7 +3292,7 @@
         plotPanel.open = Boolean(state.plotPanelOpen);
     }
     renderPlotSelection();
-    renderPlotCharts(state.plotSeriesData);
+    renderPlotCharts(state.plotSeriesData, state.plotWindow);
     if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
         void loadPlotMeasurements({ quiet: true });
     }

@@ -186,10 +186,16 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('document.getElementById("process-plot-range-select")', source)
         self.assertIn('params.set("since_minutes", String(rangeOption.sinceMinutes));', source)
         self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
+        self.assertIn('params.set("window_end", requestedWindowEndIso);', source)
         self.assertIn('params.append("channel_code", option.channelCode);', source)
         self.assertIn('`/api/devices/${group.deviceId}/plot-series?${params.toString()}`', source)
+        self.assertIn("function normalizePlotWindow(payloads, requestedWindowEndIso, rangeOption)", source)
+        self.assertIn("function attachPlotHover(frame, seriesItems, bounds)", source)
+        self.assertIn("process-plot-tooltip", source)
+        self.assertIn("data-plot-crosshair", source)
         self.assertIn("selectedPlotRangeId", source)
         self.assertIn("plotPanelOpen", source)
+        self.assertIn("plotWindow", source)
         self.assertIn("renderPlotSelection();", source)
         self.assertIn("void loadPlotMeasurements({ quiet: true });", source)
 
@@ -198,7 +204,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         source = script_path.read_text(encoding="utf-8")
 
         self.assertIn('const unitKey = asString(series.unit, "");', source)
-        self.assertIn("fragment.appendChild(renderPlotChartCard(unitKey, group));", source)
+        self.assertIn("fragment.appendChild(renderPlotChartCard(unitKey, group, plotWindow || state.plotWindow));", source)
         self.assertIn("Selected series with the same unit are rendered together.", source)
 
     def test_process_view_script_uses_measurement_only_plot_loading(self):
@@ -210,7 +216,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertNotIn("function loadRuntimePlotSnapshot(nodeId, options)", source)
         self.assertNotIn("ensureRuntimePlotSamples", source)
         self.assertIn("const seriesItems = storedSeries;", source)
-        self.assertIn("No stored measurements are available for the selected series in this unit group yet.", source)
+        self.assertIn("No data in this window", source)
 
     def test_process_view_api_supports_manual_state_endpoints(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")

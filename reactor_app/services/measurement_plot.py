@@ -32,7 +32,15 @@ def _db_dialect_name() -> str:
 
 
 def _empty_series(channel_codes: list[str]) -> dict[str, dict[str, Any]]:
-    return {channel_code: {"channel_code": channel_code, "unit": None, "items": []} for channel_code in channel_codes}
+    return {
+        channel_code: {
+            "channel_code": channel_code,
+            "unit": None,
+            "latest_measurement_at": None,
+            "items": [],
+        }
+        for channel_code in channel_codes
+    }
 
 
 def _series_has_points(series_by_code: dict[str, dict[str, Any]]) -> bool:
@@ -40,12 +48,24 @@ def _series_has_points(series_by_code: dict[str, dict[str, Any]]) -> bool:
 
 
 def _append_series_item(bucket: dict[str, dict[str, Any]], *, channel_code: str, measured_at: datetime, numeric_value: float, unit: str | None) -> None:
-    series = bucket.setdefault(channel_code, {"channel_code": channel_code, "unit": unit, "items": []})
+    normalized_measured_at = _as_utc_datetime(measured_at)
+    if normalized_measured_at is None:
+        return
+    series = bucket.setdefault(
+        channel_code,
+        {
+            "channel_code": channel_code,
+            "unit": unit,
+            "latest_measurement_at": None,
+            "items": [],
+        },
+    )
     if series["unit"] in (None, "") and unit not in (None, ""):
         series["unit"] = unit
+    series["latest_measurement_at"] = normalized_measured_at.isoformat()
     series["items"].append(
         {
-            "measured_at": _as_utc_datetime(measured_at).isoformat(),
+            "measured_at": normalized_measured_at.isoformat(),
             "numeric_value": float(numeric_value),
             "unit": unit,
         }
@@ -56,7 +76,8 @@ def _load_plot_series_mysql(
     *,
     device_id: int,
     channel_codes: list[str],
-    cutoff: datetime,
+    window_start: datetime,
+    window_end: datetime,
     bucket_seconds: int,
 ) -> dict[str, dict[str, Any]]:
     sql = text(
@@ -77,6 +98,7 @@ def _load_plot_series_mysql(
               AND channel_code IN :channel_codes
               AND numeric_value IS NOT NULL
               AND measured_at >= :cutoff
+              AND measured_at <= :window_end
         ) ranked
         WHERE bucket_rank = 1
         ORDER BY channel_code ASC, measured_at ASC
@@ -88,7 +110,8 @@ def _load_plot_series_mysql(
         {
             "device_id": device_id,
             "channel_codes": channel_codes,
-            "cutoff": cutoff,
+            "cutoff": window_start,
+            "window_end": window_end,
             "bucket_seconds": bucket_seconds,
         },
     ).mappings()
@@ -109,7 +132,8 @@ def _load_plot_series_python(
     *,
     device_id: int,
     channel_codes: list[str],
-    cutoff: datetime,
+    window_start: datetime,
+    window_end: datetime,
     bucket_seconds: int,
 ) -> dict[str, dict[str, Any]]:
     bucket = _empty_series(channel_codes)
@@ -125,7 +149,8 @@ def _load_plot_series_python(
             Measurement.device_id == device_id,
             Measurement.channel_code.in_(channel_codes),
             Measurement.numeric_value.is_not(None),
-            Measurement.measured_at >= cutoff,
+            Measurement.measured_at >= window_start,
+            Measurement.measured_at <= window_end,
         )
         .order_by(
             Measurement.channel_code.asc(),
@@ -143,7 +168,7 @@ def _load_plot_series_python(
         measured_at = _as_utc_datetime(row.measured_at)
         if measured_at is None:
             continue
-        bucket_index = max(0, int((measured_at - cutoff).total_seconds()) // bucket_seconds)
+        bucket_index = max(0, int((measured_at - window_start).total_seconds()) // bucket_seconds)
         row_payload = (channel_code, measured_at, float(row.numeric_value), row.unit)
 
         if current_channel is None:
@@ -178,13 +203,7 @@ def _load_plot_series_python(
     return bucket
 
 
-def load_device_plot_series(
-    *,
-    device_id: int,
-    channel_codes: list[str],
-    since_minutes: int,
-    max_points: int,
-) -> list[dict[str, Any]]:
+def _normalize_channel_codes(channel_codes: list[str]) -> list[str]:
     normalized_codes = []
     seen_codes: set[str] = set()
     for channel_code in channel_codes:
@@ -192,11 +211,35 @@ def load_device_plot_series(
         if normalized and normalized not in seen_codes:
             normalized_codes.append(normalized)
             seen_codes.add(normalized)
+    return normalized_codes
+
+
+def _plot_window(*, since_minutes: int, window_end: datetime | None) -> tuple[datetime, datetime]:
+    normalized_window_end = _as_utc_datetime(window_end) or _now_utc()
+    normalized_window_start = normalized_window_end - timedelta(minutes=max(1, since_minutes))
+    return normalized_window_start, normalized_window_end
+
+
+def load_device_plot_series_window(
+    *,
+    device_id: int,
+    channel_codes: list[str],
+    since_minutes: int,
+    max_points: int,
+    window_end: datetime | None = None,
+) -> dict[str, Any]:
+    normalized_codes = _normalize_channel_codes(channel_codes)
 
     if not normalized_codes:
-        return []
+        start, end = _plot_window(since_minutes=since_minutes, window_end=window_end)
+        return {
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "bucket_seconds": _bucket_seconds(since_minutes=since_minutes, max_points=max_points),
+            "series": [],
+        }
 
-    cutoff = _now_utc() - timedelta(minutes=max(1, since_minutes))
+    window_start, normalized_window_end = _plot_window(since_minutes=since_minutes, window_end=window_end)
     bucket_seconds = _bucket_seconds(since_minutes=since_minutes, max_points=max_points)
     dialect_name = _db_dialect_name()
 
@@ -205,7 +248,8 @@ def load_device_plot_series(
             series_by_code = _load_plot_series_mysql(
                 device_id=device_id,
                 channel_codes=normalized_codes,
-                cutoff=cutoff,
+                window_start=window_start,
+                window_end=normalized_window_end,
                 bucket_seconds=bucket_seconds,
             )
             if not _series_has_points(series_by_code):
@@ -215,14 +259,16 @@ def load_device_plot_series(
                 series_by_code = _load_plot_series_python(
                     device_id=device_id,
                     channel_codes=normalized_codes,
-                    cutoff=cutoff,
+                    window_start=window_start,
+                    window_end=normalized_window_end,
                     bucket_seconds=bucket_seconds,
                 )
         else:
             series_by_code = _load_plot_series_python(
                 device_id=device_id,
                 channel_codes=normalized_codes,
-                cutoff=cutoff,
+                window_start=window_start,
+                window_end=normalized_window_end,
                 bucket_seconds=bucket_seconds,
             )
     except SQLAlchemyError:
@@ -232,8 +278,42 @@ def load_device_plot_series(
         series_by_code = _load_plot_series_python(
             device_id=device_id,
             channel_codes=normalized_codes,
-            cutoff=cutoff,
+            window_start=window_start,
+            window_end=normalized_window_end,
             bucket_seconds=bucket_seconds,
         )
 
-    return [series_by_code.get(channel_code, {"channel_code": channel_code, "unit": None, "items": []}) for channel_code in normalized_codes]
+    return {
+        "window_start": window_start.isoformat(),
+        "window_end": normalized_window_end.isoformat(),
+        "bucket_seconds": bucket_seconds,
+        "series": [
+            series_by_code.get(
+                channel_code,
+                {
+                    "channel_code": channel_code,
+                    "unit": None,
+                    "latest_measurement_at": None,
+                    "items": [],
+                },
+            )
+            for channel_code in normalized_codes
+        ],
+    }
+
+
+def load_device_plot_series(
+    *,
+    device_id: int,
+    channel_codes: list[str],
+    since_minutes: int,
+    max_points: int,
+    window_end: datetime | None = None,
+) -> list[dict[str, Any]]:
+    return load_device_plot_series_window(
+        device_id=device_id,
+        channel_codes=channel_codes,
+        since_minutes=since_minutes,
+        max_points=max_points,
+        window_end=window_end,
+    )["series"]

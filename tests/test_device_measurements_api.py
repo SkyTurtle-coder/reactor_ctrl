@@ -105,8 +105,7 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
             Measurement.query.delete()
             db.session.commit()
 
-    def _insert_measurement(self, *, minutes_ago: int, value: float, channel_code: str = "temp") -> None:
-        measured_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    def _insert_measurement_at(self, *, measured_at: datetime, value: float, channel_code: str = "temp") -> None:
         with self.app.app_context():
             db.session.add(
                 Measurement(
@@ -119,6 +118,10 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
                 )
             )
             db.session.commit()
+
+    def _insert_measurement(self, *, minutes_ago: int, value: float, channel_code: str = "temp") -> None:
+        measured_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+        self._insert_measurement_at(measured_at=measured_at, value=value, channel_code=channel_code)
 
     def test_measurements_endpoint_filters_by_since_minutes(self):
         self._insert_measurement(minutes_ago=10, value=22.5)
@@ -190,6 +193,38 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
         self.assertEqual(len(series), 1)
         self.assertLessEqual(len(series[0]["items"]), 7)
         self.assertGreaterEqual(len(series[0]["items"]), 4)
+
+    def test_plot_series_endpoint_uses_explicit_window_end_for_all_points(self):
+        window_end = datetime(2026, 5, 20, 12, 0, 0, tzinfo=timezone.utc)
+        self._insert_measurement_at(measured_at=window_end - timedelta(minutes=10), value=42.0)
+        self._insert_measurement_at(measured_at=window_end + timedelta(seconds=1), value=99.0)
+        self._insert_measurement_at(measured_at=window_end - timedelta(minutes=70), value=12.0)
+
+        response = self.client.get(
+            f"/api/devices/{self.device_id}/plot-series",
+            query_string={
+                "channel_code": "temp",
+                "since_minutes": "60",
+                "max_points": "20",
+                "window_end": window_end.isoformat(),
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        self.assertEqual(payload["window_end"], window_end.isoformat())
+        self.assertEqual(payload["window_start"], (window_end - timedelta(minutes=60)).isoformat())
+        self.assertIn("bucket_seconds", payload)
+        items = payload["series"][0]["items"]
+        self.assertEqual([item["numeric_value"] for item in items], [42.0])
+        self.assertEqual(payload["series"][0]["latest_measurement_at"], (window_end - timedelta(minutes=10)).isoformat())
+
+    def test_plot_series_endpoint_rejects_invalid_window_end(self):
+        response = self.client.get(
+            f"/api/devices/{self.device_id}/plot-series?channel_code=temp&since_minutes=60&max_points=20&window_end=not-a-date"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("window_end", response.get_json()["error"])
 
     def test_plot_series_endpoint_rejects_missing_channel_code(self):
         response = self.client.get(
