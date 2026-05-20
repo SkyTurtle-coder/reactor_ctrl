@@ -9,6 +9,26 @@ from reactor_app.services import recipe_program_runtime
 from reactor_app.services.device_manual_runtime import _apply_desired_ika_state, _parse_ika_numeric_response
 
 
+def _motor_step(task, delta_time, rpm=None, *, status_on=None):
+    return {
+        "actors": [
+            {
+                "actor_id": "Stirrer_01",
+                "actor": "Stirrer_01",
+                "priority": 1,
+                "params": {
+                    "status_on": status_on,
+                    "target_temp_c": None,
+                    "pressure_mbar_a": None,
+                    "rpm": rpm,
+                },
+            }
+        ],
+        "task": task,
+        "delta_time": delta_time,
+    }
+
+
 class IkaRpmLimitTests(unittest.TestCase):
     def test_motor_profile_caps_speed_at_ika_limit(self):
         profile = get_actuator_profile("motor_rpm")
@@ -37,12 +57,7 @@ class IkaRpmLimitTests(unittest.TestCase):
             operator_name="tester",
         )
         recipe.steps_json = [
-            {
-                "actor": "Stirrer_01",
-                "task": "Start",
-                "delta_time": 0,
-                "rpm": IKA_EUROSTAR_60_MAX_RPM + 1,
-            }
+            _motor_step("Start", 0, IKA_EUROSTAR_60_MAX_RPM + 1, status_on=True),
         ]
         build = ReactorBuild(
             reactor_build_id=1,
@@ -68,12 +83,7 @@ class IkaRpmLimitTests(unittest.TestCase):
             operator_name="tester",
         )
         recipe.steps_json = [
-            {
-                "actor": "Stirrer_01",
-                "task": "Start",
-                "delta_time": 0,
-                "rpm": IKA_EUROSTAR_60_MAX_RPM,
-            }
+            _motor_step("Start", 0, IKA_EUROSTAR_60_MAX_RPM, status_on=True),
         ]
         build = ReactorBuild(
             reactor_build_id=1,
@@ -92,7 +102,7 @@ class IkaRpmLimitTests(unittest.TestCase):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, build)
 
         self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["rpm"], IKA_EUROSTAR_60_MAX_RPM)
-        self.assertIsNone(snapshot["steps"][0]["rpm"])
+        self.assertNotIn("rpm", snapshot["steps"][0])
 
     def test_recipe_runtime_accepts_motor_step_with_zero_temp_and_pressure(self):
         recipe = Recipe(
@@ -101,14 +111,7 @@ class IkaRpmLimitTests(unittest.TestCase):
             operator_name="tester",
         )
         recipe.steps_json = [
-            {
-                "actor": "Stirrer_01",
-                "task": "Start",
-                "delta_time": 0,
-                "rpm": 500,
-                "temp": 0,
-                "pressure": 0.0,
-            }
+            _motor_step("Start", 0, 500, status_on=True),
         ]
         build = ReactorBuild(
             reactor_build_id=1,
@@ -127,9 +130,9 @@ class IkaRpmLimitTests(unittest.TestCase):
             snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, build)
 
         self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["rpm"], 500)
-        self.assertIsNone(snapshot["steps"][0]["rpm"])
-        self.assertIsNone(snapshot["steps"][0]["temp"])
-        self.assertIsNone(snapshot["steps"][0]["pressure"])
+        self.assertNotIn("rpm", snapshot["steps"][0])
+        self.assertNotIn("temp", snapshot["steps"][0])
+        self.assertNotIn("pressure", snapshot["steps"][0])
 
 
 class IkaDeviceClampingDetectionTests(unittest.TestCase):

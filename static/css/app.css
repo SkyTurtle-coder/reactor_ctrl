@@ -2638,6 +2638,7 @@ html[data-theme="dark"] textarea:disabled {
 html[data-theme="dark"] .recipe-text-input,
 html[data-theme="dark"] .recipe-num-input,
 html[data-theme="dark"] .recipe-priority-input,
+html[data-theme="dark"] .recipe-status-select,
 html[data-theme="dark"] .recipe-actor-picker,
 html[data-theme="dark"] .recipe-actor-select {
     background: transparent;
@@ -2646,6 +2647,7 @@ html[data-theme="dark"] .recipe-actor-select {
 html[data-theme="dark"] .recipe-text-input:hover,
 html[data-theme="dark"] .recipe-num-input:hover,
 html[data-theme="dark"] .recipe-priority-input:hover,
+html[data-theme="dark"] .recipe-status-select:hover,
 html[data-theme="dark"] .recipe-actor-picker:hover,
 html[data-theme="dark"] .recipe-actor-select:hover {
     background: var(--surface-alt);
@@ -2655,6 +2657,7 @@ html[data-theme="dark"] .recipe-actor-select:hover {
 html[data-theme="dark"] .recipe-text-input:focus,
 html[data-theme="dark"] .recipe-num-input:focus,
 html[data-theme="dark"] .recipe-priority-input:focus,
+html[data-theme="dark"] .recipe-status-select:focus,
 html[data-theme="dark"] .recipe-actor-picker:focus-within,
 html[data-theme="dark"] .recipe-actor-select:focus {
     background: var(--surface);
@@ -2663,6 +2666,7 @@ html[data-theme="dark"] .recipe-actor-select:focus {
 html[data-theme="dark"] .recipe-text-input:disabled,
 html[data-theme="dark"] .recipe-num-input:disabled,
 html[data-theme="dark"] .recipe-priority-input:disabled,
+html[data-theme="dark"] .recipe-status-select:disabled,
 html[data-theme="dark"] .recipe-actor-select:disabled {
     background: rgba(255, 255, 255, 0.04);
 }
@@ -3010,6 +3014,11 @@ html[data-theme="dark"] textarea {
     text-align: center;
 }
 
+.recipe-col-status {
+    width: 7rem;
+    text-align: center;
+}
+
 .recipe-col-num-val {
     width: 7rem;
     white-space: nowrap;
@@ -3051,6 +3060,7 @@ html[data-theme="dark"] textarea {
 .recipe-text-input,
 .recipe-num-input,
 .recipe-priority-input,
+.recipe-status-select,
 .recipe-actor-picker,
 .recipe-actor-select {
     width: 100%;
@@ -3069,6 +3079,7 @@ html[data-theme="dark"] textarea {
 .recipe-text-input:hover,
 .recipe-num-input:hover,
 .recipe-priority-input:hover,
+.recipe-status-select:hover,
 .recipe-actor-picker:hover,
 .recipe-actor-select:hover {
     border-color: var(--border);
@@ -3078,6 +3089,7 @@ html[data-theme="dark"] textarea {
 .recipe-text-input:focus,
 .recipe-num-input:focus,
 .recipe-priority-input:focus,
+.recipe-status-select:focus,
 .recipe-actor-picker:focus-within,
 .recipe-actor-select:focus {
     outline: 2px solid var(--accent);
@@ -3089,6 +3101,7 @@ html[data-theme="dark"] textarea {
 .recipe-text-input:disabled,
 .recipe-num-input:disabled,
 .recipe-priority-input:disabled,
+.recipe-status-select:disabled,
 .recipe-actor-select:disabled {
     cursor: not-allowed;
     color: var(--muted);
@@ -3208,6 +3221,12 @@ html[data-theme="dark"] textarea {
 .recipe-priority-input.is-invalid {
     border-color: var(--danger);
     background: rgba(154, 47, 36, 0.08);
+}
+
+.recipe-status-select {
+    min-width: 6rem;
+    font-weight: 700;
+    text-align: center;
 }
 
 .recipe-num-input-inactive {

@@ -43,6 +43,41 @@ class HuberRecipeProgramTests(unittest.TestCase):
         recipe.steps_json = steps
         return recipe
 
+    def _huber_step(self, task, delta_time, target_temp_c=None, *, status_on=None, actor="Huber_01", priority=1, extra_params=None):
+        params = {
+            "status_on": status_on,
+            "target_temp_c": target_temp_c,
+            "pressure_mbar_a": None,
+            "rpm": None,
+        }
+        if extra_params:
+            params.update(extra_params)
+        return {
+            "actors": [
+                {
+                    "actor_id": actor,
+                    "actor": actor,
+                    "priority": priority,
+                    "params": params,
+                }
+            ],
+            "task": task,
+            "delta_time": delta_time,
+        }
+
+    def _motor_ref(self, rpm, *, status_on=None, actor="Stirrer_01", priority=2):
+        return {
+            "actor_id": actor,
+            "actor": actor,
+            "priority": priority,
+            "params": {
+                "status_on": status_on,
+                "target_temp_c": None,
+                "pressure_mbar_a": None,
+                "rpm": rpm,
+            },
+        }
+
     def _build(self):
         return ReactorBuild(
             reactor_build_id=1,
@@ -73,8 +108,8 @@ class HuberRecipeProgramTests(unittest.TestCase):
     def test_huber_temperature_actor_is_allowed_in_recipe_snapshot(self):
         recipe = self._recipe(
             [
-                {"actor": "Huber_01", "task": "Set cold", "delta_time": 0, "temp": -10, "rpm": 0},
-                {"actor": "Huber_01", "task": "Ramp warm", "delta_time": 2, "temp": 25, "pressure": 0},
+                self._huber_step("Set cold", 0, -10, status_on=True),
+                self._huber_step("Ramp warm", 2, 25),
             ]
         )
 
@@ -88,14 +123,14 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(snapshot["bindings"][0]["profile_id"], "hc_system_temperature")
         self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_unistat_430")
         self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["target_temp_c"], -10)
-        self.assertIsNone(snapshot["steps"][0]["temp"])
-        self.assertIsNone(snapshot["steps"][0]["rpm"])
-        self.assertIsNone(snapshot["steps"][1]["pressure"])
+        self.assertNotIn("temp", snapshot["steps"][0])
+        self.assertNotIn("rpm", snapshot["steps"][0])
+        self.assertNotIn("pressure", snapshot["steps"][1])
 
     def test_huber_recipe_actor_rejects_rpm_values(self):
         recipe = self._recipe(
             [
-                {"actor": "Huber_01", "task": "Invalid", "delta_time": 0, "temp": 20, "rpm": 300},
+                self._huber_step("Invalid", 0, 20, extra_params={"rpm": 300}),
             ]
         )
 
@@ -110,7 +145,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
     def test_unistat_recipe_actor_keeps_existing_temperature_range(self):
         recipe = self._recipe(
             [
-                {"actor": "Huber_01", "task": "Too high", "delta_time": 0, "temp": 180},
+                self._huber_step("Too high", 0, 180),
             ]
         )
 
@@ -126,12 +161,12 @@ class HuberRecipeProgramTests(unittest.TestCase):
         recipe = self._recipe(
             [
                 {
-                    "actors": [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+                    "actors": [
+                        self._huber_step("unused", 0, 35, status_on=True)["actors"][0],
+                        self._motor_ref(300, status_on=True),
+                    ],
                     "task": "Heat while stirring",
                     "delta_time": 5,
-                    "temp": 35,
-                    "rpm": 300,
-                    "pressure": 0,
                 },
             ]
         )
@@ -149,9 +184,9 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertIsNone(actors[0]["params"]["rpm"])
         self.assertEqual(actors[1]["params"]["rpm"], 300)
         self.assertIsNone(actors[1]["params"]["target_temp_c"])
-        self.assertIsNone(snapshot["steps"][0]["temp"])
-        self.assertIsNone(snapshot["steps"][0]["rpm"])
-        self.assertIsNone(snapshot["steps"][0]["pressure"])
+        self.assertNotIn("temp", snapshot["steps"][0])
+        self.assertNotIn("rpm", snapshot["steps"][0])
+        self.assertNotIn("pressure", snapshot["steps"][0])
         self.assertEqual({binding["actor"] for binding in snapshot["bindings"]}, {"Huber_01", "Stirrer_01"})
 
     def test_huber_current_target_writes_setpoint_and_starts_temperature_control(self):
@@ -182,6 +217,32 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["max_retries"], 1)
         self.assertEqual(state.last_applied_targets_json["Huber_01"]["temp"], 21.25)
         self.assertTrue(state.last_applied_targets_json["Huber_01"]["is_on"])
+        self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
+
+    def test_huber_current_target_off_sends_stop_without_setpoint(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._binding()]}
+        state.last_applied_targets_json = {"Huber_01": {"temp": 21.25, "is_on": True}}
+
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                changes = recipe_program_runtime._apply_current_targets(
+                    app,
+                    state,
+                    {"Huber_01": {"is_on": False, "temp": 0, "pressure": 0, "rpm": 0}},
+                )
+
+        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        self.assertEqual(command_names, ["stop"])
+        self.assertFalse(state.last_applied_targets_json["Huber_01"]["is_on"])
         self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
 
     def test_huber_current_target_failure_reports_recipe_context(self):

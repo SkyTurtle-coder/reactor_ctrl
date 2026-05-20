@@ -43,6 +43,7 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn('id="recipe-select"', html)
         self.assertIn('id="recipe-save-btn"', html)
         self.assertIn("Pressure [mBar(A)]", html)
+        self.assertIn("Status", html)
         self.assertIn("recipe-no-flowsheet-hint", html)
         self.assertIn("Actor", html)
 
@@ -52,6 +53,7 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn('<select id="recipe-build-select"', source)
         self.assertIn('<th class="recipe-col-actor">Actor</th>', source)
         self.assertIn("&Delta; [min]", source)
+        self.assertIn('<th class="recipe-col-status">Status</th>', source)
         self.assertIn("Soll Temp. [&deg;C]", source)
         self.assertIn("Pressure [mBar(A)]", source)
         self.assertIn('id="recipe-no-flowsheet-hint"', source)
@@ -62,7 +64,8 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn('document.getElementById("recipe-build-select")', source)
         self.assertIn("function makeActorPicker(step, rowIndex, isEmpty, disabled)", source)
         self.assertIn("function actorOptionsForBuild(buildData)", source)
-        self.assertIn("function normalizeActorRefs(rawActors, fallbackActor = \"\",", source)
+        self.assertIn("function normalizeActorRefs(rawActors)", source)
+        self.assertIn("function makeActorStatusSelect(ref, rowIndex, disabled)", source)
         self.assertIn("recipe-actor-chip", source)
         self.assertIn('fetchJson(`/api/reactor-builds/${state.reactorBuildId}`)', source)
         self.assertIn("Select a flowsheet before adding steps.", source)
@@ -79,7 +82,7 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn("must match actuator instance_ids from the selected flowsheet.", source)
         self.assertIn("The selected flowsheet does not contain any actors.", source)
 
-    def test_recipe_api_accepts_multi_actor_steps_and_preserves_legacy_actor(self):
+    def test_recipe_api_accepts_multi_actor_steps_with_actor_scoped_params(self):
         allowed = {
             "Huber_01": {"actor": "Huber_01", "profile_id": "hc_system_temperature", "symbol_id": "hc_system"},
             "Stirrer_01": {"actor": "Stirrer_01", "profile_id": "motor_rpm", "symbol_id": "motor"},
@@ -88,26 +91,59 @@ class RecipeEditorTests(unittest.TestCase):
         steps = recipe_api._validate_recipe_steps(
             [
                 {
-                    "actors": [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+                    "actors": [
+                        {
+                            "actor_id": "Huber_01",
+                            "priority": 1,
+                            "params": {"status_on": True, "target_temp_c": 35, "pressure_mbar_a": None, "rpm": None},
+                        },
+                        {
+                            "actor_id": "Stirrer_01",
+                            "priority": 2,
+                            "params": {"status_on": True, "target_temp_c": None, "pressure_mbar_a": None, "rpm": 300},
+                        },
+                    ],
                     "task": "Heat and stir",
                     "delta_time": 5,
-                    "temp": 35,
-                    "rpm": 300,
                 },
-                {"actor": "Huber_01", "task": "Hold", "delta_time": 5, "temp": 35},
+                {
+                    "actors": [
+                        {
+                            "actor_id": "Huber_01",
+                            "priority": 1,
+                            "params": {"status_on": None, "target_temp_c": 35, "pressure_mbar_a": None, "rpm": None},
+                        }
+                    ],
+                    "task": "Hold",
+                    "delta_time": 5,
+                },
             ],
             allowed_actor_lookup=allowed,
         )
 
-        self.assertEqual(steps[0]["actor"], "Huber_01")
+        self.assertNotIn("actor", steps[0])
         stirrer_ref = steps[0]["actors"][1]
         self.assertEqual(stirrer_ref["actor"], "Stirrer_01")
         self.assertEqual(stirrer_ref["priority"], 2)
         self.assertEqual(stirrer_ref["params"]["rpm"], 300.0)
+        self.assertTrue(stirrer_ref["params"]["status_on"])
         step1_actors = steps[1]["actors"]
         self.assertEqual(len(step1_actors), 1)
         self.assertEqual(step1_actors[0]["actor"], "Huber_01")
         self.assertEqual(step1_actors[0]["params"]["target_temp_c"], 35.0)
+
+    def test_recipe_api_rejects_old_top_level_step_fields(self):
+        allowed = {
+            "Huber_01": {"actor": "Huber_01", "profile_id": "hc_system_temperature", "symbol_id": "hc_system"},
+        }
+
+        with self.assertRaisesRegex(ValueError, "old recipe structure"):
+            recipe_api._validate_recipe_steps(
+                [
+                    {"actor": "Huber_01", "task": "Legacy", "delta_time": 1, "temp": 25},
+                ],
+                allowed_actor_lookup=allowed,
+            )
 
     def test_recipe_api_requires_initial_parameter_for_each_selected_actor(self):
         allowed = {
@@ -119,10 +155,61 @@ class RecipeEditorTests(unittest.TestCase):
             recipe_api._validate_recipe_steps(
                 [
                     {
-                        "actors": [{"actor": "Huber_01"}, {"actor": "Stirrer_01"}],
+                        "actors": [
+                            {
+                                "actor": "Huber_01",
+                                "params": {"status_on": True, "target_temp_c": 35},
+                            },
+                            {
+                                "actor": "Stirrer_01",
+                                "params": {"status_on": True},
+                            },
+                        ],
                         "task": "Missing stirrer rpm",
                         "delta_time": 5,
-                        "temp": 35,
+                    },
+                ],
+                allowed_actor_lookup=allowed,
+            )
+
+    def test_recipe_api_allows_off_without_target_and_rejects_off_setpoint(self):
+        allowed = {
+            "Stirrer_01": {"actor": "Stirrer_01", "profile_id": "motor_rpm", "symbol_id": "motor"},
+        }
+
+        steps = recipe_api._validate_recipe_steps(
+            [
+                {
+                    "actors": [
+                        {
+                            "actor": "Stirrer_01",
+                            "priority": 1,
+                            "params": {"status_on": False, "rpm": None},
+                        }
+                    ],
+                    "task": "Stop stirrer",
+                    "delta_time": 0,
+                },
+            ],
+            allowed_actor_lookup=allowed,
+        )
+
+        self.assertFalse(steps[0]["actors"][0]["params"]["status_on"])
+        self.assertIsNone(steps[0]["actors"][0]["params"]["rpm"])
+
+        with self.assertRaisesRegex(ValueError, "must be empty when status_on is false"):
+            recipe_api._validate_recipe_steps(
+                [
+                    {
+                        "actors": [
+                            {
+                                "actor": "Stirrer_01",
+                                "priority": 1,
+                                "params": {"status_on": False, "rpm": 150},
+                            }
+                        ],
+                        "task": "Invalid stop",
+                        "delta_time": 0,
                     },
                 ],
                 allowed_actor_lookup=allowed,
@@ -138,16 +225,16 @@ class RecipeEditorTests(unittest.TestCase):
             [
                 {
                     "actors": [
-                        {
-                            "actor": "Huber_01",
-                            "priority": 1,
-                            "params": {"target_temp_c": 25},
-                        },
-                        {
-                            "actor": "Stirrer_01",
-                            "priority": 1,
-                            "params": {"rpm": 150},
-                        },
+                            {
+                                "actor": "Huber_01",
+                                "priority": 1,
+                                "params": {"status_on": True, "target_temp_c": 25},
+                            },
+                            {
+                                "actor": "Stirrer_01",
+                                "priority": 1,
+                                "params": {"status_on": True, "rpm": 150},
+                            },
                     ],
                     "task": "Same priority",
                     "delta_time": 0,
@@ -166,7 +253,7 @@ class RecipeEditorTests(unittest.TestCase):
                             {
                                 "actor": "Huber_01",
                                 "priority": 11,
-                                "params": {"target_temp_c": 25},
+                                "params": {"status_on": True, "target_temp_c": 25},
                             }
                         ],
                         "task": "Invalid priority",
@@ -184,7 +271,7 @@ class RecipeEditorTests(unittest.TestCase):
                             {
                                 "actor": "Huber_01",
                                 "priority": 1.5,
-                                "params": {"target_temp_c": 25},
+                                "params": {"status_on": True, "target_temp_c": 25},
                             }
                         ],
                         "task": "Invalid decimal priority",
@@ -200,6 +287,8 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn(".recipe-col-actor", source)
         self.assertIn(".recipe-actor-select", source)
         self.assertIn(".recipe-actor-chip", source)
+        self.assertIn(".recipe-col-status", source)
+        self.assertIn(".recipe-status-select", source)
         self.assertIn(".recipe-num-input-inactive", source)
         self.assertIn(".recipe-cell-required", source)
         self.assertIn(".recipe-no-flowsheet-hint", source)

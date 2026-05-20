@@ -5,12 +5,52 @@ from reactor_app.models import RecipeProgramState
 from reactor_app.services.recipe_program_runtime import _evaluate_program_timeline, recipe_program_state_to_dict
 
 
+def _motor_step(task, delta_time, rpm=None, *, status_on=None, actor="Stirrer_01", priority=1):
+    return {
+        "actors": [
+            {
+                "actor_id": actor,
+                "actor": actor,
+                "priority": priority,
+                "params": {
+                    "status_on": status_on,
+                    "target_temp_c": None,
+                    "pressure_mbar_a": None,
+                    "rpm": rpm,
+                },
+            }
+        ],
+        "task": task,
+        "delta_time": delta_time,
+    }
+
+
+def _huber_step(task, delta_time, target_temp_c=None, *, status_on=None, actor="Huber_01", priority=1):
+    return {
+        "actors": [
+            {
+                "actor_id": actor,
+                "actor": actor,
+                "priority": priority,
+                "params": {
+                    "status_on": status_on,
+                    "target_temp_c": target_temp_c,
+                    "pressure_mbar_a": None,
+                    "rpm": None,
+                },
+            }
+        ],
+        "task": task,
+        "delta_time": delta_time,
+    }
+
+
 class RecipeProgramRuntimeTests(unittest.TestCase):
     def test_second_step_ramps_from_previous_rpm_target(self):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         steps = [
-            {"actor": "Stirrer_01", "task": "Start", "delta_time": 0, "rpm": 300},
-            {"actor": "Stirrer_01", "task": "Ramp", "delta_time": 1, "rpm": 500},
+            _motor_step("Start", 0, 300, status_on=True),
+            _motor_step("Ramp", 1, 500),
         ]
 
         evaluation = _evaluate_program_timeline(
@@ -22,15 +62,15 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
 
         self.assertFalse(evaluation["completed"])
         self.assertEqual(evaluation["active_step_index"], 1)
-        self.assertEqual(evaluation["active_step"]["actor"], "Stirrer_01")
+        self.assertEqual(evaluation["active_step"]["actors"][0]["actor"], "Stirrer_01")
         self.assertAlmostEqual(evaluation["current_targets"]["Stirrer_01"]["rpm"], 400.0)
         self.assertAlmostEqual(evaluation["step_progress"], 0.5)
 
     def test_identical_rpm_step_holds_target_for_delta_time(self):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         steps = [
-            {"actor": "Stirrer_01", "task": "Start", "delta_time": 0, "rpm": 500},
-            {"actor": "Stirrer_01", "task": "Hold", "delta_time": 1, "rpm": 500},
+            _motor_step("Start", 0, 500, status_on=True),
+            _motor_step("Hold", 1, 500),
         ]
 
         evaluation = _evaluate_program_timeline(
@@ -48,8 +88,8 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
     def test_zero_delta_steps_apply_immediately_and_complete(self):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         steps = [
-            {"actor": "Stirrer_01", "task": "Start", "delta_time": 0, "rpm": 500},
-            {"actor": "Stirrer_01", "task": "Stop", "delta_time": 0, "rpm": 0},
+            _motor_step("Start", 0, 500, status_on=True),
+            _motor_step("Stop", 0, None, status_on=False),
         ]
 
         evaluation = _evaluate_program_timeline(
@@ -62,12 +102,13 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         self.assertTrue(evaluation["completed"])
         self.assertEqual(evaluation["active_step_index"], 2)
         self.assertAlmostEqual(evaluation["current_targets"]["Stirrer_01"]["rpm"], 0.0)
+        self.assertFalse(evaluation["current_targets"]["Stirrer_01"]["is_on"])
 
     def test_temperature_step_ramps_from_previous_temperature_target(self):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         steps = [
-            {"actor": "Huber_01", "task": "Set initial temperature", "delta_time": 0, "temp": 20},
-            {"actor": "Huber_01", "task": "Ramp temperature", "delta_time": 2, "temp": 40},
+            _huber_step("Set initial temperature", 0, 20, status_on=True),
+            _huber_step("Ramp temperature", 2, 40),
         ]
 
         evaluation = _evaluate_program_timeline(
@@ -79,7 +120,7 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
 
         self.assertFalse(evaluation["completed"])
         self.assertEqual(evaluation["active_step_index"], 1)
-        self.assertEqual(evaluation["active_step"]["actor"], "Huber_01")
+        self.assertEqual(evaluation["active_step"]["actors"][0]["actor"], "Huber_01")
         self.assertAlmostEqual(evaluation["current_targets"]["Huber_01"]["temp"], 30.0)
         self.assertAlmostEqual(evaluation["step_progress"], 0.5)
 
@@ -87,18 +128,40 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         started_at = datetime(2026, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
         steps = [
             {
-                "actors": [{"actor": "Huber_01"}, {"actor": "Stirrer_01"}],
+                "actors": [
+                    {
+                        "actor_id": "Huber_01",
+                        "actor": "Huber_01",
+                        "priority": 1,
+                        "params": {"status_on": True, "target_temp_c": 20, "pressure_mbar_a": None, "rpm": None},
+                    },
+                    {
+                        "actor_id": "Stirrer_01",
+                        "actor": "Stirrer_01",
+                        "priority": 2,
+                        "params": {"status_on": True, "target_temp_c": None, "pressure_mbar_a": None, "rpm": 200},
+                    },
+                ],
                 "task": "Initialize",
                 "delta_time": 0,
-                "temp": 20,
-                "rpm": 200,
             },
             {
-                "actors": [{"actor": "Huber_01", "priority": 1}, {"actor": "Stirrer_01", "priority": 2}],
+                "actors": [
+                    {
+                        "actor_id": "Huber_01",
+                        "actor": "Huber_01",
+                        "priority": 1,
+                        "params": {"status_on": None, "target_temp_c": 40, "pressure_mbar_a": None, "rpm": None},
+                    },
+                    {
+                        "actor_id": "Stirrer_01",
+                        "actor": "Stirrer_01",
+                        "priority": 2,
+                        "params": {"status_on": None, "target_temp_c": None, "pressure_mbar_a": None, "rpm": 600},
+                    },
+                ],
                 "task": "Parallel ramp",
                 "delta_time": 2,
-                "temp": 40,
-                "rpm": 600,
             },
         ]
 
@@ -123,13 +186,15 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
                 "actors": [
                     {
                         "actor_id": "Huber_01",
+                        "actor": "Huber_01",
                         "priority": 2,
-                        "params": {"target_temp_c": 20, "pressure_mbar_a": None, "rpm": None},
+                        "params": {"status_on": True, "target_temp_c": 20, "pressure_mbar_a": None, "rpm": None},
                     },
                     {
                         "actor_id": "Stirrer_01",
+                        "actor": "Stirrer_01",
                         "priority": 1,
-                        "params": {"target_temp_c": None, "pressure_mbar_a": None, "rpm": 200},
+                        "params": {"status_on": True, "target_temp_c": None, "pressure_mbar_a": None, "rpm": 200},
                     },
                 ],
                 "task": "Initialize",
@@ -139,13 +204,15 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
                 "actors": [
                     {
                         "actor_id": "Huber_01",
+                        "actor": "Huber_01",
                         "priority": 2,
-                        "params": {"target_temp_c": 40, "pressure_mbar_a": None, "rpm": None},
+                        "params": {"status_on": None, "target_temp_c": 40, "pressure_mbar_a": None, "rpm": None},
                     },
                     {
                         "actor_id": "Stirrer_01",
+                        "actor": "Stirrer_01",
                         "priority": 1,
-                        "params": {"target_temp_c": None, "pressure_mbar_a": None, "rpm": 600},
+                        "params": {"status_on": None, "target_temp_c": None, "pressure_mbar_a": None, "rpm": 600},
                     },
                 ],
                 "task": "Parallel ramp",
@@ -174,8 +241,9 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
                 "actors": [
                     {
                         "actor_id": "Stirrer_01",
+                        "actor": "Stirrer_01",
                         "priority": 1,
-                        "params": {"target_temp_c": None, "pressure_mbar_a": None, "rpm": ""},
+                        "params": {"status_on": None, "target_temp_c": None, "pressure_mbar_a": None, "rpm": ""},
                     }
                 ],
                 "task": "No command",
@@ -203,7 +271,7 @@ class RecipeProgramRuntimeTests(unittest.TestCase):
         )
         state.snapshot_json = {
             "steps": [
-                {"actor": "Stirrer_01", "task": "Ramp", "delta_time": 5, "rpm": 500},
+                _motor_step("Ramp", 5, 500, status_on=True),
             ],
             "bindings": [
                 {"actor": "Stirrer_01", "profile_id": "motor_rpm", "protocol": "ika_eurostar_60"},

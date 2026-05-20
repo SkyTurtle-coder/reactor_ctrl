@@ -409,6 +409,44 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         db.session.commit()
         return recipe
 
+    def _motor_step(self, task: str, delta_time: float, rpm: float | None, *, status_on: bool | None = None) -> dict:
+        return {
+            "actors": [
+                {
+                    "actor_id": "Stirrer_01",
+                    "actor": "Stirrer_01",
+                    "priority": 1,
+                    "params": {
+                        "status_on": status_on,
+                        "target_temp_c": None,
+                        "pressure_mbar_a": None,
+                        "rpm": rpm,
+                    },
+                }
+            ],
+            "task": task,
+            "delta_time": delta_time,
+        }
+
+    def _huber_step(self, task: str, delta_time: float, target_temp_c: float | None, *, status_on: bool | None = None) -> dict:
+        return {
+            "actors": [
+                {
+                    "actor_id": "HUBER-01",
+                    "actor": "HUBER-01",
+                    "priority": 1,
+                    "params": {
+                        "status_on": status_on,
+                        "target_temp_c": target_temp_c,
+                        "pressure_mbar_a": None,
+                        "rpm": None,
+                    },
+                }
+            ],
+            "task": task,
+            "delta_time": delta_time,
+        }
+
     def _acquire_program_lease(self, *, worker_id: str, lease_until: datetime) -> None:
         state = db.session.get(RecipeProgramState, 1)
         state.lease_owner = worker_id
@@ -421,8 +459,8 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         with self.app.app_context():
             recipe = self._seed_recipe(
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
-                    {"actor": "Stirrer_01", "task": "Hold 300", "delta_time": 1, "rpm": 300},
+                    self._motor_step("Ramp to 300", 1, 300, status_on=True),
+                    self._motor_step("Hold 300", 1, 300),
                 ]
             )
 
@@ -450,8 +488,8 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         with self.app.app_context():
             recipe = self._seed_recipe(
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
-                    {"actor": "Stirrer_01", "task": "Ramp to 600", "delta_time": 1, "rpm": 600},
+                    self._motor_step("Ramp to 300", 1, 300, status_on=True),
+                    self._motor_step("Ramp to 600", 1, 600),
                 ]
             )
 
@@ -496,7 +534,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         with self.app.app_context():
             recipe = self._seed_recipe(
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
+                    self._motor_step("Ramp to 300", 1, 300, status_on=True),
                 ]
             )
 
@@ -524,7 +562,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         with self.app.app_context():
             recipe = self._seed_recipe(
                 steps_json=[
-                    {"actor": "HUBER-01", "task": "Heat", "delta_time": 1, "temp": 25},
+                    self._huber_step("Heat", 1, 25, status_on=True),
                 ],
                 actor_id="HUBER-01",
                 profile_id="hc_system_temperature",
@@ -578,7 +616,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         with self.app.app_context():
             first_recipe = self._seed_recipe(
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
+                    self._motor_step("Ramp to 300", 1, 300, status_on=True),
                 ]
             )
             second_recipe = Recipe(
@@ -587,7 +625,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 status="released",
                 reactor_build_id=first_recipe.reactor_build_id,
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 150", "delta_time": 1, "rpm": 150},
+                    self._motor_step("Ramp to 150", 1, 150, status_on=True),
                 ],
                 created_by="tester",
                 updated_by="tester",
@@ -634,7 +672,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
         with self.app.app_context():
             first_recipe = self._seed_recipe(
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 300", "delta_time": 1, "rpm": 300},
+                    self._motor_step("Ramp to 300", 1, 300, status_on=True),
                 ]
             )
             second_recipe = Recipe(
@@ -643,7 +681,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 status="released",
                 reactor_build_id=first_recipe.reactor_build_id,
                 steps_json=[
-                    {"actor": "Stirrer_01", "task": "Ramp to 150", "delta_time": 1, "rpm": 150},
+                    self._motor_step("Ramp to 150", 1, 150, status_on=True),
                 ],
                 created_by="tester",
                 updated_by="tester",

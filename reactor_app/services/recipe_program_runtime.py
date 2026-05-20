@@ -34,6 +34,7 @@ _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
+_STATUS_FIELD = "is_on"
 _PARAM_TO_NUMERIC_FIELD = {
     "target_temp_c": "temp",
     "pressure_mbar_a": "pressure",
@@ -158,6 +159,8 @@ def _copy_global_targets(targets: dict[str, dict[str, float]] | None) -> dict[st
                     next_payload["_order"] = int(payload.get("_order"))
                 except (TypeError, ValueError):
                     pass
+            if _STATUS_FIELD in payload and payload.get(_STATUS_FIELD) is not None:
+                next_payload[_STATUS_FIELD] = bool(payload.get(_STATUS_FIELD))
         result[actor_key] = next_payload
     return result
 
@@ -174,29 +177,27 @@ def _normalize_actor_priority(value: Any, fallback: int | None = None) -> int | 
     return parsed
 
 
-def _actor_params_from_ref(raw_ref: dict[str, Any], step: dict[str, Any]) -> dict[str, float | None]:
-    params: dict[str, float | None] = {field_name: None for field_name in _NUMERIC_FIELDS}
+def _actor_params_from_ref(raw_ref: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
+    params: dict[str, Any] = {field_name: None for field_name in _NUMERIC_FIELDS}
+    params[_STATUS_FIELD] = None
     raw_params = raw_ref.get("params") if isinstance(raw_ref.get("params"), dict) else {}
+    status_value = raw_params.get("status_on")
+    if status_value is None and _STATUS_FIELD in raw_params:
+        status_value = raw_params.get(_STATUS_FIELD)
+    if status_value is not None:
+        if not isinstance(status_value, bool):
+            raise ValueError("Recipe actor params.status_on must be true, false, or null.")
+        params[_STATUS_FIELD] = status_value
     for param_field, numeric_field in _PARAM_TO_NUMERIC_FIELD.items():
-        value = raw_params.get(param_field, raw_params.get(numeric_field))
-        if value is None:
-            value = raw_ref.get(param_field, raw_ref.get(numeric_field))
+        value = raw_params.get(param_field)
+        if value in (None, "") and numeric_field in raw_params:
+            value = raw_params.get(numeric_field)
         if value in (None, ""):
             continue
         try:
             params[numeric_field] = round(float(value), 2)
         except (TypeError, ValueError):
             continue
-
-    if all(value is None for value in params.values()):
-        for numeric_field in _NUMERIC_FIELDS:
-            value = step.get(numeric_field)
-            if value in (None, ""):
-                continue
-            try:
-                params[numeric_field] = round(float(value), 2)
-            except (TypeError, ValueError):
-                continue
     return params
 
 
@@ -205,14 +206,11 @@ def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
     refs: list[dict[str, Any]] = []
     if isinstance(raw_refs, list):
         for index, raw_ref in enumerate(raw_refs):
-            if isinstance(raw_ref, str):
-                actor = str(raw_ref or "").strip()
-                raw_object: dict[str, Any] = {}
-            elif isinstance(raw_ref, dict):
+            if isinstance(raw_ref, dict):
                 actor = str(raw_ref.get("actor_id") or raw_ref.get("actor") or "").strip()
                 raw_object = raw_ref
             else:
-                continue
+                raise ValueError("Recipe steps must use actor objects in steps[].actors.")
             if actor:
                 refs.append(
                     {
@@ -224,20 +222,6 @@ def _step_actor_refs(step: dict[str, Any]) -> list[dict[str, Any]]:
                         "_order": index,
                     }
                 )
-
-    if not refs:
-        actor = str(step.get("actor_id") or step.get("actor") or "").strip()
-        if actor:
-            refs.append(
-                {
-                    "actor": actor,
-                    "actor_id": actor,
-                    "actor_type": "",
-                    "priority": _normalize_actor_priority(step.get("priority"), 1),
-                    "params": _actor_params_from_ref({}, step),
-                    "_order": 0,
-                }
-            )
 
     deduplicated: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -274,8 +258,16 @@ def _step_actor_target(base_targets: dict[str, dict[str, float]], step: dict[str
         actor_targets = deepcopy(next_targets.get(actor) or _actor_baseline_state())
         params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
         has_target_value = False
+        status_value = params.get(_STATUS_FIELD)
+        if status_value is not None:
+            actor_targets[_STATUS_FIELD] = bool(status_value)
+            has_target_value = True
+
         for field_name in _NUMERIC_FIELDS:
-            raw_value = params.get(field_name, step.get(field_name))
+            if status_value is False:
+                actor_targets[field_name] = 0.0
+                continue
+            raw_value = params.get(field_name)
             if raw_value in (None, ""):
                 continue
             has_target_value = True
@@ -310,6 +302,10 @@ def _interpolate_targets(
             current_actor_targets["_priority"] = end_actor_targets["_priority"]
         if "_order" in end_actor_targets:
             current_actor_targets["_order"] = end_actor_targets["_order"]
+        if _STATUS_FIELD in end_actor_targets:
+            current_actor_targets[_STATUS_FIELD] = bool(end_actor_targets.get(_STATUS_FIELD))
+        elif _STATUS_FIELD in start_actor_targets:
+            current_actor_targets[_STATUS_FIELD] = bool(start_actor_targets.get(_STATUS_FIELD))
         current_targets[actor] = current_actor_targets
     return current_targets
 
@@ -326,6 +322,16 @@ def _parse_numeric_field(payload: dict, field: str) -> float | None:
 
 def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
     payload = raw_step if isinstance(raw_step, dict) else {}
+    forbidden_fields = [
+        field_name
+        for field_name in ("actor", "actor_id", *_NUMERIC_FIELDS)
+        if field_name in payload
+    ]
+    if forbidden_fields:
+        raise ValueError(
+            "Recipe steps must use the current steps[].actors[].params structure; "
+            f"unsupported top-level field(s): {', '.join(sorted(set(forbidden_fields)))}."
+        )
     try:
         delta_time = round(float(payload.get("delta_time", payload.get("delta_min")) or 0.0), 2)
     except (TypeError, ValueError):
@@ -333,16 +339,11 @@ def _normalize_snapshot_step(raw_step: Any) -> dict[str, Any]:
             f"Recipe step field 'delta_time' must be a number, got: {payload.get('delta_time', payload.get('delta_min'))!r}"
         )
     actor_refs = _step_actor_refs(payload)
-    primary_actor = actor_refs[0]["actor"] if actor_refs else ""
     return {
-        "actor": primary_actor,
         "actors": actor_refs,
         "task": str(payload.get("task") or "").strip(),
         "delta_time": delta_time,
         "delta_min": delta_time,
-        "temp": _parse_numeric_field(payload, "temp"),
-        "pressure": _parse_numeric_field(payload, "pressure"),
-        "rpm": _parse_numeric_field(payload, "rpm"),
     }
 
 
@@ -604,12 +605,11 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
         bindings.append(binding)
 
     binding_by_actor = {str(binding.get("actor") or "").strip(): binding for binding in bindings}
-    huber_temp_initialized: set[str] = set()
+    initialized_fields_by_actor: dict[str, set[str]] = {}
     for index, step in enumerate(steps, start=1):
         actor_refs = _step_actor_refs(step)
         step_actor_ids = [ref["actor"] for ref in actor_refs]
 
-        step_relevant_fields: set[str] = set()
         step_actor_profiles: dict[str, str] = {}
         step_actor_protocols: dict[str, str] = {}
         for actor in step_actor_ids:
@@ -619,7 +619,6 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             profile_id = str(binding.get("profile_id") or "").strip()
             step_actor_profiles[actor] = profile_id
             step_actor_protocols[actor] = _protocol_for_binding(binding)
-            step_relevant_fields.update(_target_fields_for_profile(profile_id))
 
         normalized_actor_refs: list[dict[str, Any]] = []
         for actor_ref in actor_refs:
@@ -627,19 +626,30 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             profile_id = step_actor_profiles[actor]
             target_fields = set(_target_fields_for_profile(profile_id))
             raw_params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
+            status_on = raw_params.get(_STATUS_FIELD)
             params = {
                 field_name: raw_params.get(field_name)
                 for field_name in _NUMERIC_FIELDS
             }
+            if status_on is not None and not isinstance(status_on, bool):
+                raise ValueError(f"Step {index} actor '{actor}' has invalid status_on; expected true, false, or null.")
             for field_name, value in list(params.items()):
                 if field_name in target_fields:
                     continue
-                if field_name not in step_relevant_fields and _has_nonzero_numeric_value(value):
+                if _has_nonzero_numeric_value(value):
                     raise ValueError(
                         f"Step {index} contains non-zero {field_name} for actor '{actor}'. "
                         f"Actor profile '{profile_id or 'unknown'}' does not support this field."
                     )
                 params[field_name] = None
+
+            if status_on is False:
+                for field_name in target_fields:
+                    if params.get(field_name) is not None:
+                        raise ValueError(
+                            f"Step {index} actor '{actor}' sets {field_name} while status_on is false. "
+                            "OFF steps must not send setpoints."
+                        )
 
             if profile_id == "motor_rpm":
                 rpm = params.get("rpm")
@@ -650,12 +660,7 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                     )
             elif profile_id == "hc_system_temperature":
                 temp = params.get("temp")
-                if temp is None:
-                    if actor not in huber_temp_initialized:
-                        raise ValueError(
-                            f"Step {index} for H/C actor '{actor}' must define a temperature before it can hold or ramp."
-                        )
-                else:
+                if temp is not None:
                     temp_value = float(temp)
                     min_setpoint, max_setpoint = _huber_setpoint_limits(step_actor_protocols.get(actor))
                     if temp_value < min_setpoint or temp_value > max_setpoint:
@@ -663,7 +668,22 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                             f"Step {index} requests {temp_value:g} degC for actor '{actor}'. "
                             f"Huber setpoints are limited to {min_setpoint:g}..{max_setpoint:g} degC."
                         )
-                    huber_temp_initialized.add(actor)
+
+            initialized_fields = initialized_fields_by_actor.setdefault(actor, set())
+            if status_on is not False:
+                missing_initial_fields = [
+                    field_name
+                    for field_name in target_fields
+                    if field_name not in initialized_fields and params.get(field_name) is None
+                ]
+                if missing_initial_fields:
+                    raise ValueError(
+                        f"Step {index} for actor '{actor}' must define {', '.join(missing_initial_fields)} "
+                        "before it can hold, ramp, or turn on."
+                    )
+            for field_name in target_fields:
+                if params.get(field_name) is not None:
+                    initialized_fields.add(field_name)
 
             normalized_actor_refs.append(
                 {
@@ -672,6 +692,7 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                     "actor_type": str(actor_ref.get("actor_type") or "").strip(),
                     "priority": _normalize_actor_priority(actor_ref.get("priority"), len(normalized_actor_refs) + 1),
                     "params": {
+                        "status_on": status_on,
                         "target_temp_c": params.get("temp"),
                         "pressure_mbar_a": params.get("pressure"),
                         "rpm": params.get("rpm"),
@@ -679,10 +700,7 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                 }
             )
 
-        step["actor"] = normalized_actor_refs[0]["actor"] if normalized_actor_refs else ""
         step["actors"] = normalized_actor_refs
-        for field_name in _NUMERIC_FIELDS:
-            step[field_name] = None
 
     return {
         "recipe_id": recipe.recipe_id,
@@ -783,6 +801,8 @@ def _current_targets_payload(
         row = {"actor": actor}
         if profile_id:
             row["profile_id"] = profile_id
+        if _STATUS_FIELD in actor_targets and actor_targets.get(_STATUS_FIELD) is not None:
+            row[_STATUS_FIELD] = bool(actor_targets.get(_STATUS_FIELD))
         for field_name in _target_fields_for_profile(profile_id):
             raw_value = actor_targets.get(field_name)
             if raw_value in (None, ""):
@@ -1459,7 +1479,14 @@ def _apply_current_targets(
 
         if _is_ika_motor_binding(binding):
             rounded_rpm = max(0, int(round(float((targets or {}).get("rpm") or 0.0))))
-            desired_is_on = rounded_rpm > 0
+            explicit_status = (targets or {}).get(_STATUS_FIELD)
+            if explicit_status is False:
+                rounded_rpm = 0
+                desired_is_on = False
+            elif explicit_status is True:
+                desired_is_on = True
+            else:
+                desired_is_on = rounded_rpm > 0
             next_payload = {
                 "profile_id": "motor_rpm",
                 "rpm": rounded_rpm,
@@ -1492,35 +1519,72 @@ def _apply_current_targets(
             continue
 
         if _is_huber_temperature_binding(binding):
-            temp_c = round(float((targets or {}).get("temp") or 0.0), 2)
             min_setpoint, max_setpoint = _huber_setpoint_limits(binding.get("protocol"))
-            if temp_c < min_setpoint or temp_c > max_setpoint:
+            explicit_status = (targets or {}).get(_STATUS_FIELD)
+            raw_temp = (targets or {}).get("temp")
+            previous_temp = previous_payload.get("temp") if isinstance(previous_payload, dict) else None
+            if raw_temp in (None, ""):
+                temp_c = round(float(previous_temp or _SAFE_HUBER_SETPOINT_C), 2)
+                has_temp_target = False
+            else:
+                temp_c = round(float(raw_temp), 2)
+                has_temp_target = True
+            if has_temp_target and (temp_c < min_setpoint or temp_c > max_setpoint):
                 raise RuntimeError(
                     f"Recipe target {temp_c:g} degC for actor '{actor}' is outside the "
                     f"Huber safety range {min_setpoint:g}..{max_setpoint:g} degC."
                 )
+            desired_is_on = False if explicit_status is False else True
             next_payload = {
                 "profile_id": "hc_system_temperature",
                 "temp": temp_c,
-                "is_on": True,
+                "is_on": desired_is_on,
             }
             if next_applied_lookup.get(actor) == next_payload:
                 continue
 
-            _execute_recipe_device_command(
-                app,
-                evaluation=evaluation,
-                actor=actor,
-                binding=binding,
-                device=device,
-                command_name="set_setpoint",
-                payload={
-                    "temp_c": temp_c,
-                    "min_setpoint_c": min_setpoint,
-                    "max_setpoint_c": max_setpoint,
-                },
-                requested_by="recipe_program",
-            )
+            if explicit_status is False:
+                _execute_recipe_device_command(
+                    app,
+                    evaluation=evaluation,
+                    actor=actor,
+                    binding=binding,
+                    device=device,
+                    command_name="stop",
+                    payload={},
+                    requested_by="recipe_program",
+                )
+                next_applied_lookup[actor] = next_payload
+                applied_changes.append(
+                    {
+                        "actor": actor,
+                        "device_id": device.device_id,
+                        "device_display_name": device.display_name,
+                        "previous": {
+                            "profile_id": "hc_system_temperature",
+                            "temp": round(float(previous_payload.get("temp") or 0.0), 2) if previous_payload else 0.0,
+                            "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
+                        },
+                        "current": deepcopy(next_payload),
+                    }
+                )
+                continue
+
+            if has_temp_target:
+                _execute_recipe_device_command(
+                    app,
+                    evaluation=evaluation,
+                    actor=actor,
+                    binding=binding,
+                    device=device,
+                    command_name="set_setpoint",
+                    payload={
+                        "temp_c": temp_c,
+                        "min_setpoint_c": min_setpoint,
+                        "max_setpoint_c": max_setpoint,
+                    },
+                    requested_by="recipe_program",
+                )
             if not bool(previous_payload.get("is_on")):
                 if not _program_claim_allows_target_application(state, worker_id):
                     return None

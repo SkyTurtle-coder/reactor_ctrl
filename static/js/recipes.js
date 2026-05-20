@@ -2,17 +2,8 @@
     "use strict";
 
     const STEP_NUMERIC_FIELDS = ["delta_time"];
-    const ACTOR_PARAM_FIELDS = ["target_temp_c", "pressure_mbar_a", "rpm"];
-    const LEGACY_FIELD_TO_PARAM = {
-        temp: "target_temp_c",
-        pressure: "pressure_mbar_a",
-        rpm: "rpm",
-    };
-    const PARAM_TO_LEGACY_FIELD = {
-        target_temp_c: "temp",
-        pressure_mbar_a: "pressure",
-        rpm: "rpm",
-    };
+    const ACTOR_NUMERIC_PARAM_FIELDS = ["target_temp_c", "pressure_mbar_a", "rpm"];
+    const ACTOR_PARAM_FIELDS = ["status_on", ...ACTOR_NUMERIC_PARAM_FIELDS];
     const PRIORITY_MIN = 1;
     const PRIORITY_MAX = 10;
     const DEFAULT_PROFILE_BY_SYMBOL = {
@@ -30,6 +21,11 @@
         pressure_mbar_a: "P",
         rpm: "RPM",
     };
+    const STATUS_OPTIONS = [
+        { value: "", label: "No change" },
+        { value: "on", label: "ON" },
+        { value: "off", label: "OFF" },
+    ];
 
     function parseJsonScript(id, fallback) {
         const element = document.getElementById(id);
@@ -119,7 +115,6 @@
 
     function emptyStep() {
         return {
-            actor: "",
             actors: [],
             task: "",
             delta_time: null,
@@ -128,6 +123,7 @@
 
     function emptyActorParams() {
         return {
+            status_on: null,
             target_temp_c: null,
             pressure_mbar_a: null,
             rpm: null,
@@ -156,25 +152,22 @@
         return fallback || "Actor";
     }
 
-    function normalizeActorParams(rawParams, rawActor, legacyValues, actorValue, isSingleActor) {
+    function parseOptionalStatus(value) {
+        if (value == null) {
+            return null;
+        }
+        if (value === true || value === false) {
+            return value;
+        }
+        return null;
+    }
+
+    function normalizeActorParams(rawParams) {
         const params = emptyActorParams();
         const source = rawParams && typeof rawParams === "object" ? rawParams : {};
-        for (const paramField of ACTOR_PARAM_FIELDS) {
-            const legacyField = PARAM_TO_LEGACY_FIELD[paramField];
-            const directValue = rawActor && typeof rawActor === "object"
-                ? rawActor[paramField] ?? rawActor[legacyField]
-                : null;
-            params[paramField] = parseOptionalNumber(source[paramField] ?? source[legacyField] ?? directValue);
-        }
-
-        const hasActorParams = ACTOR_PARAM_FIELDS.some((fieldName) => params[fieldName] != null);
-        if (!hasActorParams && legacyValues && typeof legacyValues === "object") {
-            const supportedFields = targetFieldsForActor(actorValue);
-            const legacyFields = isSingleActor && !supportedFields.length ? ACTOR_PARAM_FIELDS : supportedFields;
-            for (const paramField of legacyFields) {
-                const legacyField = PARAM_TO_LEGACY_FIELD[paramField];
-                params[paramField] = parseOptionalNumber(legacyValues[legacyField]);
-            }
+        params.status_on = parseOptionalStatus(source.status_on);
+        for (const paramField of ACTOR_NUMERIC_PARAM_FIELDS) {
+            params[paramField] = parseOptionalNumber(source[paramField]);
         }
         return params;
     }
@@ -189,17 +182,15 @@
         return PRIORITY_MAX;
     }
 
-    function normalizeActorRefs(rawActors, fallbackActor = "", legacyValues = {}) {
+    function normalizeActorRefs(rawActors) {
         const rawRefs = Array.isArray(rawActors) ? rawActors : [];
-        const rawItems = rawRefs.length > 0 ? rawRefs : (fallbackActor ? [{ actor: fallbackActor }] : []);
+        const rawItems = rawRefs.length > 0 ? rawRefs : [];
         const refs = [];
         const seen = new Set();
 
         rawItems.forEach((rawRef, index) => {
             const rawObject = rawRef && typeof rawRef === "object" ? rawRef : {};
-            const actorId = typeof rawRef === "string"
-                ? asString(rawRef)
-                : asString(rawObject.actor_id || rawObject.actor);
+            const actorId = asString(rawObject.actor_id || rawObject.actor);
             const key = actorId.toLowerCase();
             if (!actorId || seen.has(key)) {
                 return;
@@ -214,7 +205,7 @@
                 actor_id: actorId,
                 actor_type: asString(rawObject.actor_type, option?.actor_type || actorTypeForProfile(option?.profile_id, option?.symbol_id)),
                 priority,
-                params: normalizeActorParams(rawObject.params, rawObject, legacyValues, actorId, rawItems.length === 1),
+                params: normalizeActorParams(rawObject.params),
             });
         });
 
@@ -224,13 +215,7 @@
     function normalizeLoadedStep(rawStep) {
         const payload = rawStep && typeof rawStep === "object" ? rawStep : {};
         const step = emptyStep();
-        const legacyValues = {
-            temp: payload.temp,
-            pressure: payload.pressure,
-            rpm: payload.rpm,
-        };
-        step.actors = normalizeActorRefs(payload.actors, asString(payload.actor || payload.actor_id), legacyValues);
-        step.actor = step.actors[0]?.actor || "";
+        step.actors = normalizeActorRefs(payload.actors);
         step.task = asString(payload.task);
         const rawDelta = payload.delta_time ?? payload.delta_min;
         step.delta_time = parseOptionalNumber(rawDelta);
@@ -327,10 +312,9 @@
     }
 
     function actorRefsForStep(step) {
-        const normalized = normalizeActorRefs(step?.actors, asString(step?.actor));
-        if (step && (step.actors !== normalized || step.actor !== (normalized[0]?.actor || ""))) {
+        const normalized = normalizeActorRefs(step?.actors);
+        if (step && step.actors !== normalized) {
             step.actors = normalized;
-            step.actor = normalized[0]?.actor || "";
         }
         return normalized;
     }
@@ -370,7 +354,19 @@
         if (profileId.includes("pump") || symbolId.includes("pump")) {
             return ["rpm"];
         }
-        return ACTOR_PARAM_FIELDS;
+        return ACTOR_NUMERIC_PARAM_FIELDS;
+    }
+
+    function statusSupportedForActor(actorValue) {
+        const option = actorOption(actorValue);
+        const profileId = asString(option?.profile_id).toLowerCase();
+        const symbolId = asString(option?.symbol_id).toLowerCase();
+        return (
+            profileId === "hc_system_temperature" ||
+            profileId === "motor_rpm" ||
+            symbolId === "hc_system" ||
+            symbolId === "motor"
+        );
     }
 
     function activeTargetFields(step) {
@@ -582,6 +578,29 @@
         return `<input type="number" inputmode="numeric" min="${PRIORITY_MIN}" max="${PRIORITY_MAX}" step="1" data-field="priority" data-row="${rowIndex}" data-actor="${escapeHtml(actorId)}" class="recipe-priority-input${priorityClass}" value="${escapeHtml(value)}"${disabled ? " disabled" : ""}>`;
     }
 
+    function statusSelectValue(ref) {
+        const value = ref.params && typeof ref.params === "object" ? ref.params.status_on : null;
+        if (value === true) {
+            return "on";
+        }
+        if (value === false) {
+            return "off";
+        }
+        return "";
+    }
+
+    function makeActorStatusSelect(ref, rowIndex, disabled) {
+        const actorId = actorIdForRef(ref);
+        const supported = statusSupportedForActor(actorId);
+        const value = supported ? statusSelectValue(ref) : "";
+        const selectDisabled = disabled || !supported;
+        const title = supported ? "Set actor status for this step." : "This actor has no ON/OFF command in recipes.";
+        const options = STATUS_OPTIONS.map((option) => (
+            `<option value="${escapeHtml(option.value)}"${option.value === value ? " selected" : ""}>${escapeHtml(option.label)}</option>`
+        )).join("");
+        return `<select data-param="status_on" data-row="${rowIndex}" data-actor="${escapeHtml(actorId)}" class="recipe-status-select" title="${escapeHtml(title)}"${selectDisabled ? " disabled" : ""}>${options}</select>`;
+    }
+
     function makeActorParamInput(ref, paramField, rowIndex, disabled) {
         const actorId = actorIdForRef(ref);
         const activeFields = new Set(targetFieldsForActor(actorId));
@@ -590,8 +609,15 @@
         const normalizedValue = value == null ? "" : String(value);
         const minAttr = paramField === "target_temp_c" ? ' min="-40"' : ' min="0"';
         const maxAttr = paramField === "rpm" ? ' max="2000"' : "";
-        const targetDisabled = disabled || !fieldActive;
-        const fieldTitle = fieldActive ? "" : ` title="${escapeHtml(`${TARGET_FIELD_LABELS[paramField] || paramField} is not used by this actor.`)}"`;
+        const statusOff = ref.params && typeof ref.params === "object" && ref.params.status_on === false;
+        const targetDisabled = disabled || !fieldActive || statusOff;
+        let title = "";
+        if (!fieldActive) {
+            title = `${TARGET_FIELD_LABELS[paramField] || paramField} is not used by this actor.`;
+        } else if (statusOff) {
+            title = "Status OFF sends no setpoint for this actor.";
+        }
+        const fieldTitle = title ? ` title="${escapeHtml(title)}"` : "";
         return `<input type="number" step="0.01"${minAttr}${maxAttr} data-param="${paramField}" data-row="${rowIndex}" data-actor="${escapeHtml(actorId)}" class="recipe-num-input${fieldActive ? "" : " recipe-num-input-inactive"}" value="${escapeHtml(normalizedValue)}"${targetDisabled ? " disabled" : ""}${fieldTitle}>`;
     }
 
@@ -629,19 +655,20 @@
                 if (ref) {
                     html += `<td class="${actorRequired ? "recipe-cell-required" : ""}">${actorDisplayHtml(ref)}</td>`;
                     html += `<td>${makePriorityInput(ref, index, controlsDisabled)}</td>`;
+                    html += `<td>${makeActorStatusSelect(ref, index, controlsDisabled)}</td>`;
                     html += `<td>${makeActorParamInput(ref, "target_temp_c", index, controlsDisabled)}</td>`;
                     html += `<td>${makeActorParamInput(ref, "pressure_mbar_a", index, controlsDisabled)}</td>`;
                     html += `<td>${makeActorParamInput(ref, "rpm", index, controlsDisabled)}</td>`;
                     html += `<td><button type="button" class="recipe-actor-remove" data-row="${index}" data-actor="${escapeHtml(actorIdForRef(ref))}" title="Remove actor"${controlsDisabled ? " disabled" : ""}>x</button></td>`;
                 } else {
                     html += `<td class="recipe-cell-required"><span class="recipe-actor-placeholder">No actor selected</span></td>`;
-                    html += '<td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td></td>';
+                    html += '<td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td></td>';
                 }
                 html += "</tr>";
             }
 
             html += `<tr class="recipe-add-actor-row" data-row="${index}">`;
-            html += `<td colspan="6">${makeActorPicker(step, index, false, controlsDisabled)}${duplicatePriorityWarningHtml(step)}</td>`;
+            html += `<td colspan="7">${makeActorPicker(step, index, false, controlsDisabled)}${duplicatePriorityWarningHtml(step)}</td>`;
             html += "</tr>";
         }
 
@@ -651,7 +678,7 @@
         html += '<td class="recipe-num-cell recipe-num-cell-empty">.</td>';
         html += `<td>${makeTextInput("", "task", emptyRowIndex, true, "Click to add step...", controlsDisabled)}</td>`;
         html += `<td>${makeStepNumericInput("", "delta_time", emptyRowIndex, true, controlsDisabled)}</td>`;
-        html += `<td colspan="6">${makeActorPicker(emptyDraftStep, emptyRowIndex, true, controlsDisabled)}</td>`;
+        html += `<td colspan="7">${makeActorPicker(emptyDraftStep, emptyRowIndex, true, controlsDisabled)}</td>`;
         html += "</tr>";
 
         dom.tableBody.innerHTML = html;
@@ -681,6 +708,10 @@
 
         for (const input of dom.tableBody.querySelectorAll("input[data-param]")) {
             input.addEventListener("input", onActorParamInput);
+        }
+
+        for (const select of dom.tableBody.querySelectorAll('select[data-param="status_on"]')) {
+            select.addEventListener("change", onActorStatusChange);
         }
 
         for (const input of dom.tableBody.querySelectorAll('input[data-field="priority"]')) {
@@ -785,6 +816,29 @@
         markUnsaved();
     }
 
+    function onActorStatusChange(event) {
+        const select = event.currentTarget;
+        const rowIndex = parseId(select.getAttribute("data-row"));
+        const actorId = asString(select.getAttribute("data-actor"));
+        const ref = actorRefForRow(rowIndex, actorId);
+        if (!ref) {
+            return;
+        }
+        ref.params = ref.params && typeof ref.params === "object" ? ref.params : emptyActorParams();
+        if (select.value === "on") {
+            ref.params.status_on = true;
+        } else if (select.value === "off") {
+            ref.params.status_on = false;
+            for (const fieldName of ACTOR_NUMERIC_PARAM_FIELDS) {
+                ref.params[fieldName] = null;
+            }
+        } else {
+            ref.params.status_on = null;
+        }
+        markUnsaved();
+        renderTable();
+    }
+
     function syncPriorityInputValidity(input) {
         const valid = priorityInputValid(input.value);
         input.classList.toggle("is-invalid", !valid);
@@ -841,7 +895,6 @@
             });
         }
         state.steps[rowIndex].actors = refs;
-        state.steps[rowIndex].actor = refs[0]?.actor || "";
         select.value = "";
         markUnsaved();
         renderTable();
@@ -857,7 +910,6 @@
 
         const refs = actorRefsForStep(state.steps[rowIndex]).filter((ref) => actorIdForRef(ref).toLowerCase() !== actor.toLowerCase());
         state.steps[rowIndex].actors = refs;
-        state.steps[rowIndex].actor = refs[0]?.actor || "";
         markUnsaved();
         renderTable();
     }
@@ -1003,6 +1055,22 @@
         return priorityFrom(input.value, null);
     }
 
+    function readActorStatusValue(rowIndex, actorId) {
+        const select = dom.tableBody
+            ? dom.tableBody.querySelector(`select[data-row="${rowIndex}"][data-actor="${escapeSelectorValue(actorId)}"][data-param="status_on"]`)
+            : null;
+        if (!select || select.disabled) {
+            return null;
+        }
+        if (select.value === "on") {
+            return true;
+        }
+        if (select.value === "off") {
+            return false;
+        }
+        return null;
+    }
+
     function collectPayload() {
         const steps = [];
         let hasInvalidPriority = false;
@@ -1022,17 +1090,16 @@
                 const option = actorOption(actorId);
                 return {
                     actor_id: actorId,
-                    actor: actorId,
                     actor_type: asString(ref.actor_type, option?.actor_type || actorTypeForProfile(option?.profile_id, option?.symbol_id)),
                     priority: priority || ref.priority,
                     params: {
+                        status_on: readActorStatusValue(rowIndex, actorId),
                         target_temp_c: readActorParamValue(rowIndex, actorId, "target_temp_c"),
                         pressure_mbar_a: readActorParamValue(rowIndex, actorId, "pressure_mbar_a"),
                         rpm: readActorParamValue(rowIndex, actorId, "rpm"),
                     },
                 };
             });
-            step.actor = step.actors[0]?.actor_id || "";
             step.task = taskInput ? taskInput.value : asString(state.steps[rowIndex].task);
             for (const fieldName of STEP_NUMERIC_FIELDS) {
                 step[fieldName] = readStepNumericValue(rowIndex, fieldName);

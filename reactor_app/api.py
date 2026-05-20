@@ -1927,9 +1927,10 @@ def delete_device_connection(connection_id: int):
 
 _RECIPE_ALLOWED_STATUSES = {"draft", "approved", "archived"}
 _RECIPE_MAX_STEPS = 500
-_RECIPE_STEP_NUMERIC_FIELDS = ("delta_time", "temp", "pressure", "rpm")
+_RECIPE_STEP_NUMERIC_FIELDS = ("delta_time",)
 _RECIPE_STEP_TARGET_FIELDS = ("temp", "pressure", "rpm")
-_RECIPE_ACTOR_PARAM_FIELDS = ("target_temp_c", "pressure_mbar_a", "rpm")
+_RECIPE_ACTOR_NUMERIC_PARAM_FIELDS = ("target_temp_c", "pressure_mbar_a", "rpm")
+_RECIPE_ACTOR_PARAM_FIELDS = ("status_on", *_RECIPE_ACTOR_NUMERIC_PARAM_FIELDS)
 _RECIPE_PARAM_TO_LEGACY_FIELD = {
     "target_temp_c": "temp",
     "pressure_mbar_a": "pressure",
@@ -2053,6 +2054,12 @@ def _recipe_target_fields_for_actor(actor_meta: dict[str, Any] | None) -> tuple[
     return _RECIPE_STEP_TARGET_FIELDS
 
 
+def _recipe_status_supported_for_actor(actor_meta: dict[str, Any] | None) -> bool:
+    profile_id = str((actor_meta or {}).get("profile_id") or "").strip().lower()
+    symbol_id = str((actor_meta or {}).get("symbol_id") or "").strip().lower()
+    return profile_id in {"hc_system_temperature", "motor_rpm"} or symbol_id in {"hc_system", "motor"}
+
+
 def _parse_recipe_actor_priority(raw_value: Any, *, field_name: str) -> int | None:
     if raw_value in (None, ""):
         return None
@@ -2090,6 +2097,14 @@ def _parse_recipe_param_value(raw_value: Any, *, field_name: str, param_field: s
     return round(parsed, 2)
 
 
+def _parse_recipe_status_value(raw_value: Any, *, field_name: str) -> bool | None:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool):
+        return raw_value
+    raise ValueError(f"Field '{field_name}' must be true, false, or null.")
+
+
 def _actor_params_from_payload(
     raw_ref: dict[str, Any],
     *,
@@ -2097,33 +2112,42 @@ def _actor_params_from_payload(
     actor_meta: dict[str, Any] | None,
     is_single_actor: bool,
     field_name: str,
-) -> dict[str, float | None]:
-    params: dict[str, float | None] = {param_field: None for param_field in _RECIPE_ACTOR_PARAM_FIELDS}
-    raw_params = raw_ref.get("params") if isinstance(raw_ref.get("params"), dict) else {}
+) -> dict[str, Any]:
+    if not isinstance(raw_ref.get("params"), dict):
+        raise ValueError(f"Field '{field_name}.params' must be an object using the current recipe structure.")
 
-    for param_field in _RECIPE_ACTOR_PARAM_FIELDS:
-        legacy_field = _RECIPE_PARAM_TO_LEGACY_FIELD[param_field]
-        raw_value = raw_params.get(param_field, raw_params.get(legacy_field))
-        if raw_value is None and param_field in raw_ref:
-            raw_value = raw_ref.get(param_field)
-        if raw_value is None and legacy_field in raw_ref:
-            raw_value = raw_ref.get(legacy_field)
+    forbidden_actor_fields = [
+        field_name
+        for field_name in (*_RECIPE_ACTOR_PARAM_FIELDS, *_RECIPE_STEP_TARGET_FIELDS)
+        if field_name in raw_ref
+    ]
+    if forbidden_actor_fields:
+        raise ValueError(
+            f"Field '{field_name}' must store actor settings only inside 'params'. "
+            f"Unexpected top-level field(s): {', '.join(sorted(set(forbidden_actor_fields)))}."
+        )
+
+    params: dict[str, Any] = {param_field: None for param_field in _RECIPE_ACTOR_PARAM_FIELDS}
+    raw_params = raw_ref.get("params")
+    params["status_on"] = _parse_recipe_status_value(
+        raw_params.get("status_on"),
+        field_name=f"{field_name}.params.status_on",
+    )
+
+    for forbidden_param in ("temp", "pressure"):
+        if forbidden_param in raw_params:
+            raise ValueError(
+                f"Field '{field_name}.params.{forbidden_param}' is no longer supported. "
+                "Use target_temp_c or pressure_mbar_a."
+            )
+
+    for param_field in _RECIPE_ACTOR_NUMERIC_PARAM_FIELDS:
+        raw_value = raw_params.get(param_field)
         params[param_field] = _parse_recipe_param_value(
             raw_value,
             field_name=f"{field_name}.params.{param_field}",
             param_field=param_field,
         )
-
-    if all(value is None for value in params.values()):
-        target_fields = _recipe_target_fields_for_actor(actor_meta)
-        legacy_fields = target_fields if target_fields else (_RECIPE_STEP_TARGET_FIELDS if is_single_actor else ())
-        for legacy_field in legacy_fields:
-            param_field = _RECIPE_LEGACY_FIELD_TO_PARAM[legacy_field]
-            params[param_field] = _parse_recipe_param_value(
-                raw_step.get(legacy_field),
-                field_name=f"{field_name}.params.{param_field}",
-                param_field=param_field,
-            )
 
     return params
 
@@ -2138,24 +2162,22 @@ def _parse_recipe_step_actor_refs(
     refs: list[dict[str, Any]] = []
     if isinstance(raw_refs, list):
         raw_items = raw_refs
+    elif raw_refs in (None, ""):
+        raw_items = []
     else:
-        actor = _clean_string(raw.get("actor_id", raw.get("actor")), field_name=f"steps[{index}].actor") or ""
-        raw_items = [{"actor": actor}] if actor else []
+        raise ValueError(f"Field 'steps[{index}].actors' must be a list of actor objects.")
 
     used_priorities: set[int] = set()
     for ref_index, raw_ref in enumerate(raw_items, start=1):
         field_name = f"steps[{index}].actors[{ref_index}]"
-        if isinstance(raw_ref, str):
-            actor = _clean_string(raw_ref, field_name=field_name) or ""
-            raw_object: dict[str, Any] = {"actor": actor}
-        elif isinstance(raw_ref, dict):
+        if isinstance(raw_ref, dict):
             actor = _clean_string(
                 raw_ref.get("actor_id", raw_ref.get("actor")),
                 field_name=f"{field_name}.actor_id",
             ) or ""
             raw_object = raw_ref
         else:
-            raise ValueError(f"Field '{field_name}' must be an object or actor id string.")
+            raise ValueError(f"Field '{field_name}' must be an actor object.")
 
         if not actor:
             continue
@@ -2200,11 +2222,21 @@ def _parse_recipe_step(
     if not isinstance(raw, dict):
         raise ValueError(f"Step {index} must be an object.")
 
+    forbidden_step_fields = [
+        field_name
+        for field_name in ("actor", "actor_id", *_RECIPE_STEP_TARGET_FIELDS)
+        if field_name in raw
+    ]
+    if forbidden_step_fields:
+        raise ValueError(
+            f"Step {index} uses an old recipe structure. "
+            "Use steps[].actors[].params with status_on, target_temp_c, pressure_mbar_a and rpm."
+        )
+
     actor_refs = _parse_recipe_step_actor_refs(raw, index, allowed_actor_by_key=allowed_actor_by_key)
-    actor = actor_refs[0]["actor"] if actor_refs else ""
     task = _clean_string(raw.get("task"), field_name=f"steps[{index}].task") or ""
 
-    normalized: dict[str, Any] = {"actor": actor, "actors": actor_refs, "task": task}
+    normalized: dict[str, Any] = {"actors": actor_refs, "task": task}
     raw_delta = raw.get("delta_time", raw.get("delta_min"))
     if raw_delta in (None, ""):
         normalized["delta_time"] = None
@@ -2265,8 +2297,16 @@ def _validate_recipe_steps(
             target_param_fields = {_RECIPE_LEGACY_FIELD_TO_PARAM[field_name] for field_name in target_fields}
             params = ref.get("params") if isinstance(ref.get("params"), dict) else {}
             normalized_params = {param_field: params.get(param_field) for param_field in _RECIPE_ACTOR_PARAM_FIELDS}
+            status_on = normalized_params.get("status_on")
 
-            for param_field, value in list(normalized_params.items()):
+            if status_on is not None and not _recipe_status_supported_for_actor(actor_meta):
+                raise ValueError(
+                    f"Field 'steps[{index}].actors[{ref_index + 1}].params.status_on' "
+                    f"is not supported by actor '{canonical_actor}'."
+                )
+
+            for param_field in _RECIPE_ACTOR_NUMERIC_PARAM_FIELDS:
+                value = normalized_params.get(param_field)
                 if param_field in target_param_fields:
                     continue
                 if value is not None and abs(float(value)) > 0.000001:
@@ -2276,10 +2316,20 @@ def _validate_recipe_steps(
                     )
                 normalized_params[param_field] = None
 
+            if status_on is False:
+                for field_name in target_fields:
+                    param_field = _RECIPE_LEGACY_FIELD_TO_PARAM[field_name]
+                    if normalized_params.get(param_field) is not None:
+                        raise ValueError(
+                            f"Field 'steps[{index}].actors[{ref_index + 1}].params.{param_field}' "
+                            "must be empty when status_on is false."
+                        )
+
             initialized_fields = initialized_fields_by_actor.setdefault(canonical_actor, set())
             missing_initial_fields = [
                 field_name
                 for field_name in target_fields
+                if status_on is not False
                 if field_name not in initialized_fields
                 and normalized_params.get(_RECIPE_LEGACY_FIELD_TO_PARAM[field_name]) is None
             ]
@@ -2308,7 +2358,6 @@ def _validate_recipe_steps(
                 key=lambda pair: (pair[1].get("priority") or _RECIPE_PRIORITY_MAX, pair[0]),
             )
         ]
-        step["actor"] = step["actors"][0]["actor"]
 
         result.append(step)
     return result

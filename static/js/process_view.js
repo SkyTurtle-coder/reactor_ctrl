@@ -1663,6 +1663,12 @@
 
     function formatProgramTarget(target) {
         const parts = [];
+        if (target.is_on != null) {
+            parts.push(target.is_on ? "ON" : "OFF");
+        }
+        if (target.is_on === false) {
+            return parts.join(" | ");
+        }
         if (target.rpm != null) {
             parts.push(`${Math.round(asNumber(target.rpm, 0))} rpm`);
         }
