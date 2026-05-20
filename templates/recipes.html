@@ -98,25 +98,13 @@
         <div class="card-header">
             <h2>Process Steps</h2>
         </div>
-        <div class="table-responsive recipe-steps-scroll">
-            <table class="table recipe-table" id="recipe-table">
-                <thead>
-                    <tr>
-                        <th class="recipe-col-num">#</th>
-                        <th class="recipe-col-task">Task</th>
-                        <th class="recipe-col-delta">&Delta; [min]</th>
-                        <th class="recipe-col-actors">Actors &amp; Parameters</th>
-                    </tr>
-                </thead>
-                <tbody id="recipe-tbody">
-                    <tr>
-                        <td colspan="4" class="muted">Loading&hellip;</td>
-                    </tr>
-                </tbody>
-            </table>
+        <div class="recipe-steps-scroll">
+            <div id="recipe-workflow" class="recipe-workflow">
+                <div class="recipe-workflow-loading muted">Loading&hellip;</div>
+            </div>
         </div>
         <p id="recipe-no-flowsheet-hint" class="recipe-no-flowsheet-hint is-hidden">
-            Select a flowsheet above to populate the Actor dropdown.
+            Select a flowsheet above to populate the Device list.
         </p>
     </div>
 

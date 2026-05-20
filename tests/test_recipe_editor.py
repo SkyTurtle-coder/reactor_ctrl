@@ -34,7 +34,7 @@ class RecipeEditorTests(unittest.TestCase):
         app_config.Config.AUTO_CREATE_SCHEMA = cls._original_auto_create_schema
         app_config.Config.API_AUTH_REQUIRED = cls._original_api_auth_required
 
-    def test_recipe_view_renders_flowsheet_selector_and_actor_table(self):
+    def test_recipe_view_renders_flowsheet_selector_and_workflow_container(self):
         response = self.client.get("/recipes")
         self.assertEqual(response.status_code, 200)
 
@@ -43,19 +43,18 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn('id="recipe-select"', html)
         self.assertIn('id="recipe-save-btn"', html)
         self.assertIn("recipe-no-flowsheet-hint", html)
-        self.assertIn("Actors", html)
+        self.assertIn('id="recipe-workflow"', html)
 
-    def test_recipe_template_uses_required_headers_and_hint(self):
+    def test_recipe_template_uses_workflow_container_and_hint(self):
         source = (Path(__file__).resolve().parents[1] / "templates" / "recipes.html").read_text(encoding="utf-8")
 
         self.assertIn('<select id="recipe-build-select"', source)
-        self.assertIn('<div class="table-responsive recipe-steps-scroll">', source)
-        self.assertIn('recipe-col-actors', source)
-        self.assertIn("&Delta; [min]", source)
+        self.assertIn('id="recipe-workflow"', source)
         self.assertIn('id="recipe-no-flowsheet-hint"', source)
-        # Column headers are now compact (no separate Status/Temp/Pressure/RPM columns)
+        # Old multi-column table must be gone
         self.assertNotIn('<th class="recipe-col-actor">Actor</th>', source)
         self.assertNotIn('<th class="recipe-col-status">Status</th>', source)
+        self.assertNotIn('<table class="table recipe-table"', source)
 
     def test_recipe_editor_script_uses_flowsheet_bound_actor_dropdowns(self):
         source = (Path(__file__).resolve().parents[1] / "static" / "js" / "recipes.js").read_text(encoding="utf-8")
@@ -65,11 +64,12 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn("function actorOptionsForBuild(buildData)", source)
         self.assertIn("function normalizeActorRefs(rawActors)", source)
         self.assertIn("function makeActorStatusSelect(ref, rowIndex, disabled)", source)
-        self.assertIn("function makeActorInlineBlock(ref, index, disabled)", source)
-        self.assertIn("recipe-actor-chip", source)
-        self.assertIn("recipe-actor-chip-main", source)
-        self.assertIn("recipe-param-cell", source)
-        self.assertIn("recipe-actor-inline", source)
+        self.assertIn("function renderWorkflow()", source)
+        self.assertIn("function renderStepCard(step, index, isActive, disabled)", source)
+        self.assertIn("function renderDeviceTableRow(ref, stepIndex, disabled)", source)
+        self.assertIn("recipe-step-card", source)
+        self.assertIn("recipe-device-table", source)
+        self.assertIn("ACTOR_PARAM_UNITS", source)
         self.assertIn('fetchJson(`/api/reactor-builds/${state.reactorBuildId}`)', source)
         self.assertIn("Select a flowsheet before adding steps.", source)
         self.assertIn("At least one actor from the selected flowsheet is required for every step before saving.", source)
@@ -284,19 +284,20 @@ class RecipeEditorTests(unittest.TestCase):
                 allowed_actor_lookup=allowed,
             )
 
-    def test_recipe_styles_cover_actor_dropdown_and_hint(self):
+    def test_recipe_styles_cover_workflow_cards_and_device_table(self):
         source = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
 
         self.assertIn(".recipe-steps-scroll", source)
-        self.assertIn(".recipe-col-actors", source)
-        self.assertIn(".recipe-actor-inline", source)
+        self.assertIn(".recipe-step-card", source)
+        self.assertIn(".recipe-step-num-badge", source)
+        self.assertIn(".recipe-device-table", source)
+        self.assertIn(".recipe-unit-badge", source)
+        self.assertIn(".recipe-summary-chip", source)
+        self.assertIn(".recipe-add-step-between", source)
         self.assertIn(".recipe-actor-select", source)
-        self.assertIn(".recipe-actor-chip", source)
-        self.assertIn(".recipe-actor-chip-main", source)
-        self.assertIn(".recipe-param-cell", source)
+        self.assertIn(".recipe-actor-picker", source)
         self.assertIn(".recipe-status-select", source)
         self.assertIn(".recipe-num-input-inactive", source)
-        self.assertIn(".recipe-cell-required", source)
         self.assertIn(".recipe-no-flowsheet-hint", source)
         self.assertNotIn(".recipe-actor-advanced", source)
         self.assertNotIn(".recipe-priority-field", source)
