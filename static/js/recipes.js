@@ -526,8 +526,10 @@
         const invalidClass = option ? "" : " is-invalid";
         return `
             <div class="recipe-actor-chip${invalidClass}" title="${escapeHtml(`${label}: ${actorFieldHint(actorId) || "No recipe fields"}`)}">
-                <span class="recipe-actor-chip-label">${escapeHtml(label)}</span>
-                <span class="recipe-actor-type">${escapeHtml(actorType)}</span>
+                <span class="recipe-actor-chip-main">
+                    <span class="recipe-actor-chip-label">${escapeHtml(label)}</span>
+                    <span class="recipe-actor-type">${escapeHtml(actorType)}</span>
+                </span>
                 <span class="recipe-actor-chip-fields">${badges}</span>
             </div>
         `;
@@ -653,16 +655,16 @@
                     html += `<td class="recipe-step-cell" rowspan="${rowSpan}">${makeStepNumericInput(step.delta_time, "delta_time", index, false, controlsDisabled)}</td>`;
                 }
                 if (ref) {
-                    html += `<td class="${actorRequired ? "recipe-cell-required" : ""}">${actorDisplayHtml(ref)}</td>`;
-                    html += `<td>${makePriorityInput(ref, index, controlsDisabled)}</td>`;
-                    html += `<td>${makeActorStatusSelect(ref, index, controlsDisabled)}</td>`;
-                    html += `<td>${makeActorParamInput(ref, "target_temp_c", index, controlsDisabled)}</td>`;
-                    html += `<td>${makeActorParamInput(ref, "pressure_mbar_a", index, controlsDisabled)}</td>`;
-                    html += `<td>${makeActorParamInput(ref, "rpm", index, controlsDisabled)}</td>`;
-                    html += `<td><button type="button" class="recipe-actor-remove" data-row="${index}" data-actor="${escapeHtml(actorIdForRef(ref))}" title="Remove actor"${controlsDisabled ? " disabled" : ""}>x</button></td>`;
+                    html += `<td class="recipe-actor-cell${actorRequired ? " recipe-cell-required" : ""}">${actorDisplayHtml(ref)}</td>`;
+                    html += `<td class="recipe-priority-cell">${makePriorityInput(ref, index, controlsDisabled)}</td>`;
+                    html += `<td class="recipe-status-cell">${makeActorStatusSelect(ref, index, controlsDisabled)}</td>`;
+                    html += `<td class="recipe-param-cell">${makeActorParamInput(ref, "target_temp_c", index, controlsDisabled)}</td>`;
+                    html += `<td class="recipe-param-cell">${makeActorParamInput(ref, "pressure_mbar_a", index, controlsDisabled)}</td>`;
+                    html += `<td class="recipe-param-cell">${makeActorParamInput(ref, "rpm", index, controlsDisabled)}</td>`;
+                    html += `<td class="recipe-action-cell"><button type="button" class="recipe-actor-remove" data-row="${index}" data-actor="${escapeHtml(actorIdForRef(ref))}" title="Remove actor"${controlsDisabled ? " disabled" : ""}>x</button></td>`;
                 } else {
-                    html += `<td class="recipe-cell-required"><span class="recipe-actor-placeholder">No actor selected</span></td>`;
-                    html += '<td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td class="recipe-muted-cell">-</td><td></td>';
+                    html += `<td class="recipe-actor-cell recipe-cell-required"><span class="recipe-actor-placeholder">No actor selected</span></td>`;
+                    html += '<td class="recipe-muted-cell recipe-priority-cell">-</td><td class="recipe-muted-cell recipe-status-cell">-</td><td class="recipe-muted-cell recipe-param-cell">-</td><td class="recipe-muted-cell recipe-param-cell">-</td><td class="recipe-muted-cell recipe-param-cell">-</td><td class="recipe-action-cell"></td>';
                 }
                 html += "</tr>";
             }

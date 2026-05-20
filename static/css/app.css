@@ -3101,40 +3101,57 @@ html[data-theme="dark"] textarea {
     overflow: hidden;
 }
 
+.recipe-steps-scroll {
+    width: 100%;
+    overflow-x: auto;
+    scrollbar-gutter: stable both-edges;
+}
+
 .recipe-table {
-    min-width: 900px;
+    min-width: 1280px;
+    table-layout: fixed;
+}
+
+.recipe-table th,
+.recipe-table td {
+    padding: 0.68rem 0.58rem;
+    vertical-align: middle;
 }
 
 .recipe-col-num {
-    width: 2.5rem;
-    text-align: center;
-}
-
-.recipe-col-task {
-    min-width: 180px;
-}
-
-.recipe-col-actor {
-    min-width: 240px;
-}
-
-.recipe-col-priority {
     width: 4.25rem;
     text-align: center;
 }
 
+.recipe-col-task {
+    width: 15rem;
+}
+
+.recipe-col-actor {
+    width: 18rem;
+}
+
+.recipe-col-priority {
+    width: 4.75rem;
+    text-align: center;
+}
+
 .recipe-col-status {
-    width: 7rem;
+    width: 7.4rem;
     text-align: center;
 }
 
 .recipe-col-num-val {
-    width: 7rem;
+    width: 7.4rem;
     white-space: nowrap;
 }
 
+.recipe-col-pressure {
+    width: 8.6rem;
+}
+
 .recipe-col-del {
-    width: 2.5rem;
+    width: 3.4rem;
 }
 
 .recipe-num-cell {
@@ -3144,7 +3161,12 @@ html[data-theme="dark"] textarea {
     font-size: 0.85rem;
 }
 
-.recipe-step-cell {
+.recipe-num-cell > span {
+    display: block;
+    font-weight: 700;
+}
+
+.recipe-table .recipe-step-cell {
     vertical-align: top;
     background: rgba(248, 242, 232, 0.36);
 }
@@ -3158,8 +3180,30 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-add-actor-row td {
-    padding-top: 0.45rem;
+    padding: 0.62rem 0.58rem 0.76rem;
     background: rgba(248, 242, 232, 0.2);
+    vertical-align: top;
+}
+
+.recipe-actor-cell,
+.recipe-param-cell,
+.recipe-status-cell,
+.recipe-priority-cell,
+.recipe-action-cell {
+    min-width: 0;
+}
+
+.recipe-param-cell,
+.recipe-priority-cell,
+.recipe-status-cell,
+.recipe-action-cell,
+.recipe-muted-cell {
+    text-align: center;
+}
+
+.recipe-param-cell .recipe-num-input {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .recipe-num-cell-empty {
@@ -3230,13 +3274,15 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-actor-chip {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.12rem 0.45rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
     max-width: 100%;
-    padding: 0.38rem 0.5rem;
+    min-height: 2.65rem;
+    padding: 0.48rem 0.58rem;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--surface);
     font-size: 0.82rem;
 }
@@ -3244,6 +3290,12 @@ html[data-theme="dark"] textarea {
 .recipe-actor-chip.is-invalid {
     border-color: var(--danger);
     background: rgba(154, 47, 36, 0.07);
+}
+
+.recipe-actor-chip-main {
+    display: grid;
+    gap: 0.14rem;
+    min-width: 0;
 }
 
 .recipe-actor-chip-label {
@@ -3255,18 +3307,20 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-actor-type {
-    grid-column: 1 / 2;
     color: var(--muted);
     font-size: 0.74rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .recipe-actor-chip-fields {
     display: inline-flex;
     gap: 0.15rem;
-    grid-column: 2 / 3;
-    grid-row: 1 / span 2;
     align-self: center;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 .recipe-actor-field-badge {
@@ -3284,8 +3338,11 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-actor-remove {
-    width: 1.15rem;
-    height: 1.15rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
     border: 0;
     border-radius: 999px;
     background: transparent;
@@ -3305,8 +3362,8 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-priority-input {
-    min-width: 3.25rem;
-    max-width: 3.75rem;
+    min-width: 0;
+    max-width: 4rem;
     text-align: center;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
@@ -3333,7 +3390,7 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-status-select {
-    min-width: 6rem;
+    min-width: 0;
     font-weight: 700;
     text-align: center;
 }
@@ -3366,7 +3423,13 @@ html[data-theme="dark"] textarea {
 }
 
 .recipe-del-btn {
-    padding: 0.2rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-inline: auto;
+    min-width: 2rem;
+    min-height: 1.7rem;
+    padding: 0.2rem 0.45rem;
     font-size: 0.75rem;
     color: var(--muted);
     border-color: transparent;

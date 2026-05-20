@@ -51,6 +51,7 @@ class RecipeEditorTests(unittest.TestCase):
         source = (Path(__file__).resolve().parents[1] / "templates" / "recipes.html").read_text(encoding="utf-8")
 
         self.assertIn('<select id="recipe-build-select"', source)
+        self.assertIn('<div class="table-responsive recipe-steps-scroll">', source)
         self.assertIn('<th class="recipe-col-actor">Actor</th>', source)
         self.assertIn("&Delta; [min]", source)
         self.assertIn('<th class="recipe-col-status">Status</th>', source)
@@ -67,6 +68,8 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn("function normalizeActorRefs(rawActors)", source)
         self.assertIn("function makeActorStatusSelect(ref, rowIndex, disabled)", source)
         self.assertIn("recipe-actor-chip", source)
+        self.assertIn("recipe-actor-chip-main", source)
+        self.assertIn("recipe-param-cell", source)
         self.assertIn('fetchJson(`/api/reactor-builds/${state.reactorBuildId}`)', source)
         self.assertIn("Select a flowsheet before adding steps.", source)
         self.assertIn("At least one actor from the selected flowsheet is required for every step before saving.", source)
@@ -284,9 +287,13 @@ class RecipeEditorTests(unittest.TestCase):
     def test_recipe_styles_cover_actor_dropdown_and_hint(self):
         source = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
 
+        self.assertIn(".recipe-steps-scroll", source)
         self.assertIn(".recipe-col-actor", source)
+        self.assertIn(".recipe-actor-cell", source)
         self.assertIn(".recipe-actor-select", source)
         self.assertIn(".recipe-actor-chip", source)
+        self.assertIn(".recipe-actor-chip-main", source)
+        self.assertIn(".recipe-param-cell", source)
         self.assertIn(".recipe-col-status", source)
         self.assertIn(".recipe-status-select", source)
         self.assertIn(".recipe-num-input-inactive", source)
