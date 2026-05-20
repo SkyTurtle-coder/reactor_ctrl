@@ -127,11 +127,7 @@ class MeasurementPlotServiceTests(unittest.TestCase):
             measurement_plot,
             "_load_batched_plot_series_python",
             return_value=batched_series,
-        ) as python_loader, patch.object(
-            measurement_plot,
-            "_load_last_known_batched_python",
-            return_value={},
-        ):
+        ) as python_loader:
             first = measurement_plot.load_batched_device_plot_series_window(
                 series_specs=[{"device_id": 1, "channel_code": "rpm"}],
                 since_minutes=10,
@@ -147,7 +143,9 @@ class MeasurementPlotServiceTests(unittest.TestCase):
                 cache_seconds=1,
             )
 
-        self.assertEqual(python_loader.call_count, 1)
+        # First call: main query + fallback (both call the same loader); second
+        # call hits the cache so no further DB calls.
+        self.assertEqual(python_loader.call_count, 2)
         self.assertFalse(first["cache_hit"])
         self.assertTrue(second["cache_hit"])
 

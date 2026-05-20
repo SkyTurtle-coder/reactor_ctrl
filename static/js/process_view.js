@@ -1553,8 +1553,17 @@
             const frameRect = frame.getBoundingClientRect();
             const tooltipWidth = tooltip.offsetWidth || 240;
             const tooltipHeight = tooltip.offsetHeight || 120;
-            const left = clamp(event.clientX - frameRect.left + 12, 8, Math.max(8, frameRect.width - tooltipWidth - 8));
-            const top = clamp(event.clientY - frameRect.top + 12, 8, Math.max(8, frameRect.height - tooltipHeight - 8));
+            const cursorX = event.clientX - frameRect.left;
+            const cursorY = event.clientY - frameRect.top;
+            const gap = 16;
+            // Place right of cursor; if it overflows, flip to the left so the
+            // data point under the cursor stays visible.
+            const leftIfRight = cursorX + gap;
+            const leftIfLeft = cursorX - gap - tooltipWidth;
+            const left = leftIfRight + tooltipWidth + 8 <= frameRect.width
+                ? leftIfRight
+                : Math.max(8, leftIfLeft);
+            const top = clamp(cursorY - Math.round(tooltipHeight / 2), 8, Math.max(8, frameRect.height - tooltipHeight - 8));
             tooltip.style.left = `${left}px`;
             tooltip.style.top = `${top}px`;
         };
