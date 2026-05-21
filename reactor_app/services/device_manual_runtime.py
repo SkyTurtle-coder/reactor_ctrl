@@ -640,7 +640,7 @@ def _telemetry_to_snapshot(state: DeviceManualState) -> dict[str, Any]:
         "setpoint_rpm": state.reported_setpoint_rpm,
         "actual_rpm": state.actual_rpm,
         "torque_ncm": state.torque_ncm,
-        "active_control_sensor": getattr(state, "active_control_sensor", None) or "unknown",
+        "active_control_sensor": state.active_control_sensor or "unknown",
         "updated_at": _datetime_isoformat(state.last_reported_at),
     }
 

@@ -67,6 +67,11 @@ _OPTIONAL_COLUMN_SPECS: tuple[tuple[str, str, str], ...] = (
         "cc230_setpoint_write_mode",
         "SMALLINT NULL",
     ),
+    (
+        "device_manual_state",
+        "active_control_sensor",
+        "VARCHAR(16) NULL",
+    ),
 )
 
 _ACTIVITY_LOG_INDEX_SPECS = (
@@ -208,7 +213,7 @@ def _ensure_optional_columns(app: Flask) -> None:
         except SQLAlchemyError:
             db.session.rollback()
             app.logger.warning(
-                "Auto-migration: could not add column %s.%s — run migrate_v7_cc230_setpoint_write_mode.sql manually.",
+                "Auto-migration: could not add optional column %s.%s; apply the schema update manually.",
                 table_name,
                 column_name,
                 exc_info=True,

@@ -2727,6 +2727,7 @@
             setpointRpm: optionalNumber(reported.setpoint_rpm),
             actualRpm: optionalNumber(reported.actual_rpm),
             torqueNcm: optionalNumber(reported.torque_ncm),
+            activeControlSensor: asString(reported.active_control_sensor, "unknown"),
         };
     }
 

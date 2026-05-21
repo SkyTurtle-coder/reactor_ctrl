@@ -22,6 +22,7 @@ class DeviceManualState(db.Model):
     reported_setpoint_rpm = db.Column(db.Integer)
     actual_rpm = db.Column(db.Float)
     torque_ncm = db.Column(db.Float)
+    active_control_sensor = db.Column(db.String(16))
     last_reported_at = db.Column(db.DateTime(timezone=True))
     queue_status = db.Column(db.String(16), nullable=False, server_default=db.text("'idle'"), index=True)
     last_error = db.Column(db.Text)

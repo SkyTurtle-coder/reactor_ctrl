@@ -70,6 +70,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                         reported_setpoint_rpm INTEGER,
                         actual_rpm REAL,
                         torque_ncm REAL,
+                        active_control_sensor TEXT,
                         last_reported_at TEXT,
                         queue_status TEXT NOT NULL DEFAULT 'idle',
                         last_error TEXT,

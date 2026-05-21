@@ -12,7 +12,7 @@ from uuid import uuid4
 from sqlalchemy import inspect as sa_inspect, text
 
 from ..extensions import db
-from ..models import ControlCommand, ControlCommandEvent, Device, Measurement, MeasurementChannel
+from ..models import ControlCommand, ControlCommandEvent, Device, DeviceManualState, Measurement, MeasurementChannel
 from .drivers import DeviceCommandRequest, DeviceCommandResult, DriverError, DriverNotFoundError, DriverValidationError, get_driver
 from .transports import TcpSocketConfig, TcpSocketTransport
 
@@ -260,6 +260,57 @@ def _mark_binding_offline(device_id: int, *, connection_id: int) -> None:
         ),
         {"did": device_id, "cid": connection_id},
     )
+
+
+def _sensor_value_from_command(command_name: str, result: DeviceCommandResult) -> str | None:
+    normalized = str(command_name or "").strip().lower()
+    if normalized in {"select_internal_sensor", "set_internal_sensor"}:
+        return "internal"
+    if normalized in {"select_external_sensor", "set_external_sensor"}:
+        return "external"
+    value = result.metadata.get("active_control_sensor") if isinstance(result.metadata, dict) else None
+    normalized_value = str(value or "").strip().lower()
+    return normalized_value if normalized_value in {"internal", "external"} else None
+
+
+def _record_active_control_sensor(device_id: int, sensor: str) -> None:
+    normalized_sensor = str(sensor or "").strip().lower()
+    if normalized_sensor not in {"internal", "external"}:
+        return
+    try:
+        if _db_dialect_name() in {"mysql", "mariadb"}:
+            db.session.execute(
+                text(
+                    "INSERT INTO device_manual_state "
+                    "(device_id, desired_version, applied_version, queue_status, active_control_sensor) "
+                    "VALUES (:did, 0, 0, 'idle', :sensor) "
+                    "ON DUPLICATE KEY UPDATE active_control_sensor=VALUES(active_control_sensor)"
+                ),
+                {"did": int(device_id), "sensor": normalized_sensor},
+            )
+        else:
+            state = db.session.get(DeviceManualState, int(device_id))
+            if state is None:
+                state = DeviceManualState(
+                    device_id=int(device_id),
+                    desired_version=0,
+                    applied_version=0,
+                    queue_status="idle",
+                )
+                db.session.add(state)
+            state.active_control_sensor = normalized_sensor
+        db.session.commit()
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        logging.getLogger(__name__).warning(
+            "Failed to store active control sensor '%s' for device %s.",
+            normalized_sensor,
+            device_id,
+            exc_info=True,
+        )
 
 
 def _build_transport_config(connection, payload: dict[str, Any]) -> TcpSocketConfig:
@@ -686,6 +737,10 @@ def execute_device_command(
         },
     )
     _commit_command_phase(command, "response")
+
+    active_control_sensor = _sensor_value_from_command(command_name, result)
+    if active_control_sensor is not None:
+        _record_active_control_sensor(device.device_id, active_control_sensor)
 
     try:
         measurement = _persist_measurement(
