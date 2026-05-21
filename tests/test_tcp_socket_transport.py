@@ -15,7 +15,10 @@ class _FakeSocket:
 
     def recv(self, _size):
         if self._chunks:
-            return self._chunks.pop(0)
+            chunk = self._chunks.pop(0)
+            if chunk == socket.timeout:
+                raise socket.timeout()
+            return chunk
         return b""
 
     def close(self):
@@ -52,6 +55,15 @@ class TcpSocketTransportTests(unittest.TestCase):
 
         with self.assertRaises(socket.timeout):
             transport.receive_until(b"\r\n", max_bytes=4)
+
+    def test_drain_input_reads_stale_bytes_with_short_timeout_and_restores_timeout(self):
+        transport = TcpSocketTransport(TcpSocketConfig("127.0.0.1", 4001, read_timeout_s=1.2, recv_size=8))
+        transport._sock = _FakeSocket([b"STALE", socket.timeout])
+
+        result = transport.drain_input(idle_timeout_s=0.01)
+
+        self.assertEqual(result, b"STALE")
+        self.assertEqual(transport._sock.timeouts[-1], 1.2)
 
 
 if __name__ == "__main__":

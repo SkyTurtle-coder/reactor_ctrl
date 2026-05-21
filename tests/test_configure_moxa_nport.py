@@ -44,6 +44,30 @@ class ConfigureMoxaNPortTests(unittest.TestCase):
         self.assertEqual(args.device_protocol, "ika_eurostar_60")
         self.assertEqual(args.device_type, "stirrer")
 
+    def test_cc230_preset_applies_legacy_rs232_settings_and_device_protocol(self):
+        argv = [
+            "--host",
+            "192.168.1.50",
+            "--device-preset",
+            "huber_cc230",
+            "--api-token",
+            "token",
+        ]
+        parser = moxa_config.build_parser()
+        args = parser.parse_args(argv)
+
+        moxa_config._apply_device_preset(args, argv)
+
+        self.assertEqual(args.baud_rate, 9600)
+        self.assertEqual(args.data_bits, 8)
+        self.assertEqual(args.parity, "N")
+        self.assertEqual(args.stop_bits, 1)
+        self.assertEqual(args.flow_control, "none")
+        self.assertEqual(args.read_timeout_ms, 5000)
+        self.assertEqual(args.write_timeout_ms, 2000)
+        self.assertEqual(args.device_protocol, "huber_cc230")
+        self.assertEqual(args.device_type, "thermostat")
+
     def test_bind_device_creates_device_and_binding_for_selected_port(self):
         calls = []
 

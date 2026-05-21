@@ -43,6 +43,8 @@
     const manualValueLabel = document.getElementById("process-manual-value-label");
     const manualStateInput = document.getElementById("process-manual-state-input");
     const manualSpeedInput = document.getElementById("process-manual-speed-input");
+    const manualSensorField = document.getElementById("process-manual-sensor-field");
+    const manualSensorInput = document.getElementById("process-manual-sensor-input");
     const manualSubmitButton = document.getElementById("process-manual-submit-button");
     const manualPrimaryMetricLabel = document.getElementById("process-manual-primary-metric-label");
     const manualSecondaryMetricLabel = document.getElementById("process-manual-secondary-metric-label");
@@ -2481,7 +2483,14 @@
         return (
             protocol === "huber_unistat_430"
             || protocol === "huber_pilot_one"
+            || protocol === "huber_cc230"
         ) && symbolId === "hc_system";
+    }
+
+    function isCC230ThermostatTarget(node, target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
+        return protocol === "huber_cc230" && symbolId === "hc_system";
     }
 
     function isSupportedManualTarget(node, target) {
@@ -2500,6 +2509,9 @@
         }
         if (manualSpeedInput) {
             manualSpeedInput.disabled = !allow;
+        }
+        if (manualSensorInput) {
+            manualSensorInput.disabled = !allow;
         }
         if (manualSubmitButton) {
             manualSubmitButton.disabled = !allow;
@@ -2538,8 +2550,9 @@
 
         if (isHuberThermostatTarget(node, target)) {
             const limits = huberSetpointLimits(target);
+            const isCC230 = isCC230ThermostatTarget(node, target);
             if (manualDeviceHeading) {
-                manualDeviceHeading.textContent = "Thermostat";
+                manualDeviceHeading.textContent = isCC230 ? "CC230 Thermostat" : "Thermostat";
             }
             if (manualStateLabel) {
                 manualStateLabel.textContent = "Status";
@@ -2548,11 +2561,12 @@
                 manualValueLabel.textContent = "Setpoint °C";
             }
             if (manualPrimaryMetricLabel) {
-                manualPrimaryMetricLabel.textContent = "Setpoint";
+                manualPrimaryMetricLabel.textContent = isCC230 ? "Process Temp" : "Setpoint";
             }
             if (manualSecondaryMetricLabel) {
-                manualSecondaryMetricLabel.textContent = "Status";
+                manualSecondaryMetricLabel.textContent = isCC230 ? "Bath / Status" : "Status";
             }
+            manualSensorField?.classList.toggle("is-hidden", !isCC230);
             if (manualSpeedInput) {
                 manualSpeedInput.min = String(limits.min);
                 manualSpeedInput.max = String(limits.max);
@@ -2567,8 +2581,16 @@
                 if (manualStateInput) {
                     manualStateInput.value = Boolean(node?.control?.config?.is_on) ? "on" : "off";
                 }
+                if (manualSensorInput) {
+                    manualSensorInput.value = "";
+                }
             }
             return;
+        }
+
+        manualSensorField?.classList.add("is-hidden");
+        if (manualSensorInput) {
+            manualSensorInput.value = "";
         }
 
         if (manualDeviceHeading) {
@@ -2623,13 +2645,29 @@
 
     function updateManualLiveMetrics(telemetry) {
         if (telemetry?.kind === "huber") {
+            const primaryTemp = telemetry.processTempC == null ? telemetry.setpointC : telemetry.processTempC;
+            const secondaryParts = [];
+            if (telemetry.bathTempC != null) {
+                secondaryParts.push(formatRoundedMetric(Number(telemetry.bathTempC), "degC", 2));
+            }
+            if (telemetry.isOn != null) {
+                secondaryParts.push(telemetry.isOn ? "ON" : "OFF");
+            }
+            const errorText = asString(telemetry.errorText, "");
+            const warningText = asString(telemetry.warningText, "");
+            if (errorText && !/^(error\s*)?0$/i.test(errorText)) {
+                secondaryParts.push(`Error: ${errorText}`);
+            }
+            if (warningText && !/^(warn\s*)?0$/i.test(warningText)) {
+                secondaryParts.push(`Warning: ${warningText}`);
+            }
             if (manualActualRpm) {
-                manualActualRpm.textContent = telemetry.setpointC == null
+                manualActualRpm.textContent = primaryTemp == null
                     ? "-"
-                    : formatRoundedMetric(Number(telemetry.setpointC), "°C", 2);
+                    : formatRoundedMetric(Number(primaryTemp), "degC", 2);
             }
             if (manualTorqueNcm) {
-                manualTorqueNcm.textContent = telemetry.isOn == null ? "-" : telemetry.isOn ? "ON" : "OFF";
+                manualTorqueNcm.textContent = secondaryParts.join(" | ") || "-";
             }
             return;
         }
@@ -2708,6 +2746,24 @@
         try {
             const setpointValue = await executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 });
             const statusValue = await executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 });
+            const isCC230 = isCC230ThermostatTarget(node, target);
+            let processTempC = null;
+            let bathTempC = null;
+            let errorText = "";
+            let warningText = "";
+            if (isCC230) {
+                const optionalCommand = async (commandName) => {
+                    try {
+                        return await executeDeviceCommand(target, commandName, {}, { timeoutMs: 12000 });
+                    } catch (_error) {
+                        return null;
+                    }
+                };
+                processTempC = optionalNumber(await optionalCommand("get_process_temp"));
+                bathTempC = optionalNumber(await optionalCommand("get_bath_temp"));
+                errorText = asString(await optionalCommand("get_error"), "");
+                warningText = asString(await optionalCommand("get_warning"), "");
+            }
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
             }
@@ -2725,7 +2781,7 @@
                 },
             };
 
-            const telemetry = { kind: "huber", setpointC, isOn };
+            const telemetry = { kind: "huber", setpointC, processTempC, bathTempC, errorText, warningText, isOn };
             updateManualLiveMetrics(telemetry);
             updateManualDeviceStatus(target, telemetry);
             renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
@@ -3133,6 +3189,15 @@
             setManualStatus("Submitting thermostat settings...", "muted");
 
             void (async () => {
+                const sensorValue = asString(manualSensorInput?.value, "");
+                if (isCC230ThermostatTarget(node, target) && sensorValue) {
+                    await executeDeviceCommand(
+                        target,
+                        sensorValue === "external" ? "select_external_sensor" : "select_internal_sensor",
+                        {},
+                        { timeoutMs: 12000 },
+                    );
+                }
                 await executeDeviceCommand(
                     target,
                     "set_setpoint",

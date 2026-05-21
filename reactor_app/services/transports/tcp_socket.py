@@ -103,6 +103,28 @@ class TcpSocketTransport:
                 break
         raise socket.timeout("Response terminator was not received before the maximum response size was reached.")
 
+    def drain_input(self, *, max_bytes: int = 65536, idle_timeout_s: float = 0.02) -> bytes:
+        """Best-effort drain of stale bytes already waiting on the socket."""
+        self.connect()
+        assert self._sock is not None
+        if max_bytes <= 0:
+            return b""
+
+        previous_timeout = self.config.read_timeout_s
+        drained = bytearray()
+        self._sock.settimeout(max(0.001, float(idle_timeout_s)))
+        try:
+            while len(drained) < max_bytes:
+                chunk = self._sock.recv(min(self.config.recv_size, max_bytes - len(drained)))
+                if not chunk:
+                    break
+                drained.extend(chunk)
+        except socket.timeout:
+            pass
+        finally:
+            self._sock.settimeout(previous_timeout)
+        return bytes(drained)
+
     def send_and_receive(self, payload: bytes, recv_size: int | None = None) -> bytes:
         self.send(payload)
         return self.receive(recv_size=recv_size)

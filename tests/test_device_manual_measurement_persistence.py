@@ -395,6 +395,75 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 ["actual_temp_C", "setpoint_C"],
             )
 
+    def test_cc230_discovery_and_measurement_persistence_include_extended_channels(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="CC230-DISCOVERY-001",
+                manufacturer_serial="SN-CC230-001",
+                display_name="CC230 Discovery Test",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.commit()
+
+            device_manual_runtime._ensure_manual_states_for_active_devices(self.app)
+
+            state = db.session.get(DeviceManualState, device.device_id)
+            channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == device.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+
+            self.assertIsNotNone(state)
+            self.assertEqual(
+                [(channel.channel_code, channel.value_type) for channel in channels],
+                [
+                    ("actual_temp_C", "float"),
+                    ("bath_temp_C", "float"),
+                    ("cc230_error", "text"),
+                    ("cc230_status", "text"),
+                    ("cc230_warning", "text"),
+                    ("external_temp_C", "float"),
+                    ("internal_temp_C", "float"),
+                    ("setpoint_C", "float"),
+                ],
+            )
+
+            measured_at = datetime.now(timezone.utc)
+            device_manual_runtime._persist_huber_telemetry_as_measurements(
+                device,
+                {
+                    "setpoint_C": 25.0,
+                    "actual_temp_C": 24.8,
+                    "bath_temp_C": 24.7,
+                    "internal_temp_C": 24.9,
+                    "external_temp_C": None,
+                    "status": "ON REMOTE",
+                    "error": "0",
+                    "warning": "WARN 0",
+                },
+                measured_at,
+            )
+            db.session.commit()
+
+            measurements = Measurement.query.order_by(Measurement.channel_code.asc()).all()
+            self.assertEqual(
+                [(item.channel_code, item.numeric_value, item.text_value) for item in measurements],
+                [
+                    ("actual_temp_C", 24.8, None),
+                    ("bath_temp_C", 24.7, None),
+                    ("cc230_error", None, "0"),
+                    ("cc230_status", None, "ON REMOTE"),
+                    ("cc230_warning", None, "WARN 0"),
+                    ("internal_temp_C", 24.9, None),
+                    ("setpoint_C", 25.0, None),
+                ],
+            )
+
     def test_background_huber_polling_is_claimed_without_watch_or_recipe(self):
         # Huber devices are always eligible for background polling (same as IKA),
         # so a device with stale last_reported_at must be claimed.

@@ -1536,7 +1536,7 @@ h2 {
 
 .process-manual-settings-form {
     display: grid;
-    grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr) minmax(0, 0.9fr) auto;
     gap: 0.75rem;
     align-items: end;
 }
@@ -1546,12 +1546,14 @@ h2 {
 }
 
 .process-manual-state-field,
-.process-manual-speed-field {
+.process-manual-speed-field,
+.process-manual-sensor-field {
     min-width: 0;
 }
 
 .process-manual-state-field select,
-.process-manual-speed-field input {
+.process-manual-speed-field input,
+.process-manual-sensor-field select {
     width: 100%;
 }
 

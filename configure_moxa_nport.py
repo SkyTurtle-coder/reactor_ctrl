@@ -36,6 +36,18 @@ _DEVICE_PRESETS = {
         "device_type": "thermostat",
         "notes": "Huber Unistat/Pilot ONE PB over RS-232: 9600 baud, 8N1, no handshake.",
     },
+    "huber_cc230": {
+        "baud_rate": 9600,
+        "data_bits": 8,
+        "parity": "N",
+        "stop_bits": 1,
+        "flow_control": "none",
+        "read_timeout_ms": 5000,
+        "write_timeout_ms": 2000,
+        "device_protocol": "huber_cc230",
+        "device_type": "thermostat",
+        "notes": "Huber/Polystat CC230 RS-232 ASCII: 9600 baud, 8N1, CR/LF, no flow control.",
+    },
     "ika_eurostar_60": {
         "baud_rate": 9600,
         "data_bits": 7,
@@ -127,6 +139,7 @@ def _default_device_display_name(args: argparse.Namespace, *, port_number: int, 
     if args.device_display_name:
         return args.device_display_name
     labels = {
+        "huber_cc230": "Huber/Polystat CC230",
         "huber_unistat_430": "Huber Unistat 430",
         "huber_pilot_one": "Huber Pilot ONE",
         "ika_eurostar_60": "IKA EUROSTAR 60",
@@ -237,7 +250,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--device-protocol",
-        choices=("huber_unistat_430", "huber_pilot_one", "ika_eurostar_60"),
+        choices=("huber_cc230", "huber_unistat_430", "huber_pilot_one", "ika_eurostar_60"),
         help="Protocol for --bind-device. Defaults to the selected device preset when available.",
     )
     parser.add_argument("--device-asset-serial", help="Stable internal asset serial for --bind-device.")

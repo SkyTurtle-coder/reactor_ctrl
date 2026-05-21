@@ -162,8 +162,9 @@ def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: s
     if normalized_symbol_id == "hc_system" and normalized_protocol in {
         "huber_unistat_430",
         "huber_pilot_one",
+        "huber_cc230",
     }:
-        return [
+        channels = [
             {
                 "channel_id": None,
                 "channel_code": "setpoint_C",
@@ -181,6 +182,36 @@ def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: s
                 "data_source": "measurement",
             },
         ]
+        if normalized_protocol == "huber_cc230":
+            channels.extend(
+                [
+                    {
+                        "channel_id": None,
+                        "channel_code": "bath_temp_C",
+                        "display_name": "Bath Temperature",
+                        "unit": "degC",
+                        "value_type": "float",
+                        "data_source": "measurement",
+                    },
+                    {
+                        "channel_id": None,
+                        "channel_code": "internal_temp_C",
+                        "display_name": "Internal Temperature",
+                        "unit": "degC",
+                        "value_type": "float",
+                        "data_source": "measurement",
+                    },
+                    {
+                        "channel_id": None,
+                        "channel_code": "external_temp_C",
+                        "display_name": "External Temperature",
+                        "unit": "degC",
+                        "value_type": "float",
+                        "data_source": "measurement",
+                    },
+                ]
+            )
+        return channels
     return []
 
 

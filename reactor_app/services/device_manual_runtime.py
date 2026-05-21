@@ -43,10 +43,20 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
-_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one"}
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
     {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Actual Temperature", "unit": "degC"},
+)
+_CC230_TELEMETRY_CHANNELS: tuple[dict, ...] = (
+    {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
+    {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Process Temperature", "unit": "degC"},
+    {"key": "bath_temp_C", "channel_code": "bath_temp_C", "display_name": "Bath Temperature", "unit": "degC"},
+    {"key": "internal_temp_C", "channel_code": "internal_temp_C", "display_name": "Internal Temperature", "unit": "degC"},
+    {"key": "external_temp_C", "channel_code": "external_temp_C", "display_name": "External Temperature", "unit": "degC"},
+    {"key": "status", "channel_code": "cc230_status", "display_name": "Status", "unit": "", "value_type": "text"},
+    {"key": "error", "channel_code": "cc230_error", "display_name": "Error", "unit": "", "value_type": "text"},
+    {"key": "warning", "channel_code": "cc230_warning", "display_name": "Warning", "unit": "", "value_type": "text"},
 )
 _IKA_TELEMETRY_MEASUREMENT_SOURCE = "poller"
 
@@ -259,6 +269,10 @@ def _is_ika_device(device: Device | None) -> bool:
 
 def _is_huber_device(device: Device | None) -> bool:
     return str(getattr(device, "protocol", "") or "").strip().lower() in _HUBER_PROTOCOLS
+
+
+def _is_cc230_device(device: Device | None) -> bool:
+    return str(getattr(device, "protocol", "") or "").strip().lower() == "huber_cc230"
 
 
 def _active_recipe_program_device_ids() -> set[int] | None:
@@ -544,7 +558,7 @@ def _ensure_measurement_channels(device: Device, specs: tuple[dict, ...]) -> dic
                 channel_code=spec["channel_code"],
                 display_name=spec["display_name"],
                 unit=spec["unit"],
-                value_type="float",
+                value_type=str(spec.get("value_type") or "float"),
                 is_active=True,
             )
             db.session.add(channel)
@@ -558,8 +572,9 @@ def _ensure_measurement_channels(device: Device, specs: tuple[dict, ...]) -> dic
         if channel.unit != spec["unit"]:
             channel.unit = spec["unit"]
             needs_flush = True
-        if str(channel.value_type or "").strip().lower() != "float":
-            channel.value_type = "float"
+        expected_value_type = str(spec.get("value_type") or "float").strip().lower()
+        if str(channel.value_type or "").strip().lower() != expected_value_type:
+            channel.value_type = expected_value_type
             needs_flush = True
         if not bool(channel.is_active):
             channel.is_active = True
@@ -576,7 +591,10 @@ def _ensure_ika_measurement_channels(device: Device) -> dict[str, MeasurementCha
 
 
 def _ensure_huber_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
-    return _ensure_measurement_channels(device, _HUBER_TELEMETRY_CHANNELS)
+    return _ensure_measurement_channels(
+        device,
+        _CC230_TELEMETRY_CHANNELS if _is_cc230_device(device) else _HUBER_TELEMETRY_CHANNELS,
+    )
 
 
 def _ensure_manual_state(device: Device) -> DeviceManualState:
@@ -840,7 +858,38 @@ def _read_ika_status(device: Device) -> dict[str, float | None]:
     }
 
 
-def _read_huber_status(device: Device) -> dict[str, float | None]:
+def _read_huber_status(device: Device) -> dict[str, Any]:
+    if _is_cc230_device(device):
+        setpoint = _run_logged_driver_command(device, "get_setpoint")
+        process_temp = _run_logged_driver_command(device, "get_process_temp")
+        telemetry: dict[str, Any] = {
+            "setpoint_C": None if setpoint is None else float(setpoint),
+            "actual_temp_C": None if process_temp is None else float(process_temp),
+        }
+        for command_name, key in (
+            ("get_bath_temp", "bath_temp_C"),
+            ("get_internal_temp", "internal_temp_C"),
+            ("get_external_temp", "external_temp_C"),
+        ):
+            try:
+                value = _run_logged_driver_command(device, command_name)
+                telemetry[key] = None if value is None else float(value)
+            except Exception:
+                telemetry[key] = None
+        for command_name, key in (
+            ("get_status", "status"),
+            ("get_error", "error"),
+            ("get_warning", "warning"),
+        ):
+            try:
+                value = _run_logged_driver_command(device, command_name)
+                telemetry[key] = str(value) if value is not None else None
+            except Exception:
+                telemetry[key] = None
+        if telemetry["setpoint_C"] is None and telemetry["actual_temp_C"] is None:
+            raise RuntimeError("CC230 returned no valid data for setpoint or process temperature.")
+        return telemetry
+
     setpoint = _run_logged_driver_command(device, "get_setpoint")
     actual = _run_logged_driver_command(device, "get_internal_temp")
     setpoint_c = None if setpoint is None else float(setpoint)
@@ -1015,7 +1064,7 @@ def _commit_huber_manual_state_success(
 
 def _persist_telemetry_as_measurements(
     device: Device,
-    telemetry: dict[str, float | None],
+    telemetry: dict[str, Any],
     measured_at: datetime,
     *,
     specs: tuple[dict, ...],
@@ -1035,16 +1084,27 @@ def _persist_telemetry_as_measurements(
         if channel is None:
             continue
 
-        db.session.add(Measurement(
-            device_id=device.device_id,
-            channel_id=channel.channel_id,
-            channel_code=channel.channel_code,
-            measured_at=measured_at,
-            numeric_value=float(value),
-            unit=channel.unit,
-            # Must stay inside the measurement schema's allowed source enum.
-            source=_IKA_TELEMETRY_MEASUREMENT_SOURCE,
-        ))
+        value_type = str(spec.get("value_type") or channel.value_type or "float").strip().lower()
+        if value_type == "text":
+            numeric_value = None
+            text_value = str(value)[:255]
+        else:
+            numeric_value = float(value)
+            text_value = None
+
+        db.session.add(
+            Measurement(
+                device_id=device.device_id,
+                channel_id=channel.channel_id,
+                channel_code=channel.channel_code,
+                measured_at=measured_at,
+                numeric_value=numeric_value,
+                text_value=text_value,
+                unit=channel.unit,
+                # Must stay inside the measurement schema's allowed source enum.
+                source=_IKA_TELEMETRY_MEASUREMENT_SOURCE,
+            )
+        )
 
     db.session.flush()
 
@@ -1066,15 +1126,16 @@ def _persist_ika_telemetry_as_measurements(
 
 def _persist_huber_telemetry_as_measurements(
     device: Device,
-    telemetry: dict[str, float | None],
+    telemetry: dict[str, Any],
     measured_at: datetime,
 ) -> None:
     channels = _ensure_huber_measurement_channels(device)
+    specs = _CC230_TELEMETRY_CHANNELS if _is_cc230_device(device) else _HUBER_TELEMETRY_CHANNELS
     _persist_telemetry_as_measurements(
         device,
         telemetry,
         measured_at,
-        specs=_HUBER_TELEMETRY_CHANNELS,
+        specs=specs,
         channels=channels,
     )
 
@@ -1217,7 +1278,7 @@ def _ensure_manual_states_for_active_devices(app: Flask) -> None:
                 )
                 added_state = True
             if _is_huber_device(device):
-                specs = _HUBER_TELEMETRY_CHANNELS
+                specs = _CC230_TELEMETRY_CHANNELS if _is_cc230_device(device) else _HUBER_TELEMETRY_CHANNELS
                 ensure_channels = _ensure_huber_measurement_channels
             else:
                 specs = _IKA_TELEMETRY_CHANNELS

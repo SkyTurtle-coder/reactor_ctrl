@@ -169,7 +169,11 @@ class ProcessViewTemplateTests(unittest.TestCase):
 
         self.assertIn("function huberSetpointLimits(target)", source)
         self.assertIn("return { min: -40, max: 150 };", source)
-        self.assertNotIn('protocol === "huber_cc230"', source)
+        self.assertIn('protocol === "huber_cc230"', source)
+        self.assertIn("function isCC230ThermostatTarget(node, target)", source)
+        self.assertIn('document.getElementById("process-manual-sensor-input")', source)
+        self.assertIn('"select_external_sensor"', source)
+        self.assertIn('"select_internal_sensor"', source)
         self.assertIn("manualSpeedInput.min = String(limits.min);", source)
         self.assertIn("manualSpeedInput.max = String(limits.max);", source)
         self.assertIn("{ temp_c: setpointC, min_setpoint_c: limits.min, max_setpoint_c: limits.max }", source)
@@ -239,6 +243,9 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('"channel_code": "ika_torque_ncm"', source)
         self.assertIn('"channel_code": "setpoint_C"', source)
         self.assertIn('"channel_code": "actual_temp_C"', source)
+        self.assertIn('"channel_code": "bath_temp_C"', source)
+        self.assertIn('"channel_code": "internal_temp_C"', source)
+        self.assertIn('"channel_code": "external_temp_C"', source)
         self.assertIn('"data_source": "measurement"', source)
         self.assertIn('"port_number": connection.port_number if connection is not None else None', source)
 
