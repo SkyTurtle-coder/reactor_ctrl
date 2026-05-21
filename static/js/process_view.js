@@ -3184,7 +3184,8 @@
 
         if (isHuberThermostatTarget(node, target)) {
             const limits = huberSetpointLimits(target);
-            const setpointC = boundedNumberInputValue(manualSpeedInput, 25);
+            const rawSetpointC = asNumber(manualSpeedInput?.value, 25);
+            const setpointC = Math.round(Math.max(limits.min, Math.min(limits.max, rawSetpointC)) * 100) / 100;
             if (manualSpeedInput) {
                 manualSpeedInput.value = String(setpointC);
             }

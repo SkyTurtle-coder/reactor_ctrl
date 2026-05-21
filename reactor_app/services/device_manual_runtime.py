@@ -1510,7 +1510,18 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     if active_recipe_device_ids is not None:
         if not active_recipe_device_ids:
             return None
-        candidate_query = candidate_query.filter(DeviceManualState.device_id.in_(active_recipe_device_ids))
+        # Devices in an active recipe always take priority.  Non-recipe devices
+        # with an active UI watch are also allowed so their live telemetry
+        # continues to be stored even while the recipe program is running.
+        candidate_query = candidate_query.filter(
+            or_(
+                DeviceManualState.device_id.in_(active_recipe_device_ids),
+                and_(
+                    DeviceManualState.watch_expires_at.is_not(None),
+                    DeviceManualState.watch_expires_at > now,
+                ),
+            )
+        )
     order_by_columns = [
         case((DeviceManualState.desired_version > DeviceManualState.applied_version, 0), else_=1),
         DeviceManualState.next_poll_at.asc(),
