@@ -25,7 +25,7 @@ _CC230_SETPOINT_READBACK_TOLERANCE_C = 0.1
 # Short settle after REMOTE before the write command (CC230 needs time to switch modes).
 _CC230_REMOTE_SETTLE_S = 0.2
 # Short settle after the write command before the readback query.
-_CC230_WRITE_SETTLE_S = 0.3
+_CC230_WRITE_SETTLE_S = 0.5
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ class WriteSetpointResult:
     # "unverified" — SETPOINT? timed out; write may have succeeded
     # "failed"     — readback returned wrong value on all variants (DriverError raised instead)
     setpoint_sync_status: str
-    write_mode_used: int  # 0 = SETPOINT!, 1 = SET decimal, 2 = SET integer
+    write_mode_used: int  # 3 = MATLAB SET (primary), 1 = SET decimal, 2 = SET int×100, 0 = SETPOINT! (last resort)
     attempts: list = field(default_factory=list)
 
 
@@ -97,6 +97,15 @@ def _format_set_command_c(value_celsius: float) -> str:
     v_int = int(round(float(value_celsius) * 100))
     sign = "+" if v_int >= 0 else "-"
     return f"SET {sign}{abs(v_int):05d}"
+
+
+def _format_cc230_matlab_set_command(temp_c: float) -> str:
+    # MATLAB-compatible primary write format: SET ±XXXXX (integer) or SET ±XXX.X (decimal).
+    # Matches original MATLAB protocol: num2str(abs(setp)).zfill(5) with sign prefix.
+    # Examples: -10 → 'SET -00010', +25.5 → 'SET +025.5'
+    sign = "+" if float(temp_c) >= 0 else "-"
+    value_str = f"{abs(float(temp_c)):g}"
+    return f"SET {sign}{value_str.zfill(5)}"
 
 
 def _status_payload(text: str | None) -> dict[str, Any]:
@@ -265,15 +274,17 @@ class HuberCC230Client:
                 f"{min_setpoint_c:g}..{max_setpoint_c:g} degC."
             )
 
-        # Variant 0: SETPOINT! ±XXX.XX  (standard command, current firmware)
-        # Variant 1: SET ±XXX.X         (legacy decimal form)
-        # Variant 2: SET ±XXXXX         (legacy integer * 100 form)
+        # Variant 3: SET ±XXXXX / SET ±XXX.X  (MATLAB-compatible primary form)
+        # Variant 1: SET ±XXX.X              (legacy decimal form)
+        # Variant 2: SET ±XXXXX              (legacy integer * 100 form)
+        # Variant 0: SETPOINT! ±XXX.XX       (last-resort fallback)
         all_variants: list[tuple[int, str]] = [
-            (0, f"SETPOINT! {_format_setpoint_celsius(value)}"),
+            (3, _format_cc230_matlab_set_command(value)),
             (1, _format_set_command_b(value)),
             (2, _format_set_command_c(value)),
+            (0, f"SETPOINT! {_format_setpoint_celsius(value)}"),
         ]
-        if preferred_write_mode is not None and 0 <= int(preferred_write_mode) <= 2:
+        if preferred_write_mode is not None and 0 <= int(preferred_write_mode) <= 3:
             preferred = [v for v in all_variants if v[0] == int(preferred_write_mode)]
             others = [v for v in all_variants if v[0] != int(preferred_write_mode)]
             variants = preferred + others
@@ -446,7 +457,7 @@ class HuberCC230Driver(DeviceDriver):
             if raw_mode is not None:
                 try:
                     m = int(raw_mode)
-                    if 0 <= m <= 2:
+                    if 0 <= m <= 3:
                         preferred_mode = m
                 except (TypeError, ValueError):
                     pass

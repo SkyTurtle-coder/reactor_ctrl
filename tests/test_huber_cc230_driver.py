@@ -7,6 +7,7 @@ from reactor_app.services.drivers.base import DeviceCommandRequest
 from reactor_app.services.drivers.huber_cc230 import (
     DriverError,
     HuberCC230Driver,
+    _format_cc230_matlab_set_command,
     _format_set_command_b,
     _format_set_command_c,
     _temperature_from_response,
@@ -69,6 +70,15 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(_temperature_from_response("SP +02500"), 25.0)
         self.assertEqual(_temperature_from_response("2500"), 25.0)
         self.assertEqual(_temperature_from_response("TE -00500"), -5.0)
+
+    def test_format_cc230_matlab_set_command(self):
+        self.assertEqual(_format_cc230_matlab_set_command(10.0), "SET +00010")
+        self.assertEqual(_format_cc230_matlab_set_command(-10.0), "SET -00010")
+        self.assertEqual(_format_cc230_matlab_set_command(25.5), "SET +025.5")
+        self.assertEqual(_format_cc230_matlab_set_command(-25.5), "SET -025.5")
+        self.assertEqual(_format_cc230_matlab_set_command(0.0), "SET +00000")
+        self.assertEqual(_format_cc230_matlab_set_command(25.0), "SET +00025")
+        self.assertEqual(_format_cc230_matlab_set_command(-5.0), "SET -00005")
 
     def test_format_set_command_b(self):
         self.assertEqual(_format_set_command_b(30.0), "SET +030.0")
@@ -136,10 +146,10 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], 25.0)
         self.assertEqual(result.metadata["verified_setpoint"], 25.0)
         self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
-        self.assertEqual(result.metadata["write_mode_used"], 0)
+        self.assertEqual(result.metadata["write_mode_used"], 3)
         self.assertEqual(
             transport.sent,
-            [b"REMOTE\r\n", b"SETPOINT! +025.00\r\n", b"SETPOINT?\r\n"],
+            [b"REMOTE\r\n", b"SET +00025\r\n", b"SETPOINT?\r\n"],
         )
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
@@ -153,7 +163,7 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
         self.assertEqual(
             transport.sent,
-            [b"REMOTE\r\n", b"SETPOINT! -005.00\r\n", b"SETPOINT?\r\n"],
+            [b"REMOTE\r\n", b"SET -00005\r\n", b"SETPOINT?\r\n"],
         )
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
@@ -183,11 +193,11 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], 25.0)
         self.assertIsNone(result.metadata["verified_setpoint"])
         self.assertEqual(result.metadata["setpoint_sync_status"], "unverified")
-        self.assertEqual(result.metadata["write_mode_used"], 0)
+        self.assertEqual(result.metadata["write_mode_used"], 3)
         # After the write, exactly SETPOINT? and SP? are queried.
         self.assertEqual(
             transport.sent,
-            [b"REMOTE\r\n", b"SETPOINT! +025.00\r\n", b"SETPOINT?\r\n", b"SP?\r\n"],
+            [b"REMOTE\r\n", b"SET +00025\r\n", b"SETPOINT?\r\n", b"SP?\r\n"],
         )
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
@@ -201,9 +211,9 @@ class HuberCC230DriverTests(unittest.TestCase):
             responses=[socket.timeout],  # SETPOINT? times out; SP? also (no more)
         )
         self.assertEqual(result.metadata["setpoint_sync_status"], "unverified")
-        # Only one write variant (mode 0) was attempted.
+        # Only one write variant (mode 3) was attempted.
         sent_commands = [b for b in transport.sent]
-        self.assertIn(b"SETPOINT! +030.00\r\n", sent_commands)
+        self.assertIn(b"SET +00030\r\n", sent_commands)
         self.assertNotIn(b"SET +030.0\r\n", sent_commands)
         self.assertNotIn(b"SET +03000\r\n", sent_commands)
 
@@ -213,12 +223,12 @@ class HuberCC230DriverTests(unittest.TestCase):
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
     def test_write_setpoint_falls_back_to_variant_b(self, _mock_sleep):
-        # Mode 0 (SETPOINT!) readback returns wrong value; mode 1 (SET decimal) works.
+        # Mode 3 (MATLAB SET) readback returns wrong value; mode 1 (SET decimal) works.
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
             responses=[
-                b"SETPOINT +02000\r\n",  # mode 0 readback: 20 °C — wrong
+                b"SETPOINT +02000\r\n",  # mode 3 readback: 20 °C — wrong
                 b"SETPOINT +02500\r\n",  # mode 1 readback: 25 °C — correct
             ],
         )
@@ -226,17 +236,17 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["write_mode_used"], 1)
         self.assertEqual(result.metadata["verified_setpoint"], 25.0)
         sent = transport.sent
-        self.assertIn(b"SETPOINT! +025.00\r\n", sent)
+        self.assertIn(b"SET +00025\r\n", sent)
         self.assertIn(b"SET +025.0\r\n", sent)
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
     def test_write_setpoint_falls_back_to_variant_c(self, _mock_sleep):
-        # Modes 0 and 1 return wrong values; mode 2 (SET integer) works.
+        # Modes 3 and 1 return wrong values; mode 2 (SET integer) works.
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
             responses=[
-                b"SETPOINT +02000\r\n",  # mode 0 readback: wrong
+                b"SETPOINT +02000\r\n",  # mode 3 readback: wrong
                 b"SETPOINT +02000\r\n",  # mode 1 readback: wrong
                 b"SETPOINT +02500\r\n",  # mode 2 readback: correct
             ],
@@ -248,7 +258,7 @@ class HuberCC230DriverTests(unittest.TestCase):
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
     def test_write_setpoint_preferred_mode_tried_first(self, _mock_sleep):
-        # When preferred_write_mode=1 is passed, SET decimal is tried before SETPOINT!.
+        # When preferred_write_mode=1 is passed, SET decimal is tried before the MATLAB mode.
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150, "cc230_write_mode": 1},
@@ -267,15 +277,16 @@ class HuberCC230DriverTests(unittest.TestCase):
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
     def test_write_setpoint_all_variants_fail_raises_driver_error(self, _mock_sleep):
-        # All three readbacks return a value that is too far from the requested one.
+        # All four readbacks return a value that is too far from the requested one.
         with self.assertRaises(DriverError):
             self.execute(
                 "set_setpoint",
                 payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
                 responses=[
-                    b"SETPOINT +02000\r\n",
-                    b"SETPOINT +02000\r\n",
-                    b"SETPOINT +02000\r\n",
+                    b"SETPOINT +02000\r\n",  # mode 3 readback: wrong
+                    b"SETPOINT +02000\r\n",  # mode 1 readback: wrong
+                    b"SETPOINT +02000\r\n",  # mode 2 readback: wrong
+                    b"SETPOINT +02000\r\n",  # mode 0 readback: wrong
                 ],
             )
 
