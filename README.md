@@ -452,6 +452,46 @@ sudo systemctl restart reactor_ctrl
 
 Die Gunicorn-Konfiguration liegt in `gunicorn.conf.py` und bindet standardmaessig an `127.0.0.1:5000`. Damit bleibt der Dienst sauber im Hintergrund aktiv, auch wenn die SSH-Verbindung getrennt wird.
 
+## Automatischer Datenbank-Backup
+
+Der Server kann taeglich einen komprimierten SQL-Dump erzeugen, der danach vom zentralen Backup-System gesichert werden kann. Der Dump-Runner liest `DATABASE_URL` aus `.env`, schreibt keine Passwoerter in die Prozessargumente und verwendet `mariadb-dump`/`mysqldump` mit `--single-transaction`, damit der Betrieb nicht durch Tabellen-Locks blockiert wird.
+
+Standardziel:
+
+```bash
+/home/pthuerlemann/backups/reactor_ctrl/sql
+```
+
+Optionale `.env`-Werte:
+
+```bash
+DB_BACKUP_DIR=/home/pthuerlemann/backups/reactor_ctrl/sql
+DB_BACKUP_RETENTION_DAYS=30
+DB_BACKUP_TIMEOUT_SECONDS=1800
+DB_BACKUP_DUMP_BINARY=mariadb-dump
+```
+
+Systemd-Timer installieren:
+
+```bash
+cd /home/pthuerlemann/reactor_ctrl
+sudo install -m 644 deploy/reactor_ctrl_db_backup.service /etc/systemd/system/reactor_ctrl_db_backup.service
+sudo install -m 644 deploy/reactor_ctrl_db_backup.timer /etc/systemd/system/reactor_ctrl_db_backup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now reactor_ctrl_db_backup.timer
+```
+
+Testlauf und Kontrolle:
+
+```bash
+sudo systemctl start reactor_ctrl_db_backup.service
+sudo systemctl status reactor_ctrl_db_backup.service --no-pager
+systemctl list-timers reactor_ctrl_db_backup.timer --no-pager
+ls -lh /home/pthuerlemann/backups/reactor_ctrl/sql
+```
+
+Der Timer laeuft taeglich um 23:30 Uhr mit einer kleinen zufaelligen Verzoegerung. `Persistent=true` sorgt dafuer, dass ein verpasster Lauf nach dem naechsten Serverstart nachgeholt wird.
+
 ## Server-Hinweis
 
 Beim App-Start werden fehlende Tabellen standardmaessig automatisch angelegt (`AUTO_CREATE_SCHEMA=true`). Das verhindert, dass ein Deployment zwar den Code aktualisiert, aber neue Tabellen wie `device_server` oder `device_connection` in MySQL noch fehlen.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run reactor_ctrl database backup nightly
+Requires=reactor_ctrl_db_backup.service
+
+[Timer]
+OnCalendar=*-*-* 23:30:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=reactor_ctrl_db_backup.service
+
+[Install]
+WantedBy=timers.target
