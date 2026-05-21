@@ -285,6 +285,39 @@ class DeviceManualRuntimeTests(unittest.TestCase):
         self.assertIsNone(state.lease_owner)
         self.assertIsNone(state.last_error)
 
+    def test_manual_state_release_retries_mysql_record_changed(self):
+        state = DeviceManualState(
+            device_id=3,
+            queue_status="running",
+            desired_version=2,
+            applied_version=1,
+            lease_owner="worker-1",
+        )
+        original = Exception(1020, "Record has changed since last read in table 'device_manual_state'")
+        conflict_error = OperationalError("UPDATE device_manual_state ...", {}, original)
+        fake_session = _FakeSessionForManualStateUpdate(
+            state=state,
+            update_side_effects=[conflict_error, 1],
+        )
+        next_poll_at = datetime.now(timezone.utc) + timedelta(milliseconds=250)
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime.time, "sleep"):
+                updated = device_manual_runtime._commit_manual_state_release(
+                    3,
+                    status="queued",
+                    next_poll_at=next_poll_at,
+                )
+
+        self.assertIs(updated, state)
+        self.assertEqual(fake_session.rollback_calls, 1)
+        self.assertEqual(fake_session.commit_calls, 1)
+        self.assertEqual(fake_session.update_calls, 2)
+        self.assertEqual(state.queue_status, "queued")
+        self.assertEqual(state.next_poll_at, next_poll_at)
+        self.assertIsNone(state.lease_owner)
+        self.assertIsNone(state.lease_expires_at)
+
     def test_measurement_best_effort_rolls_back_failed_session_without_raising(self):
         app = Flask(__name__)
         device = Device(device_id=3, display_name="IKA", protocol="ika_eurostar_60")

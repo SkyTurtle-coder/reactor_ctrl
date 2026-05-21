@@ -34,6 +34,7 @@ _TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
 _DUPLICATE_KEY_ERROR_CODES = {1062}
 _MANUAL_RECIPE_SEQUENCE_LOCK = threading.RLock()
 _MANUAL_CLAIM_PORT_ORDER_CACHE: dict[int, bool] = {}
+_UNCHANGED = object()
 
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle. channel_code values are part of the
@@ -1081,6 +1082,40 @@ def _commit_huber_manual_state_success(
     return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
 
 
+def _commit_manual_state_release(
+    device_id: int,
+    *,
+    status: str,
+    next_poll_at: datetime | None | object = _UNCHANGED,
+    last_error: str | None | object = _UNCHANGED,
+    applied_version: int | object = _UNCHANGED,
+) -> DeviceManualState:
+    def values_factory() -> dict[Any, Any]:
+        values: dict[Any, Any] = {
+            DeviceManualState.queue_status: status,
+            DeviceManualState.lease_owner: None,
+            DeviceManualState.lease_expires_at: None,
+        }
+        if next_poll_at is not _UNCHANGED:
+            values[DeviceManualState.next_poll_at] = next_poll_at
+        if last_error is not _UNCHANGED:
+            values[DeviceManualState.last_error] = last_error
+        if applied_version is not _UNCHANGED:
+            values[DeviceManualState.applied_version] = int(applied_version)
+        return values
+
+    def memory_update(state: DeviceManualState) -> None:
+        _release_manual_state_lease(state, status=status)
+        if next_poll_at is not _UNCHANGED:
+            state.next_poll_at = next_poll_at
+        if last_error is not _UNCHANGED:
+            state.last_error = last_error
+        if applied_version is not _UNCHANGED:
+            state.applied_version = int(applied_version)
+
+    return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
+
+
 def _persist_telemetry_as_measurements(
     device: Device,
     telemetry: dict[str, Any],
@@ -1358,15 +1393,16 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
     poll_due = ui_poll_due or bg_poll_due
 
     if device is None or not _supports_manual_runtime(device):
-        state.last_error = "Manual runtime is not supported for this device."
-        _release_manual_state_lease(state, status="error")
-        db.session.commit()
+        _commit_manual_state_release(
+            device_id,
+            status="error",
+            last_error="Manual runtime is not supported for this device.",
+        )
         return
     is_huber = _is_huber_device(device)
 
     if not desired_pending and not poll_due:
-        _release_manual_state_lease(state, status="idle")
-        db.session.commit()
+        _commit_manual_state_release(device_id, status="idle")
         return
 
     processed_version = int(state.desired_version or 0)
@@ -1382,11 +1418,11 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         lock_context = _manual_recipe_sequence_lock() if sequence_lock_required else _no_sequence_lock()
         with lock_context as sequence_lock_acquired:
             if not sequence_lock_acquired:
-                state = db.session.get(DeviceManualState, device_id)
-                if state is not None:
-                    state.next_poll_at = _now_utc() + timedelta(milliseconds=250)
-                    _release_manual_state_lease(state, status="queued")
-                    db.session.commit()
+                _commit_manual_state_release(
+                    device_id,
+                    status="queued",
+                    next_poll_at=_now_utc() + timedelta(milliseconds=250),
+                )
                 return
 
             if is_huber:
@@ -1434,20 +1470,39 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
             _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
     except Exception as exc:
         db.session.rollback()
+        if isinstance(exc, OperationalError) and _is_transient_mysql_error(exc):
+            try:
+                _commit_manual_state_release(
+                    device_id,
+                    status="queued",
+                    next_poll_at=_now_utc() + timedelta(milliseconds=250),
+                )
+            except Exception:
+                app.logger.warning(
+                    "Manual reconciler could not reschedule device %s after transient database conflict.",
+                    device_id,
+                    exc_info=True,
+                )
+            app.logger.warning(
+                "Manual reconciler hit a transient database conflict for device %s; rescheduled without failing the recipe.",
+                device_id,
+            )
+            return
         state = db.session.get(DeviceManualState, device_id)
         if state is None:
             return
         recipe_program_error = _fail_active_recipe_program_for_device(app, device, exc)
         fallback_error = describe_device_command_error(exc) if isinstance(exc, DeviceCommandError) else str(exc)
-        state.last_error = recipe_program_error or fallback_error
-        if recipe_program_error and desired_pending:
-            state.applied_version = processed_version
         # Use the background interval for retry when no UI session is watching so
         # an unreachable device is not hammered on every reconciler tick.
         retry_interval = _manual_poll_interval(app) if watch_active else _background_poll_interval(app)
-        state.next_poll_at = _now_utc() + retry_interval
-        _release_manual_state_lease(state, status="error")
-        db.session.commit()
+        _commit_manual_state_release(
+            device_id,
+            status="error",
+            next_poll_at=_now_utc() + retry_interval,
+            last_error=recipe_program_error or fallback_error,
+            applied_version=processed_version if recipe_program_error and desired_pending else _UNCHANGED,
+        )
         app.logger.warning("Manual reconciler failed for device %s: %s", device_id, exc)
 
 
