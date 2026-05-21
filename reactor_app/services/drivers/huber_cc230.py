@@ -396,13 +396,15 @@ class HuberCC230Client:
     def read_external_temperature(self) -> float:
         return self._read_temperature_chain(("TE?", "TEMP?"))
 
-    def set_internal_sensor(self) -> bool:
-        self.enable_remote()
+    def set_internal_sensor(self, *, skip_remote: bool = False) -> bool:
+        if not skip_remote:
+            self.enable_remote()
         self.send_command("INTERN!", expect_response=False)
         return True
 
-    def set_external_sensor(self) -> bool:
-        self.enable_remote()
+    def set_external_sensor(self, *, skip_remote: bool = False) -> bool:
+        if not skip_remote:
+            self.enable_remote()
         self.send_command("EXTERN!", expect_response=False)
         return True
 
@@ -497,9 +499,9 @@ class HuberCC230Driver(DeviceDriver):
         elif command_name in {"get_external_temp", "read_external_temperature"}:
             value = client.read_external_temperature()
         elif command_name in {"select_internal_sensor", "set_internal_sensor"}:
-            value = client.set_internal_sensor()
+            value = client.set_internal_sensor(skip_remote=bool(payload.get("skip_remote")))
         elif command_name in {"select_external_sensor", "set_external_sensor"}:
-            value = client.set_external_sensor()
+            value = client.set_external_sensor(skip_remote=bool(payload.get("skip_remote")))
         elif command_name in {"get_error", "read_error"}:
             value = client.read_error()
         elif command_name in {"get_warning", "read_warning"}:

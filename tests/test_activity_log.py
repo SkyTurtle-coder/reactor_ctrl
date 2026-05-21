@@ -145,6 +145,7 @@ class ActivityLogTests(unittest.TestCase):
                         reconnect_delay_ms INTEGER NOT NULL DEFAULT 1000,
                         last_seen_at TEXT,
                         last_error TEXT,
+                        cc230_setpoint_write_mode INTEGER,
                         is_enabled INTEGER NOT NULL DEFAULT 1,
                         created_at TEXT,
                         updated_at TEXT
@@ -284,6 +285,8 @@ class ActivityLogTests(unittest.TestCase):
         app_config.Config.ACTIVITY_LOG_RETENTION_DRY_RUN = cls._original_activity_log_retention_dry_run
 
     def setUp(self):
+        with self.client.session_transaction() as session:
+            session["authenticated"] = True
         with self.app.app_context():
             RecipeProgramEvent.query.delete()
             RecipeProgramRun.query.delete()

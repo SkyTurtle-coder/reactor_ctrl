@@ -2021,7 +2021,10 @@ _RECIPE_MAX_STEPS = 500
 _RECIPE_STEP_NUMERIC_FIELDS = ("delta_time",)
 _RECIPE_STEP_TARGET_FIELDS = ("temp", "pressure", "rpm")
 _RECIPE_ACTOR_NUMERIC_PARAM_FIELDS = ("target_temp_c", "pressure_mbar_a", "rpm")
-_RECIPE_ACTOR_PARAM_FIELDS = ("status_on", *_RECIPE_ACTOR_NUMERIC_PARAM_FIELDS)
+_RECIPE_CONTROL_SENSOR_FIELD = "control_sensor"
+_RECIPE_CONTROL_SENSOR_VALUES = {"internal", "external"}
+_RECIPE_DEFAULT_CONTROL_SENSOR = "internal"
+_RECIPE_ACTOR_PARAM_FIELDS = ("status_on", _RECIPE_CONTROL_SENSOR_FIELD, *_RECIPE_ACTOR_NUMERIC_PARAM_FIELDS)
 _RECIPE_PARAM_TO_LEGACY_FIELD = {
     "target_temp_c": "temp",
     "pressure_mbar_a": "pressure",
@@ -2151,6 +2154,12 @@ def _recipe_status_supported_for_actor(actor_meta: dict[str, Any] | None) -> boo
     return profile_id in {"hc_system_temperature", "motor_rpm"} or symbol_id in {"hc_system", "motor"}
 
 
+def _recipe_control_sensor_supported_for_actor(actor_meta: dict[str, Any] | None) -> bool:
+    profile_id = str((actor_meta or {}).get("profile_id") or "").strip().lower()
+    symbol_id = str((actor_meta or {}).get("symbol_id") or "").strip().lower()
+    return profile_id == "hc_system_temperature" or symbol_id == "hc_system"
+
+
 def _parse_recipe_actor_priority(raw_value: Any, *, field_name: str) -> int | None:
     if raw_value in (None, ""):
         return None
@@ -2196,6 +2205,15 @@ def _parse_recipe_status_value(raw_value: Any, *, field_name: str) -> bool | Non
     raise ValueError(f"Field '{field_name}' must be true, false, or null.")
 
 
+def _parse_recipe_control_sensor_value(raw_value: Any, *, field_name: str) -> str | None:
+    if raw_value in (None, ""):
+        return None
+    normalized = str(raw_value).strip().lower()
+    if normalized not in _RECIPE_CONTROL_SENSOR_VALUES:
+        raise ValueError(f"Field '{field_name}' must be 'internal' or 'external'.")
+    return normalized
+
+
 def _actor_params_from_payload(
     raw_ref: dict[str, Any],
     *,
@@ -2223,6 +2241,10 @@ def _actor_params_from_payload(
     params["status_on"] = _parse_recipe_status_value(
         raw_params.get("status_on"),
         field_name=f"{field_name}.params.status_on",
+    )
+    params[_RECIPE_CONTROL_SENSOR_FIELD] = _parse_recipe_control_sensor_value(
+        raw_params.get(_RECIPE_CONTROL_SENSOR_FIELD),
+        field_name=f"{field_name}.params.{_RECIPE_CONTROL_SENSOR_FIELD}",
     )
 
     for forbidden_param in ("temp", "pressure"):
@@ -2321,7 +2343,7 @@ def _parse_recipe_step(
     if forbidden_step_fields:
         raise ValueError(
             f"Step {index} uses an old recipe structure. "
-            "Use steps[].actors[].params with status_on, target_temp_c, pressure_mbar_a and rpm."
+            "Use steps[].actors[].params with status_on, control_sensor, target_temp_c, pressure_mbar_a and rpm."
         )
 
     actor_refs = _parse_recipe_step_actor_refs(raw, index, allowed_actor_by_key=allowed_actor_by_key)
@@ -2389,12 +2411,19 @@ def _validate_recipe_steps(
             params = ref.get("params") if isinstance(ref.get("params"), dict) else {}
             normalized_params = {param_field: params.get(param_field) for param_field in _RECIPE_ACTOR_PARAM_FIELDS}
             status_on = normalized_params.get("status_on")
+            control_sensor = normalized_params.get(_RECIPE_CONTROL_SENSOR_FIELD)
 
             if status_on is not None and not _recipe_status_supported_for_actor(actor_meta):
                 raise ValueError(
                     f"Field 'steps[{index}].actors[{ref_index + 1}].params.status_on' "
                     f"is not supported by actor '{canonical_actor}'."
                 )
+
+            if _recipe_control_sensor_supported_for_actor(actor_meta):
+                if control_sensor is None:
+                    normalized_params[_RECIPE_CONTROL_SENSOR_FIELD] = _RECIPE_DEFAULT_CONTROL_SENSOR
+            else:
+                normalized_params[_RECIPE_CONTROL_SENSOR_FIELD] = None
 
             for param_field in _RECIPE_ACTOR_NUMERIC_PARAM_FIELDS:
                 value = normalized_params.get(param_field)

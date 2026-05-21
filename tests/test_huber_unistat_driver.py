@@ -123,6 +123,22 @@ class HuberUnistatDriverTests(unittest.TestCase):
         self.assertEqual(transport.sent, [b"{M0A****\r\n"])
         self.assertEqual(result.metadata["value"]["raw"], 1)
 
+    def test_sensor_selection_commands_are_controlled_for_unistat(self):
+        internal_transport = _FakeTransport([])
+        internal = HuberUnistatDriver().execute(
+            transport=internal_transport,
+            request=DeviceCommandRequest(command_name="select_internal_sensor", payload={}),
+        )
+        self.assertEqual(internal.metadata["value"], "internal")
+        self.assertEqual(internal.metadata["active_control_sensor"], "internal")
+        self.assertEqual(internal_transport.sent, [])
+
+        with self.assertRaisesRegex(DriverValidationError, "sensor selection is not mapped"):
+            HuberUnistatDriver().execute(
+                transport=_FakeTransport([]),
+                request=DeviceCommandRequest(command_name="select_external_sensor", payload={}),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

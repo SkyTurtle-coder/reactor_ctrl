@@ -26,7 +26,7 @@ from ..models import (
     ReactorBuild,
 )
 from .device_manual_runtime import queue_manual_state_update
-from .device_runtime import DeviceCommandError, execute_device_command
+from .device_runtime import DeviceCommandError, device_command_sequence_lock, execute_device_command
 
 
 _WORKER_EXTENSION_KEY = "recipe_program_reconciler_thread"
@@ -35,6 +35,10 @@ _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
 _STATUS_FIELD = "is_on"
+_CONTROL_SENSOR_FIELD = "control_sensor"
+_CONTROL_SENSOR_VALUES = {"internal", "external"}
+_DEFAULT_CONTROL_SENSOR = "internal"
+_SENSOR_SELECT_SETTLE_SECONDS = 0.2
 _PARAM_TO_NUMERIC_FIELD = {
     "target_temp_c": "temp",
     "pressure_mbar_a": "pressure",
@@ -162,6 +166,8 @@ def _copy_global_targets(targets: dict[str, dict[str, float]] | None) -> dict[st
                     pass
             if _STATUS_FIELD in payload and payload.get(_STATUS_FIELD) is not None:
                 next_payload[_STATUS_FIELD] = bool(payload.get(_STATUS_FIELD))
+            if _CONTROL_SENSOR_FIELD in payload and payload.get(_CONTROL_SENSOR_FIELD):
+                next_payload[_CONTROL_SENSOR_FIELD] = _normalize_control_sensor(payload.get(_CONTROL_SENSOR_FIELD))
         result[actor_key] = next_payload
     return result
 
@@ -178,9 +184,18 @@ def _normalize_actor_priority(value: Any, fallback: int | None = None) -> int | 
     return parsed
 
 
+def _normalize_control_sensor(value: Any, fallback: str = _DEFAULT_CONTROL_SENSOR) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in _CONTROL_SENSOR_VALUES:
+        return normalized
+    fallback_normalized = str(fallback or "").strip().lower()
+    return fallback_normalized if fallback_normalized in _CONTROL_SENSOR_VALUES else _DEFAULT_CONTROL_SENSOR
+
+
 def _actor_params_from_ref(raw_ref: dict[str, Any], step: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {field_name: None for field_name in _NUMERIC_FIELDS}
     params[_STATUS_FIELD] = None
+    params[_CONTROL_SENSOR_FIELD] = None
     raw_params = raw_ref.get("params") if isinstance(raw_ref.get("params"), dict) else {}
     status_value = raw_params.get("status_on")
     if status_value is None and _STATUS_FIELD in raw_params:
@@ -199,6 +214,12 @@ def _actor_params_from_ref(raw_ref: dict[str, Any], step: dict[str, Any]) -> dic
             params[numeric_field] = round(float(value), 2)
         except (TypeError, ValueError):
             continue
+    control_sensor = raw_params.get(_CONTROL_SENSOR_FIELD)
+    if control_sensor not in (None, ""):
+        normalized_sensor = str(control_sensor).strip().lower()
+        if normalized_sensor not in _CONTROL_SENSOR_VALUES:
+            raise ValueError("Recipe actor params.control_sensor must be 'internal' or 'external'.")
+        params[_CONTROL_SENSOR_FIELD] = normalized_sensor
     return params
 
 
@@ -263,6 +284,10 @@ def _step_actor_target(base_targets: dict[str, dict[str, float]], step: dict[str
         if status_value is not None:
             actor_targets[_STATUS_FIELD] = bool(status_value)
             has_target_value = True
+        control_sensor = params.get(_CONTROL_SENSOR_FIELD)
+        if control_sensor not in (None, ""):
+            actor_targets[_CONTROL_SENSOR_FIELD] = _normalize_control_sensor(control_sensor)
+            has_target_value = True
 
         for field_name in _NUMERIC_FIELDS:
             if status_value is False:
@@ -307,6 +332,10 @@ def _interpolate_targets(
             current_actor_targets[_STATUS_FIELD] = bool(end_actor_targets.get(_STATUS_FIELD))
         elif _STATUS_FIELD in start_actor_targets:
             current_actor_targets[_STATUS_FIELD] = bool(start_actor_targets.get(_STATUS_FIELD))
+        if _CONTROL_SENSOR_FIELD in end_actor_targets and end_actor_targets.get(_CONTROL_SENSOR_FIELD):
+            current_actor_targets[_CONTROL_SENSOR_FIELD] = _normalize_control_sensor(end_actor_targets.get(_CONTROL_SENSOR_FIELD))
+        elif _CONTROL_SENSOR_FIELD in start_actor_targets and start_actor_targets.get(_CONTROL_SENSOR_FIELD):
+            current_actor_targets[_CONTROL_SENSOR_FIELD] = _normalize_control_sensor(start_actor_targets.get(_CONTROL_SENSOR_FIELD))
         current_targets[actor] = current_actor_targets
     return current_targets
 
@@ -628,12 +657,22 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
             target_fields = set(_target_fields_for_profile(profile_id))
             raw_params = actor_ref.get("params") if isinstance(actor_ref.get("params"), dict) else {}
             status_on = raw_params.get(_STATUS_FIELD)
+            raw_control_sensor = raw_params.get(_CONTROL_SENSOR_FIELD)
             params = {
                 field_name: raw_params.get(field_name)
                 for field_name in _NUMERIC_FIELDS
             }
             if status_on is not None and not isinstance(status_on, bool):
                 raise ValueError(f"Step {index} actor '{actor}' has invalid status_on; expected true, false, or null.")
+            control_sensor = None
+            if profile_id == "hc_system_temperature":
+                if raw_control_sensor not in (None, "") and str(raw_control_sensor).strip().lower() not in _CONTROL_SENSOR_VALUES:
+                    raise ValueError(
+                        f"Step {index} actor '{actor}' has invalid control_sensor; expected internal or external."
+                    )
+                control_sensor = _normalize_control_sensor(raw_control_sensor)
+            elif raw_control_sensor not in (None, ""):
+                control_sensor = None
             for field_name, value in list(params.items()):
                 if field_name in target_fields:
                     continue
@@ -694,6 +733,7 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
                     "priority": _normalize_actor_priority(actor_ref.get("priority"), len(normalized_actor_refs) + 1),
                     "params": {
                         "status_on": status_on,
+                        "control_sensor": control_sensor,
                         "target_temp_c": params.get("temp"),
                         "pressure_mbar_a": params.get("pressure"),
                         "rpm": params.get("rpm"),
@@ -804,6 +844,8 @@ def _current_targets_payload(
             row["profile_id"] = profile_id
         if _STATUS_FIELD in actor_targets and actor_targets.get(_STATUS_FIELD) is not None:
             row[_STATUS_FIELD] = bool(actor_targets.get(_STATUS_FIELD))
+        if profile_id == "hc_system_temperature":
+            row[_CONTROL_SENSOR_FIELD] = _normalize_control_sensor(actor_targets.get(_CONTROL_SENSOR_FIELD))
         for field_name in _target_fields_for_profile(profile_id):
             raw_value = actor_targets.get(field_name)
             if raw_value in (None, ""):
@@ -839,6 +881,8 @@ def _applied_targets_payload(applied_targets: dict[str, dict[str, Any]] | None) 
                 row["temp"] = round(float(actor_targets.get("temp") or 0.0), 2)
             except (TypeError, ValueError):
                 row["temp"] = 0.0
+        if profile_id == "hc_system_temperature":
+            row[_CONTROL_SENSOR_FIELD] = _normalize_control_sensor(actor_targets.get(_CONTROL_SENSOR_FIELD))
         if "pressure" in actor_targets:
             try:
                 row["pressure"] = round(float(actor_targets.get("pressure") or 0.0), 2)
@@ -1271,13 +1315,15 @@ def _execute_recipe_device_command(
     command_name: str,
     payload: dict[str, Any] | None,
     requested_by: str,
-) -> None:
+    acquire_lock: bool = True,
+) -> Any:
     try:
-        execute_device_command(
+        return execute_device_command(
             device,
             command_name=command_name,
             payload=_recipe_command_payload(app, payload),
             requested_by=requested_by,
+            acquire_lock=acquire_lock,
         )
     except DeviceCommandError as exc:
         raise RecipeProgramDeviceCommandError(
@@ -1290,6 +1336,60 @@ def _execute_recipe_device_command(
                 command_name=command_name,
             )
         ) from exc
+
+
+def _execute_recipe_device_command_sequence(
+    app: Flask,
+    *,
+    evaluation: dict[str, Any] | None,
+    actor: str,
+    binding: dict[str, Any],
+    device: Device,
+    commands: list[tuple[str, dict[str, Any] | None]],
+    requested_by: str,
+    worker_state: RecipeProgramState | None = None,
+    worker_id: str | None = None,
+) -> bool:
+    with device_command_sequence_lock(device.device_id):
+        expected_setpoint_c: float | None = None
+        for command_name, payload in commands:
+            if worker_state is not None and not _program_claim_allows_target_application(worker_state, worker_id):
+                return False
+            if command_name == "set_setpoint" and isinstance(payload, dict):
+                try:
+                    expected_setpoint_c = round(float(payload.get("temp_c")), 2)
+                except (TypeError, ValueError):
+                    expected_setpoint_c = None
+            execution = _execute_recipe_device_command(
+                app,
+                evaluation=evaluation,
+                actor=actor,
+                binding=binding,
+                device=device,
+                command_name=command_name,
+                payload=payload,
+                requested_by=requested_by,
+                acquire_lock=False,
+            )
+            if command_name in {"select_internal_sensor", "select_external_sensor"}:
+                time.sleep(_SENSOR_SELECT_SETTLE_SECONDS)
+            if command_name == "get_setpoint" and expected_setpoint_c is not None:
+                metadata = getattr(getattr(execution, "result", None), "metadata", None)
+                if not isinstance(metadata, dict):
+                    continue
+                readback = metadata.get("value")
+                try:
+                    readback_c = round(float(readback), 2)
+                except (TypeError, ValueError) as exc:
+                    raise RecipeProgramDeviceCommandError(
+                        f"Recipe setpoint readback for actor '{actor}' did not return a numeric value."
+                    ) from exc
+                if abs(readback_c - expected_setpoint_c) > 0.75:
+                    raise RecipeProgramDeviceCommandError(
+                        f"Recipe setpoint readback mismatch for actor '{actor}': "
+                        f"requested {expected_setpoint_c:g} degC, read back {readback_c:g} degC."
+                    )
+    return True
 
 
 def _apply_safe_stop_to_binding(
@@ -1522,6 +1622,11 @@ def _apply_current_targets(
         if _is_huber_temperature_binding(binding):
             min_setpoint, max_setpoint = _huber_setpoint_limits(binding.get("protocol"))
             explicit_status = (targets or {}).get(_STATUS_FIELD)
+            previous_control_sensor = previous_payload.get(_CONTROL_SENSOR_FIELD) if isinstance(previous_payload, dict) else None
+            control_sensor = _normalize_control_sensor(
+                (targets or {}).get(_CONTROL_SENSOR_FIELD),
+                fallback=previous_control_sensor or _DEFAULT_CONTROL_SENSOR,
+            )
             raw_temp = (targets or {}).get("temp")
             previous_temp = previous_payload.get("temp") if isinstance(previous_payload, dict) else None
             if raw_temp in (None, ""):
@@ -1540,6 +1645,7 @@ def _apply_current_targets(
                 "profile_id": "hc_system_temperature",
                 "temp": temp_c,
                 "is_on": desired_is_on,
+                "control_sensor": control_sensor,
             }
             if next_applied_lookup.get(actor) == next_payload:
                 continue
@@ -1571,34 +1677,34 @@ def _apply_current_targets(
                 )
                 continue
 
+            sensor_command = "select_external_sensor" if control_sensor == "external" else "select_internal_sensor"
+            command_sequence: list[tuple[str, dict[str, Any] | None]] = [
+                ("enable_remote", {}),
+                (sensor_command, {"skip_remote": True}),
+            ]
             if has_temp_target:
-                _execute_recipe_device_command(
-                    app,
-                    evaluation=evaluation,
-                    actor=actor,
-                    binding=binding,
-                    device=device,
-                    command_name="set_setpoint",
-                    payload={
-                        "temp_c": temp_c,
-                        "min_setpoint_c": min_setpoint,
-                        "max_setpoint_c": max_setpoint,
-                    },
-                    requested_by="recipe_program",
-                )
+                setpoint_payload = {
+                    "temp_c": temp_c,
+                    "min_setpoint_c": min_setpoint,
+                    "max_setpoint_c": max_setpoint,
+                }
+                command_sequence.append(("set_setpoint", setpoint_payload))
+                command_sequence.append(("get_setpoint", {}))
             if not bool(previous_payload.get("is_on")):
-                if not _program_claim_allows_target_application(state, worker_id):
-                    return None
-                _execute_recipe_device_command(
-                    app,
-                    evaluation=evaluation,
-                    actor=actor,
-                    binding=binding,
-                    device=device,
-                    command_name="start",
-                    payload={},
-                    requested_by="recipe_program",
-                )
+                command_sequence.append(("start", {}))
+            applied_sequence = _execute_recipe_device_command_sequence(
+                app,
+                evaluation=evaluation,
+                actor=actor,
+                binding=binding,
+                device=device,
+                commands=command_sequence,
+                requested_by="recipe_program",
+                worker_state=state,
+                worker_id=worker_id,
+            )
+            if not applied_sequence:
+                return None
             next_applied_lookup[actor] = next_payload
             applied_changes.append(
                 {

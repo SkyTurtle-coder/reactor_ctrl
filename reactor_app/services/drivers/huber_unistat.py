@@ -351,6 +351,43 @@ class HuberUnistatDriver(DeviceDriver):
 
         metadata: dict[str, Any] = {"driver": "huber_unistat_430", "protocol": "pilot_one_pb"}
 
+        if command_name in {"enable_remote", "remote"}:
+            return self._metadata_only_result(
+                True,
+                {
+                    **metadata,
+                    "command": "enable_remote",
+                    "note": "Pilot ONE/PB TCP control is already remote-capable; no separate REMOTE command is required.",
+                },
+            )
+
+        if command_name in {"enable_local", "local"}:
+            return self._metadata_only_result(
+                True,
+                {
+                    **metadata,
+                    "command": "enable_local",
+                    "note": "Pilot ONE/PB TCP local-mode handover is not exposed by this protocol mapping.",
+                },
+            )
+
+        if command_name in {"select_internal_sensor", "set_internal_sensor"}:
+            return self._metadata_only_result(
+                "internal",
+                {
+                    **metadata,
+                    "command": "select_internal_sensor",
+                    "active_control_sensor": "internal",
+                    "note": "No dedicated Pilot ONE/PB sensor-select command is configured; internal is treated as the safe default.",
+                },
+            )
+
+        if command_name in {"select_external_sensor", "set_external_sensor", "read_active_sensor"}:
+            raise DriverValidationError(
+                "Huber Unistat 430 sensor selection is not mapped for this protocol. "
+                "Use internal control or add the device-specific PB address before selecting external control."
+            )
+
         if command_name in {"read_var", "read_pb"}:
             addr = _normalize_addr(payload.get("addr", payload.get("address")))
             value_hex, request_bytes, response_bytes = client.read_var(addr)
@@ -424,6 +461,15 @@ class HuberUnistatDriver(DeviceDriver):
             return self._result(HuberUnistatTCP.decode_i16(value_hex), value_hex, response_bytes, metadata)
 
         raise DriverValidationError(f"Unsupported Huber command '{request.command_name}'.")
+
+    def _metadata_only_result(self, value: Any, metadata: dict[str, Any]) -> DeviceCommandResult:
+        metadata = {**metadata, "value": value}
+        return DeviceCommandResult(
+            acknowledged=True,
+            response_text="",
+            response_hex="",
+            metadata=metadata,
+        )
 
     def _read_start_preflight(self, client: _TransportHuberClient) -> dict[str, Any]:
         status_hex, _, _ = client.read_var("0A")

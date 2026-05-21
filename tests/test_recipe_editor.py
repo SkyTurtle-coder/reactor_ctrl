@@ -64,6 +64,9 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertIn("function actorOptionsForBuild(buildData)", source)
         self.assertIn("function normalizeActorRefs(rawActors)", source)
         self.assertIn("function makeActorStatusSelect(ref, rowIndex, disabled)", source)
+        self.assertIn("function makeActorControlSensorSelect(ref, rowIndex, disabled)", source)
+        self.assertIn("Regelung über", source)
+        self.assertIn("Der Bezugspunkt bestimmt", source)
         self.assertIn("function renderWorkflow()", source)
         self.assertIn("function renderStepCard(step, index, isActive, disabled)", source)
         self.assertIn("function renderDeviceTableRow(ref, stepIndex, disabled)", source)
@@ -134,6 +137,56 @@ class RecipeEditorTests(unittest.TestCase):
         self.assertEqual(len(step1_actors), 1)
         self.assertEqual(step1_actors[0]["actor"], "Huber_01")
         self.assertEqual(step1_actors[0]["params"]["target_temp_c"], 35.0)
+        self.assertEqual(step1_actors[0]["params"]["control_sensor"], "internal")
+
+    def test_recipe_api_validates_thermostat_control_sensor(self):
+        allowed = {
+            "Huber_01": {"actor": "Huber_01", "profile_id": "hc_system_temperature", "symbol_id": "hc_system"},
+            "Stirrer_01": {"actor": "Stirrer_01", "profile_id": "motor_rpm", "symbol_id": "motor"},
+        }
+
+        steps = recipe_api._validate_recipe_steps(
+            [
+                {
+                    "actors": [
+                        {
+                            "actor_id": "Huber_01",
+                            "priority": 1,
+                            "params": {"status_on": True, "control_sensor": "external", "target_temp_c": 25},
+                        },
+                        {
+                            "actor_id": "Stirrer_01",
+                            "priority": 2,
+                            "params": {"status_on": True, "control_sensor": "external", "rpm": 200},
+                        },
+                    ],
+                    "task": "External probe",
+                    "delta_time": 1,
+                },
+            ],
+            allowed_actor_lookup=allowed,
+        )
+
+        self.assertEqual(steps[0]["actors"][0]["params"]["control_sensor"], "external")
+        self.assertIsNone(steps[0]["actors"][1]["params"]["control_sensor"])
+
+        with self.assertRaisesRegex(ValueError, "control_sensor"):
+            recipe_api._validate_recipe_steps(
+                [
+                    {
+                        "actors": [
+                            {
+                                "actor_id": "Huber_01",
+                                "priority": 1,
+                                "params": {"status_on": True, "control_sensor": "probe", "target_temp_c": 25},
+                            }
+                        ],
+                        "task": "Invalid sensor",
+                        "delta_time": 1,
+                    },
+                ],
+                allowed_actor_lookup=allowed,
+            )
 
     def test_recipe_api_rejects_old_top_level_step_fields(self):
         allowed = {

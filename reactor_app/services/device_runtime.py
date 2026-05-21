@@ -3,7 +3,7 @@ from __future__ import annotations
 import socket
 import threading
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -147,6 +147,12 @@ def _device_command_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_L
         yield
     finally:
         lock.release()
+
+
+@contextmanager
+def device_command_sequence_lock(device_id: int, *, timeout_s: float = _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS):
+    with _device_command_lock(device_id, timeout_s=timeout_s):
+        yield
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
@@ -544,6 +550,7 @@ def execute_device_command(
     command_name: str,
     payload: dict[str, Any],
     requested_by: str,
+    acquire_lock: bool = True,
 ) -> ExecutedDeviceCommand:
     binding = device.current_binding
     if binding is None:
@@ -598,7 +605,8 @@ def execute_device_command(
     sent_at = _now_utc()
 
     try:
-        with _device_command_lock(device.device_id):
+        lock_context = _device_command_lock(device.device_id) if acquire_lock else nullcontext()
+        with lock_context:
             if driver.uses_transport:
                 assert transport_config is not None
                 with TcpSocketTransport(transport_config) as transport:

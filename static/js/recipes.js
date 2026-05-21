@@ -4,7 +4,10 @@
     // ── Constants ────────────────────────────────────────────────────────────
     const STEP_NUMERIC_FIELDS = ["delta_time"];
     const ACTOR_NUMERIC_PARAM_FIELDS = ["target_temp_c", "pressure_mbar_a", "rpm"];
-    const ACTOR_PARAM_FIELDS = ["status_on", ...ACTOR_NUMERIC_PARAM_FIELDS];
+    const CONTROL_SENSOR_FIELD = "control_sensor";
+    const CONTROL_SENSOR_VALUES = new Set(["internal", "external"]);
+    const DEFAULT_CONTROL_SENSOR = "internal";
+    const ACTOR_PARAM_FIELDS = ["status_on", CONTROL_SENSOR_FIELD, ...ACTOR_NUMERIC_PARAM_FIELDS];
     const PRIORITY_MIN = 1;
     const PRIORITY_MAX = 10;
     const DEFAULT_PROFILE_BY_SYMBOL = {
@@ -31,6 +34,10 @@
         { value: "", label: "No change" },
         { value: "on", label: "ON" },
         { value: "off", label: "OFF" },
+    ];
+    const CONTROL_SENSOR_OPTIONS = [
+        { value: "internal", label: "Interner Sensor" },
+        { value: "external", label: "Externer Sensor" },
     ];
 
     // ── Utilities ────────────────────────────────────────────────────────────
@@ -104,7 +111,7 @@
     }
 
     function emptyActorParams() {
-        return { status_on: null, target_temp_c: null, pressure_mbar_a: null, rpm: null };
+        return { status_on: null, control_sensor: DEFAULT_CONTROL_SENSOR, target_temp_c: null, pressure_mbar_a: null, rpm: null };
     }
 
     function actorIdForRef(ref) {
@@ -130,6 +137,8 @@
         const params = emptyActorParams();
         const src = rawParams && typeof rawParams === "object" ? rawParams : {};
         params.status_on = parseOptionalStatus(src.status_on);
+        const controlSensor = asString(src.control_sensor, DEFAULT_CONTROL_SENSOR).toLowerCase();
+        params.control_sensor = CONTROL_SENSOR_VALUES.has(controlSensor) ? controlSensor : DEFAULT_CONTROL_SENSOR;
         for (const f of ACTOR_NUMERIC_PARAM_FIELDS) {
             params[f] = parseOptionalNumber(src[f]);
         }
@@ -300,6 +309,13 @@
         return profileId === "hc_system_temperature" || profileId === "motor_rpm" || symbolId === "hc_system" || symbolId === "motor";
     }
 
+    function controlSensorSupportedForActor(actorValue) {
+        const option = actorOption(actorValue);
+        const profileId = asString(option?.profile_id).toLowerCase();
+        const symbolId = asString(option?.symbol_id).toLowerCase();
+        return profileId === "hc_system_temperature" || symbolId === "hc_system";
+    }
+
     function actorFieldHint(actorValue) {
         const fields = targetFieldsForActor(actorValue);
         return fields.map((f) => TARGET_FIELD_LABELS[f] || f).join(", ");
@@ -444,6 +460,23 @@
         return `<select data-param="status_on" data-row="${rowIndex}" data-actor="${escapeHtml(actorId)}" class="recipe-status-select" title="${escapeHtml(title)}"${selectDisabled ? " disabled" : ""}>${options}</select>`;
     }
 
+    function controlSensorValue(ref) {
+        const value = asString(ref.params?.control_sensor, DEFAULT_CONTROL_SENSOR).toLowerCase();
+        return CONTROL_SENSOR_VALUES.has(value) ? value : DEFAULT_CONTROL_SENSOR;
+    }
+
+    function makeActorControlSensorSelect(ref, rowIndex, disabled) {
+        const actorId = actorIdForRef(ref);
+        const supported = controlSensorSupportedForActor(actorId);
+        if (!supported) {
+            return `<span class="recipe-device-na">—</span>`;
+        }
+        const value = controlSensorValue(ref);
+        const title = "Der Bezugspunkt bestimmt, auf welchen Sensor der Thermostat regelt. Extern nur verwenden, wenn ein externer Fühler angeschlossen und plausibel ist.";
+        const options = CONTROL_SENSOR_OPTIONS.map((o) => `<option value="${escapeHtml(o.value)}"${o.value === value ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("");
+        return `<select data-param="${CONTROL_SENSOR_FIELD}" data-row="${rowIndex}" data-actor="${escapeHtml(actorId)}" class="recipe-control-sensor-select" title="${escapeHtml(title)}"${disabled ? " disabled" : ""}>${options}</select>`;
+    }
+
     function makeActorParamInput(ref, paramField, rowIndex, disabled) {
         const actorId = actorIdForRef(ref);
         const activeFields = new Set(targetFieldsForActor(actorId));
@@ -538,6 +571,7 @@
                 </td>
                 <td class="recipe-device-col-param">${escapeHtml(paramLabel)}</td>
                 <td class="recipe-device-col-action">${statusHtml}</td>
+                <td class="recipe-device-col-sensor">${makeActorControlSensorSelect(ref, stepIndex, disabled)}</td>
                 <td class="recipe-device-col-setpoint">${setpointHtml}</td>
                 <td class="recipe-device-col-unit"><span class="recipe-unit-badge">${escapeHtml(unit)}</span></td>
                 <td class="recipe-device-col-order">${makePriorityInput(ref, stepIndex, disabled)}</td>
@@ -614,6 +648,7 @@
             html += `<th class="recipe-device-col-name">Device</th>`;
             html += `<th class="recipe-device-col-param">Parameter</th>`;
             html += `<th class="recipe-device-col-action">Action</th>`;
+            html += `<th class="recipe-device-col-sensor">Regelung über</th>`;
             html += `<th class="recipe-device-col-setpoint">Setpoint</th>`;
             html += `<th class="recipe-device-col-unit">Unit</th>`;
             html += `<th class="recipe-device-col-order">Order</th>`;
@@ -624,11 +659,14 @@
                 html += renderDeviceTableRow(ref, index, disabled);
             }
             if (!sortedRefs.length) {
-                html += `<tr class="recipe-device-empty-row"><td colspan="7" class="recipe-device-empty-cell">No devices added yet — use the selector below.</td></tr>`;
+                html += `<tr class="recipe-device-empty-row"><td colspan="8" class="recipe-device-empty-cell">No devices added yet — use the selector below.</td></tr>`;
             }
             html += `</tbody></table>`;
             html += makeActorPicker(step, index, !sortedRefs.length, disabled);
             html += duplicatePriorityWarningHtml(step);
+            if (sortedRefs.some((ref) => controlSensorSupportedForActor(actorIdForRef(ref)))) {
+                html += `<div class="recipe-control-sensor-hint">Der Bezugspunkt bestimmt, auf welchen Sensor der Thermostat regelt. Extern nur verwenden, wenn ein externer Fühler angeschlossen und plausibel ist.</div>`;
+            }
             html += `</div>`; // end device-section
 
             html += `</div>`; // end step-body
@@ -701,6 +739,10 @@
 
         for (const select of dom.workflowContainer.querySelectorAll('select[data-param="status_on"]')) {
             select.addEventListener("change", onActorStatusChange);
+        }
+
+        for (const select of dom.workflowContainer.querySelectorAll(`select[data-param="${CONTROL_SENSOR_FIELD}"]`)) {
+            select.addEventListener("change", onActorControlSensorChange);
         }
 
         for (const input of dom.workflowContainer.querySelectorAll('input[data-field="priority"]')) {
@@ -823,6 +865,18 @@
         } else { ref.params.status_on = null; }
         markUnsaved();
         renderWorkflow();
+    }
+
+    function onActorControlSensorChange(event) {
+        const select = event.currentTarget;
+        const rowIndex = parseId(select.getAttribute("data-row"));
+        const actorId = asString(select.getAttribute("data-actor"));
+        const ref = actorRefForRow(rowIndex, actorId);
+        if (!ref || !controlSensorSupportedForActor(actorId)) { return; }
+        const value = asString(select.value, DEFAULT_CONTROL_SENSOR).toLowerCase();
+        ref.params = ref.params && typeof ref.params === "object" ? ref.params : emptyActorParams();
+        ref.params.control_sensor = CONTROL_SENSOR_VALUES.has(value) ? value : DEFAULT_CONTROL_SENSOR;
+        markUnsaved();
     }
 
     function syncPriorityInputValidity(input) {
@@ -1035,6 +1089,7 @@
                     priority: priority || ref.priority,
                     params: {
                         status_on: p.status_on ?? null,
+                        control_sensor: controlSensorSupportedForActor(actorId) ? controlSensorValue(ref) : null,
                         target_temp_c: p.target_temp_c ?? null,
                         pressure_mbar_a: p.pressure_mbar_a ?? null,
                         rpm: p.rpm ?? null,

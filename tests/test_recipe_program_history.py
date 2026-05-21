@@ -91,6 +91,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                         reconnect_delay_ms INTEGER NOT NULL DEFAULT 1000,
                         last_seen_at TEXT,
                         last_error TEXT,
+                        cc230_setpoint_write_mode INTEGER,
                         is_enabled INTEGER NOT NULL DEFAULT 1,
                         created_at TEXT,
                         updated_at TEXT,
@@ -585,11 +586,13 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             )
 
             def fail_command(*args, **kwargs):
-                raise recipe_program_runtime.DeviceCommandError(
-                    "Device command execution failed.",
-                    status_code=502,
-                    command=command,
-                )
+                if kwargs.get("command_name") == "set_setpoint":
+                    raise recipe_program_runtime.DeviceCommandError(
+                        "Device command execution failed.",
+                        status_code=502,
+                        command=command,
+                    )
+                return SimpleNamespace(result=SimpleNamespace(metadata={"value": 25.0}))
 
             with patch.object(recipe_program_runtime, "execute_device_command", side_effect=fail_command):
                 with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at + timedelta(seconds=10)):

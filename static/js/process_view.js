@@ -2362,10 +2362,13 @@
             const setpoint = telemetry.setpointC == null ? null : Number(telemetry.setpointC);
             const isOn = telemetry.isOn == null ? null : Boolean(telemetry.isOn);
             const stateText = isOn == null ? "" : isOn ? "ON" : "OFF";
+            const sensor = asString(telemetry.activeControlSensor, "");
+            const sensorText = sensor === "external" ? "external sensor" : sensor === "internal" ? "internal sensor" : "";
             if (setpoint != null && Number.isFinite(setpoint)) {
-                return stateText ? `${stateText} | setpoint ${setpoint.toFixed(2)} °C` : `setpoint ${setpoint.toFixed(2)} °C`;
+                const base = stateText ? `${stateText} | setpoint ${setpoint.toFixed(2)} °C` : `setpoint ${setpoint.toFixed(2)} °C`;
+                return sensorText ? `${base} | ${sensorText}` : base;
             }
-            return stateText;
+            return sensorText ? [stateText, sensorText].filter(Boolean).join(" | ") : stateText;
         }
 
         const actualRpm = telemetry.actualRpm == null ? null : Math.max(0, Math.round(telemetry.actualRpm));
@@ -2566,7 +2569,7 @@
             if (manualSecondaryMetricLabel) {
                 manualSecondaryMetricLabel.textContent = isCC230 ? "Bath / Status" : "Status";
             }
-            manualSensorField?.classList.toggle("is-hidden", !isCC230);
+            manualSensorField?.classList.remove("is-hidden");
             if (manualSpeedInput) {
                 manualSpeedInput.min = String(limits.min);
                 manualSpeedInput.max = String(limits.max);
@@ -2582,7 +2585,7 @@
                     manualStateInput.value = Boolean(node?.control?.config?.is_on) ? "on" : "off";
                 }
                 if (manualSensorInput) {
-                    manualSensorInput.value = "";
+                    manualSensorInput.value = asString(node?.control?.config?.control_sensor, "internal");
                 }
             }
             return;
@@ -2655,6 +2658,10 @@
             }
             const errorText = asString(telemetry.errorText, "");
             const warningText = asString(telemetry.warningText, "");
+            const sensor = asString(telemetry.activeControlSensor, "");
+            if (sensor === "internal" || sensor === "external") {
+                secondaryParts.push(sensor === "external" ? "External sensor" : "Internal sensor");
+            }
             if (errorText && !/^(error\s*)?0$/i.test(errorText)) {
                 secondaryParts.push(`Error: ${errorText}`);
             }
@@ -2789,10 +2796,20 @@
                     ...(node.control?.config || {}),
                     target_temp: setpointC ?? asNumber(node.control?.config?.target_temp, 25),
                     is_on: isOn == null ? Boolean(node.control?.config?.is_on) : isOn,
+                    control_sensor: asString(node.control?.config?.control_sensor, "internal"),
                 },
             };
 
-            const telemetry = { kind: "huber", setpointC, processTempC, bathTempC, errorText, warningText, isOn };
+            const telemetry = {
+                kind: "huber",
+                setpointC,
+                processTempC,
+                bathTempC,
+                errorText,
+                warningText,
+                isOn,
+                activeControlSensor: asString(node.control?.config?.control_sensor, "internal"),
+            };
             updateManualLiveMetrics(telemetry);
             updateManualDeviceStatus(target, telemetry);
             renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
@@ -3201,15 +3218,13 @@
             setManualStatus("Submitting thermostat settings...", "muted");
 
             void (async () => {
-                const sensorValue = asString(manualSensorInput?.value, "");
-                if (isCC230ThermostatTarget(node, target) && sensorValue) {
-                    await executeDeviceCommand(
-                        target,
-                        sensorValue === "external" ? "select_external_sensor" : "select_internal_sensor",
-                        {},
-                        { timeoutMs: 12000 },
-                    );
-                }
+                const sensorValue = asString(manualSensorInput?.value, "internal").toLowerCase() === "external" ? "external" : "internal";
+                await executeDeviceCommand(
+                    target,
+                    sensorValue === "external" ? "select_external_sensor" : "select_internal_sensor",
+                    {},
+                    { timeoutMs: 12000 },
+                );
                 const setpointMeta = await executeDeviceCommand(
                     target,
                     "set_setpoint",
@@ -3225,11 +3240,12 @@
                         ...(node.control?.config || {}),
                         target_temp: confirmedSetpointC,
                         is_on: nextState,
+                        control_sensor: sensorValue,
                     },
                 };
                 clearManualInputsDirty(node.id);
-                updateManualLiveMetrics({ kind: "huber", setpointC: confirmedSetpointC, isOn: nextState });
-                updateManualDeviceStatus(target, { kind: "huber", setpointC: confirmedSetpointC, isOn: nextState });
+                updateManualLiveMetrics({ kind: "huber", setpointC: confirmedSetpointC, isOn: nextState, activeControlSensor: sensorValue });
+                updateManualDeviceStatus(target, { kind: "huber", setpointC: confirmedSetpointC, isOn: nextState, activeControlSensor: sensorValue });
                 if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
                     void loadPlotMeasurements({ quiet: true });
                 }

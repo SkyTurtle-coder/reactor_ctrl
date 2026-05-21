@@ -123,6 +123,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(snapshot["bindings"][0]["profile_id"], "hc_system_temperature")
         self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_unistat_430")
         self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["target_temp_c"], -10)
+        self.assertEqual(snapshot["steps"][0]["actors"][0]["params"]["control_sensor"], "internal")
         self.assertNotIn("temp", snapshot["steps"][0])
         self.assertNotIn("rpm", snapshot["steps"][0])
         self.assertNotIn("pressure", snapshot["steps"][1])
@@ -181,6 +182,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         actors = snapshot["steps"][0]["actors"]
         self.assertEqual([(actor["actor"], actor["priority"]) for actor in actors], [("Huber_01", 1), ("Stirrer_01", 2)])
         self.assertEqual(actors[0]["params"]["target_temp_c"], 35)
+        self.assertEqual(actors[0]["params"]["control_sensor"], "internal")
         self.assertIsNone(actors[0]["params"]["rpm"])
         self.assertEqual(actors[1]["params"]["rpm"], 300)
         self.assertIsNone(actors[1]["params"]["target_temp_c"])
@@ -211,13 +213,44 @@ class HuberRecipeProgramTests(unittest.TestCase):
                 )
 
         command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
-        self.assertEqual(command_names, ["set_setpoint", "start"])
-        self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["temp_c"], 21.25)
-        self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["response_timeout_ms"], 1200)
-        self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["max_retries"], 1)
+        self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "get_setpoint", "start"])
+        self.assertEqual(execute_command.call_args_list[2].kwargs["payload"]["temp_c"], 21.25)
+        self.assertEqual(execute_command.call_args_list[2].kwargs["payload"]["response_timeout_ms"], 1200)
+        self.assertEqual(execute_command.call_args_list[2].kwargs["payload"]["max_retries"], 1)
         self.assertEqual(state.last_applied_targets_json["Huber_01"]["temp"], 21.25)
         self.assertTrue(state.last_applied_targets_json["Huber_01"]["is_on"])
+        self.assertEqual(state.last_applied_targets_json["Huber_01"]["control_sensor"], "internal")
         self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
+
+    def test_huber_current_target_selects_external_sensor_before_setpoint_and_start(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_cc230",
+        )
+        state = RecipeProgramState()
+        binding = {**self._binding(), "protocol": "huber_cc230"}
+        state.snapshot_json = {"bindings": [binding]}
+        state.last_applied_targets_json = {}
+
+        with patch.object(recipe_program_runtime, "_SENSOR_SELECT_SETTLE_SECONDS", 0):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                    changes = recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Huber_01": {"temp": 18.5, "pressure": 0, "rpm": 0, "control_sensor": "external"}},
+                    )
+
+        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        self.assertEqual(command_names, ["enable_remote", "select_external_sensor", "set_setpoint", "get_setpoint", "start"])
+        self.assertFalse(execute_command.call_args_list[0].kwargs["acquire_lock"])
+        self.assertFalse(execute_command.call_args_list[1].kwargs["acquire_lock"])
+        self.assertEqual(execute_command.call_args_list[1].kwargs["payload"]["skip_remote"], True)
+        self.assertEqual(changes[0]["current"]["control_sensor"], "external")
 
     def test_huber_current_target_off_sends_stop_without_setpoint(self):
         app = Flask(__name__)
@@ -266,11 +299,13 @@ class HuberRecipeProgramTests(unittest.TestCase):
         fake_session = _FakeSession(device)
 
         def fail_command(*args, **kwargs):
-            raise recipe_program_runtime.DeviceCommandError(
-                "Device command execution failed.",
-                status_code=502,
-                command=command,
-            )
+            if kwargs.get("command_name") == "set_setpoint":
+                raise recipe_program_runtime.DeviceCommandError(
+                    "Device command execution failed.",
+                    status_code=502,
+                    command=command,
+                )
+            return SimpleNamespace(result=SimpleNamespace(metadata={"value": 21.25}))
 
         evaluation = {"active_step_index": 1, "active_step": {"task": "Ramp"}}
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=fake_session)):
@@ -312,7 +347,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
             def refresh(self, item):
                 self.refresh_calls += 1
-                if self.refresh_calls >= 3:
+                if self.refresh_calls >= 7:
                     item.stop_requested = True
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=StopAfterSetpointSession(device))):
@@ -326,7 +361,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
         self.assertIsNone(changes)
         command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
-        self.assertEqual(command_names, ["set_setpoint"])
+        self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "get_setpoint"])
 
     def test_target_application_aborts_when_stop_was_requested(self):
         app = Flask(__name__)
