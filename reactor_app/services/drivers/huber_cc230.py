@@ -59,13 +59,8 @@ def _temperature_from_response(text: str | None) -> float:
 
 
 def _format_setpoint_celsius(value_celsius: float) -> str:
-    return f"{float(value_celsius):+.2f}"
-
-
-def _format_legacy_set_command(value_celsius: float) -> str:
-    scaled = int(round(abs(float(value_celsius)) * 100))
-    sign = "-" if float(value_celsius) < 0 else "+"
-    return f"SET {sign}{scaled:05d}"
+    # Older Huber RS-232 firmware expects ±XXX.XX format with leading zeros (e.g. +030.00).
+    return f"{float(value_celsius):+07.2f}"
 
 
 def _status_payload(text: str | None) -> dict[str, Any]:
@@ -203,7 +198,7 @@ class HuberCC230Client:
             return _unknown_status_payload(exc)
 
     def read_setpoint(self) -> float:
-        return self._read_temperature_with_fallback("SETPOINT?", "SP?")
+        return self._read_temperature_with_fallback("SETPOINT?")
 
     def write_setpoint(self, value_celsius: float, *, min_setpoint_c: float, max_setpoint_c: float) -> float:
         value = float(value_celsius)
@@ -213,25 +208,25 @@ class HuberCC230Client:
                 f"{min_setpoint_c:g}..{max_setpoint_c:g} degC."
             )
 
-        primary_command = f"SETPOINT! {_format_setpoint_celsius(value)}"
-        try:
-            response = self.send_command(primary_command)
-            return _temperature_from_response(response.response_text)
-        except (DriverError, OSError, socket.timeout):
-            self.send_command(_format_legacy_set_command(value), expect_response=False)
-            return round(value, 4)
+        # REMOTE must be active before SETPOINT! is accepted.
+        self.enable_remote()
+        # CC230 write commands do not echo a response; send without expecting one.
+        self.send_command(f"SETPOINT! {_format_setpoint_celsius(value)}", expect_response=False)
+        return round(value, 4)
 
     def read_process_temperature(self) -> float:
-        return self._read_temperature_with_fallback("TEMP?", "TI?")
+        return self._read_temperature_with_fallback("TEMP?")
 
     def read_bath_temperature(self) -> float:
         return self._read_temperature_with_fallback("BATH?")
 
     def read_internal_temperature(self) -> float:
-        return self._read_temperature_with_fallback("TI?")
+        # CC230 has no dedicated TI? command; BATH? returns the internal bath temperature.
+        return self._read_temperature_with_fallback("BATH?")
 
     def read_external_temperature(self) -> float:
-        return self._read_temperature_with_fallback("TE?")
+        # CC230 has no dedicated TE? command; TEMP? returns the active sensor temperature.
+        return self._read_temperature_with_fallback("TEMP?")
 
     def set_internal_sensor(self) -> bool:
         self.enable_remote()

@@ -80,8 +80,9 @@ class HuberCC230DriverTests(unittest.TestCase):
             ("get_setpoint", b"SETPOINT +02500\r\n", 25.0, b"SETPOINT?\r\n"),
             ("get_process_temp", b"TEMP +02450\r\n", 24.5, b"TEMP?\r\n"),
             ("get_bath_temp", b"BATH +02400\r\n", 24.0, b"BATH?\r\n"),
-            ("get_internal_temp", b"TI +02300\r\n", 23.0, b"TI?\r\n"),
-            ("get_external_temp", b"TE +02200\r\n", 22.0, b"TE?\r\n"),
+            # CC230 has no TI?/TE? commands; internal uses BATH? and external uses TEMP?.
+            ("get_internal_temp", b"BATH +02300\r\n", 23.0, b"BATH?\r\n"),
+            ("get_external_temp", b"TEMP +02200\r\n", 22.0, b"TEMP?\r\n"),
         )
         for command_name, response, expected, request_bytes in cases:
             with self.subTest(command_name=command_name):
@@ -89,31 +90,29 @@ class HuberCC230DriverTests(unittest.TestCase):
                 self.assertEqual(result.metadata["value"], expected)
                 self.assertEqual(transport.sent[0], request_bytes)
 
-    def test_read_setpoint_falls_back_to_legacy_sp(self):
-        result, transport = self.execute("get_setpoint", responses=[socket.timeout, b"SP +02500\r\n"])
+    def test_read_setpoint_raises_on_timeout(self):
+        with self.assertRaises((socket.timeout, OSError)):
+            self.execute("get_setpoint", responses=[socket.timeout])
 
-        self.assertEqual(result.metadata["value"], 25.0)
-        self.assertEqual(transport.sent, [b"SETPOINT?\r\n", b"SP?\r\n"])
-
-    def test_write_setpoint_uses_primary_command_when_numeric_response_is_valid(self):
+    def test_write_setpoint_sends_remote_then_setpoint_command(self):
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
-            responses=[b"SETPOINT +02500\r\n"],
+            responses=[],  # REMOTE and SETPOINT! do not expect a response
         )
 
         self.assertEqual(result.metadata["value"], 25.0)
-        self.assertEqual(transport.sent, [b"SETPOINT! +25.00\r\n"])
+        self.assertEqual(transport.sent, [b"REMOTE\r\n", b"SETPOINT! +025.00\r\n"])
 
-    def test_write_setpoint_falls_back_to_legacy_set_command(self):
+    def test_write_setpoint_format_for_negative_temperature(self):
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": -5, "min_setpoint_c": -40, "max_setpoint_c": 150},
-            responses=[b"OK\r\n"],
+            responses=[],
         )
 
         self.assertEqual(result.metadata["value"], -5.0)
-        self.assertEqual(transport.sent, [b"SETPOINT! -5.00\r\n", b"SET -00500\r\n"])
+        self.assertEqual(transport.sent, [b"REMOTE\r\n", b"SETPOINT! -005.00\r\n"])
 
     def test_write_setpoint_rejects_out_of_range_temperature(self):
         with self.assertRaises(DriverValidationError):
