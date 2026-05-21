@@ -70,13 +70,16 @@ def _temperature_from_response(text: str | None) -> float:
         raise DriverError(f"CC230 temperature response contains no numeric value: {raw!r}.")
 
     sign, number = matches[-1]
-    token = f"{sign or ''}{number}".replace(",", ".")
+    normalized_number = number.replace(",", ".")
+    token = f"{sign or ''}{normalized_number}"
     try:
         value = float(token)
     except ValueError as exc:
         raise DriverError(f"CC230 temperature response could not be parsed: {raw!r}.") from exc
 
-    if abs(value) > 300:
+    integer_hundredths = "." not in normalized_number and len(normalized_number.lstrip("0")) >= 4
+    fixed_width_hundredths = "." not in normalized_number and len(normalized_number) >= 4
+    if fixed_width_hundredths or integer_hundredths or abs(value) > 300:
         value /= 100.0
     return round(value, 4)
 

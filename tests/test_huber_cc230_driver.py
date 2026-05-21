@@ -70,6 +70,7 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(_temperature_from_response("+025.0"), 25.0)
         self.assertEqual(_temperature_from_response("- 10.0"), -10.0)
         self.assertEqual(_temperature_from_response("SP +02500"), 25.0)
+        self.assertEqual(_temperature_from_response("TI -00069"), -0.69)
         self.assertEqual(_temperature_from_response("2500"), 25.0)
         self.assertEqual(_temperature_from_response("TE -00500"), -5.0)
 
