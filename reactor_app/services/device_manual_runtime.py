@@ -44,6 +44,11 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
 _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
+# Background polling must finish well within the 5-second device lock acquisition
+# timeout so that user-triggered commands (start, set_setpoint, …) are never
+# blocked. The CC230 sometimes ignores queries (e.g. SETPOINT? STATUS?), so we
+# cap the per-command serial read at 3 s to guarantee the lock is released in time.
+_CC230_POLL_RESPONSE_TIMEOUT_MS = 3000
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
     {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Actual Temperature", "unit": "degC"},
@@ -860,8 +865,20 @@ def _read_ika_status(device: Device) -> dict[str, float | None]:
 
 def _read_huber_status(device: Device) -> dict[str, Any]:
     if _is_cc230_device(device):
-        setpoint = _run_logged_driver_command(device, "get_setpoint")
-        process_temp = _run_logged_driver_command(device, "get_process_temp")
+        # Use a short per-command timeout for background polling so the device lock
+        # is never held longer than _CC230_POLL_RESPONSE_TIMEOUT_MS. This prevents
+        # user-triggered commands (start, set_setpoint) from being blocked when the
+        # CC230 ignores a query (SETPOINT? is known to be unreliable on some units).
+        poll = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
+
+        # SETPOINT? is optional: some CC230 units do not respond to it reliably.
+        # Treat a timeout or error as "unknown setpoint" rather than a poll failure.
+        try:
+            setpoint = _run_logged_driver_command(device, "get_setpoint", poll)
+        except Exception:
+            setpoint = None
+
+        process_temp = _run_logged_driver_command(device, "get_process_temp", poll)
         telemetry: dict[str, Any] = {
             "setpoint_C": None if setpoint is None else float(setpoint),
             "actual_temp_C": None if process_temp is None else float(process_temp),
@@ -872,19 +889,15 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
             ("get_external_temp", "external_temp_C"),
         ):
             try:
-                value = _run_logged_driver_command(device, command_name)
+                value = _run_logged_driver_command(device, command_name, poll)
                 telemetry[key] = None if value is None else float(value)
             except Exception:
                 telemetry[key] = None
-        # Some legacy CC230 units do not answer STATUS?/ERROR?/WARN? even
-        # though the commands appear in command tables. Keep high-frequency
-        # polling focused on temperature channels to avoid repeated timeouts
-        # on the shared serial link.
         telemetry["status"] = None
         telemetry["error"] = None
         telemetry["warning"] = None
-        if telemetry["setpoint_C"] is None and telemetry["actual_temp_C"] is None:
-            raise RuntimeError("CC230 returned no valid data for setpoint or process temperature.")
+        if telemetry["actual_temp_C"] is None:
+            raise RuntimeError("CC230 returned no valid data for process temperature.")
         return telemetry
 
     setpoint = _run_logged_driver_command(device, "get_setpoint")
