@@ -57,6 +57,18 @@ _MEASUREMENT_INDEX_SPECS = (
     ),
 )
 
+# Optional columns added after initial schema release.
+# Each entry is (table_name, column_name, column_definition).
+# The app adds missing columns automatically on startup so manual SQL
+# migrations are not required for in-place upgrades.
+_OPTIONAL_COLUMN_SPECS: tuple[tuple[str, str, str], ...] = (
+    (
+        "device_connection",
+        "cc230_setpoint_write_mode",
+        "SMALLINT NULL",
+    ),
+)
+
 _ACTIVITY_LOG_INDEX_SPECS = (
     (
         "control_command",
@@ -168,6 +180,44 @@ def _ensure_named_indexes(app: Flask, specs: tuple[tuple[str, str, str], ...], *
         app.logger.info("Created %s index(es): %s", label, ", ".join(created_indexes))
 
 
+def _ensure_optional_columns(app: Flask) -> None:
+    """Add optional schema columns that may not exist in older deployments.
+
+    Called on every startup so in-place upgrades work without running a
+    manual migration script.  Idempotent: skips columns that already exist.
+    """
+    inspector = inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+    added: list[str] = []
+
+    for table_name, column_name, column_def in _OPTIONAL_COLUMN_SPECS:
+        if table_name not in existing_tables:
+            continue
+        try:
+            existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        except Exception:
+            continue
+        if column_name in existing_columns:
+            continue
+        try:
+            db.session.execute(
+                text(f"ALTER TABLE `{table_name}` ADD COLUMN `{column_name}` {column_def}")
+            )
+            db.session.commit()
+            added.append(f"{table_name}.{column_name}")
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.warning(
+                "Auto-migration: could not add column %s.%s — run migrate_v7_cc230_setpoint_write_mode.sql manually.",
+                table_name,
+                column_name,
+                exc_info=True,
+            )
+
+    if added:
+        app.logger.info("Auto-migration: added column(s): %s.", ", ".join(added))
+
+
 def _ensure_measurement_indexes(app: Flask) -> None:
     _ensure_named_indexes(app, _MEASUREMENT_INDEX_SPECS, label="measurement")
 
@@ -184,6 +234,7 @@ def _initialize_database_schema(app: Flask) -> None:
         db.create_all()
         _archive_legacy_binding_tables(app)
         db.create_all()
+        _ensure_optional_columns(app)
         _ensure_measurement_indexes(app)
         _ensure_activity_log_indexes(app)
         db.session.execute(text(_LATEST_MEASUREMENT_VIEW_SQL))
