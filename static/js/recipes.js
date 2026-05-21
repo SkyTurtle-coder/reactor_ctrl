@@ -1013,34 +1013,40 @@
         let hasInvalidPriority = false;
 
         for (let rowIndex = 0; rowIndex < state.steps.length; rowIndex++) {
+            const srcStep = state.steps[rowIndex];
             const step = emptyStep();
-            const taskInput = dom.workflowContainer?.querySelector(`input[data-row="${rowIndex}"][data-field="task"]`);
 
-            step.actors = sortedActorRefsForStep(state.steps[rowIndex]).map((ref) => {
+            // All input handlers (onTaskInput, onStepNumericInput, onActorParamInput,
+            // onActorStatusChange) write to state immediately on every keystroke.
+            // Only priority is committed on "change" (blur), so for the active step
+            // we also check the DOM to catch a value the user typed but hasn't blurred yet.
+            step.actors = sortedActorRefsForStep(srcStep).map((ref) => {
                 const actorId = actorIdForRef(ref);
-                const priority = readActorPriority(rowIndex, actorId, ref.priority);
+                const stateP = priorityFrom(ref.priority, null);
+                const priority = rowIndex === state.activeStepIndex
+                    ? (readActorPriority(rowIndex, actorId, null) || stateP)
+                    : stateP;
                 if (!priority) { hasInvalidPriority = true; }
                 const option = actorOption(actorId);
+                const p = ref.params && typeof ref.params === "object" ? ref.params : emptyActorParams();
                 return {
                     actor_id: actorId,
                     actor_type: asString(ref.actor_type, option?.actor_type || actorTypeForProfile(option?.profile_id, option?.symbol_id)),
                     priority: priority || ref.priority,
                     params: {
-                        status_on: readActorStatusValue(rowIndex, actorId),
-                        target_temp_c: readActorParamValue(rowIndex, actorId, "target_temp_c"),
-                        pressure_mbar_a: readActorParamValue(rowIndex, actorId, "pressure_mbar_a"),
-                        rpm: readActorParamValue(rowIndex, actorId, "rpm"),
+                        status_on: p.status_on ?? null,
+                        target_temp_c: p.target_temp_c ?? null,
+                        pressure_mbar_a: p.pressure_mbar_a ?? null,
+                        rpm: p.rpm ?? null,
                     },
                 };
             });
 
-            step.task = taskInput ? taskInput.value : asString(state.steps[rowIndex].task);
-            for (const fieldName of STEP_NUMERIC_FIELDS) {
-                step[fieldName] = readStepNumericValue(rowIndex, fieldName);
-            }
+            step.task = asString(srcStep.task);
+            step.delta_time = srcStep.delta_time ?? null;
             step.delta_min = step.delta_time;
 
-            const isEmpty = step.actors.length === 0 && !step.task && STEP_NUMERIC_FIELDS.every((f) => step[f] == null);
+            const isEmpty = step.actors.length === 0 && !step.task && step.delta_time == null;
             if (!isEmpty) { steps.push(step); }
         }
 
