@@ -126,6 +126,7 @@ class HuberCC230DriverTests(unittest.TestCase):
     def test_status_error_warning_and_sensor_commands(self):
         status, status_transport = self.execute("get_status", responses=[b"STATUS ON REMOTE\r\n"])
         self.assertTrue(status.metadata["value"]["temperature_control_active"])
+        self.assertTrue(status.metadata["value"]["status_available"])
         self.assertEqual(status_transport.sent, [b"STATUS?\r\n"])
 
         error, error_transport = self.execute("get_error", responses=[b"ERROR 0\r\n"])
@@ -143,6 +144,21 @@ class HuberCC230DriverTests(unittest.TestCase):
         external, external_transport = self.execute("select_external_sensor")
         self.assertTrue(external.metadata["value"])
         self.assertEqual(external_transport.sent, [b"REMOTE\r\n", b"EXTERN!\r\n"])
+
+    def test_optional_status_commands_do_not_fail_on_timeout(self):
+        status, status_transport = self.execute("get_status", responses=[socket.timeout])
+        self.assertFalse(status.metadata["value"]["status_available"])
+        self.assertIsNone(status.metadata["value"]["temperature_control_active"])
+        self.assertIn("communication_error", status.metadata["value"])
+        self.assertEqual(status_transport.sent, [b"STATUS?\r\n"])
+
+        error, error_transport = self.execute("get_error", responses=[socket.timeout])
+        self.assertEqual(error.metadata["value"], "")
+        self.assertEqual(error_transport.sent, [b"ERROR?\r\n"])
+
+        warning, warning_transport = self.execute("get_warning", responses=[socket.timeout])
+        self.assertEqual(warning.metadata["value"], "")
+        self.assertEqual(warning_transport.sent, [b"WARN?\r\n"])
 
     def test_manual_text_sends_crlf_and_reads_response_when_requested(self):
         result, transport = self.execute(

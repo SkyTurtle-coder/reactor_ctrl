@@ -876,16 +876,13 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
                 telemetry[key] = None if value is None else float(value)
             except Exception:
                 telemetry[key] = None
-        for command_name, key in (
-            ("get_status", "status"),
-            ("get_error", "error"),
-            ("get_warning", "warning"),
-        ):
-            try:
-                value = _run_logged_driver_command(device, command_name)
-                telemetry[key] = str(value) if value is not None else None
-            except Exception:
-                telemetry[key] = None
+        # Some legacy CC230 units do not answer STATUS?/ERROR?/WARN? even
+        # though the commands appear in command tables. Keep high-frequency
+        # polling focused on temperature channels to avoid repeated timeouts
+        # on the shared serial link.
+        telemetry["status"] = None
+        telemetry["error"] = None
+        telemetry["warning"] = None
         if telemetry["setpoint_C"] is None and telemetry["actual_temp_C"] is None:
             raise RuntimeError("CC230 returned no valid data for setpoint or process temperature.")
         return telemetry

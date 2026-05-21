@@ -2744,9 +2744,11 @@
         }
 
         try {
-            const setpointValue = await executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 });
-            const statusValue = await executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 });
             const isCC230 = isCC230ThermostatTarget(node, target);
+            const setpointValue = await executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 });
+            const statusValue = isCC230
+                ? null
+                : await executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 });
             let processTempC = null;
             let bathTempC = null;
             let errorText = "";

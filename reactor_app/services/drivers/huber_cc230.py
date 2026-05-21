@@ -85,6 +85,14 @@ def _status_payload(text: str | None) -> dict[str, Any]:
     }
 
 
+def _unknown_status_payload(error: Exception | None = None) -> dict[str, Any]:
+    payload = _status_payload(None)
+    payload["status_available"] = False
+    if error is not None:
+        payload["communication_error"] = str(error)
+    return payload
+
+
 class HuberCC230Client:
     """Line-oriented RS-232 client for the older Huber/Polystat CC230."""
 
@@ -185,8 +193,14 @@ class HuberCC230Client:
         return True
 
     def read_status(self) -> dict[str, Any]:
-        response = self.send_command("STATUS?")
-        return _status_payload(response.response_text)
+        try:
+            response = self.send_command("STATUS?")
+            payload = _status_payload(response.response_text)
+            payload["status_available"] = True
+            return payload
+        except (DriverError, OSError, socket.timeout) as exc:
+            LOGGER.info("CC230 STATUS? did not return a usable response; reporting status as unavailable.")
+            return _unknown_status_payload(exc)
 
     def read_setpoint(self) -> float:
         return self._read_temperature_with_fallback("SETPOINT?", "SP?")
@@ -230,10 +244,18 @@ class HuberCC230Client:
         return True
 
     def read_error(self) -> str:
-        return str(self.send_command("ERROR?").response_text or "").strip()
+        try:
+            return str(self.send_command("ERROR?").response_text or "").strip()
+        except (OSError, socket.timeout) as exc:
+            LOGGER.info("CC230 ERROR? did not return a usable response; ignoring optional error readout.")
+            return ""
 
     def read_warning(self) -> str:
-        return str(self.send_command("WARN?").response_text or "").strip()
+        try:
+            return str(self.send_command("WARN?").response_text or "").strip()
+        except (OSError, socket.timeout) as exc:
+            LOGGER.info("CC230 WARN? did not return a usable response; ignoring optional warning readout.")
+            return ""
 
     def healthcheck(self) -> dict[str, Any]:
         self.enable_remote()
