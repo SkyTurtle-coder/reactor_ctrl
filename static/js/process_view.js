@@ -2739,6 +2739,12 @@
             return;
         }
 
+        // Extend watch_expires_at so the reconciler stores measurements at the
+        // fast poll interval (2.5 s) for live Process Trends updates.
+        void fetch(
+            `/api/devices/${target.device_id}/manual-state?watch=1&requested_by=process_view`
+        ).catch(() => {});
+
         const requestId = state.manualRequestId + 1;
         state.manualRequestId = requestId;
         state.isManualBusy = true;
