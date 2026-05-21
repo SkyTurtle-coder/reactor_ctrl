@@ -28,8 +28,9 @@ class DeviceConnection(db.Model):
     reconnect_delay_ms = db.Column(db.Integer, nullable=False, server_default=db.text("1000"))
     last_seen_at = db.Column(db.DateTime(timezone=True))
     last_error = db.Column(db.Text)
-    # Remembers which setpoint write variant last worked for CC230 devices (0/1/2).
-    # NULL means no preference; the driver will try variants in order A→B→C.
+    # Remembers which setpoint write variant last worked for CC230 devices.
+    # 0 = SETPOINT!, 1 = SET decimal, 2 = SET centi-degree, 3 = MATLAB SET.
+    # NULL means no preference; the driver chooses a safe order for the sign.
     cc230_setpoint_write_mode = db.Column(db.SmallInteger, nullable=True)
     is_enabled = db.Column(db.Boolean, nullable=False, server_default=db.text("1"), index=True)
     created_at = db.Column(db.DateTime(timezone=True), nullable=False, server_default=db.text("CURRENT_TIMESTAMP(3)"))

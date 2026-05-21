@@ -871,33 +871,42 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
         # CC230 ignores a query (SETPOINT? is known to be unreliable on some units).
         poll = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
 
-        # SETPOINT? is optional: some CC230 units do not respond to it reliably.
-        # Treat a timeout or error as "unknown setpoint" rather than a poll failure.
-        try:
-            setpoint = _run_logged_driver_command(device, "get_setpoint", poll)
-        except Exception:
-            setpoint = None
+        def optional_value(command_name: str) -> Any:
+            try:
+                return _run_logged_driver_command(device, command_name, poll)
+            except Exception:
+                return None
 
-        process_temp = _run_logged_driver_command(device, "get_process_temp", poll)
+        # SETPOINT? and some optional temperature commands can time out or return
+        # stale text on old CC230 units. A failed optional read must not prevent
+        # fresh Process Trends values from being stored.
+        setpoint = optional_value("get_setpoint")
+        process_temp = optional_value("get_process_temp")
+        internal_temp = optional_value("get_internal_temp")
+        bath_temp = optional_value("get_bath_temp")
+        external_temp = optional_value("get_external_temp")
+
+        actual_temp = process_temp
+        if actual_temp is None:
+            actual_temp = internal_temp if internal_temp is not None else bath_temp
+        if actual_temp is None:
+            actual_temp = external_temp
+
         telemetry: dict[str, Any] = {
             "setpoint_C": None if setpoint is None else float(setpoint),
-            "actual_temp_C": None if process_temp is None else float(process_temp),
+            "actual_temp_C": None if actual_temp is None else float(actual_temp),
+            "bath_temp_C": None if bath_temp is None else float(bath_temp),
+            "internal_temp_C": None if internal_temp is None else float(internal_temp),
+            "external_temp_C": None if external_temp is None else float(external_temp),
         }
-        for command_name, key in (
-            ("get_bath_temp", "bath_temp_C"),
-            ("get_internal_temp", "internal_temp_C"),
-            ("get_external_temp", "external_temp_C"),
-        ):
-            try:
-                value = _run_logged_driver_command(device, command_name, poll)
-                telemetry[key] = None if value is None else float(value)
-            except Exception:
-                telemetry[key] = None
         telemetry["status"] = None
         telemetry["error"] = None
         telemetry["warning"] = None
-        if telemetry["actual_temp_C"] is None:
-            raise RuntimeError("CC230 returned no valid data for process temperature.")
+        if not any(
+            telemetry.get(key) is not None
+            for key in ("setpoint_C", "actual_temp_C", "bath_temp_C", "internal_temp_C", "external_temp_C")
+        ):
+            raise RuntimeError("CC230 returned no valid numeric temperature data.")
         return telemetry
 
     setpoint = _run_logged_driver_command(device, "get_setpoint")

@@ -66,9 +66,9 @@
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
     const PROCESS_PROGRAM_POLL_MS = 1200;
-    const PROCESS_PLOT_REFRESH_MS = 5000;
+    const PROCESS_PLOT_REFRESH_MS = 1000;
     const PROCESS_PLOT_ERROR_BACKOFF_MS = 15000;
-    const PROCESS_PLOT_LIVE_CACHE_SECONDS = 3;
+    const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;
     const PROCESS_PLOT_STALE_AFTER_MS = 60000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
@@ -2754,7 +2754,16 @@
 
         try {
             const isCC230 = isCC230ThermostatTarget(node, target);
-            const setpointValue = await executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 });
+            const optionalCommand = async (commandName, timeoutMs = 8000) => {
+                try {
+                    return await executeDeviceCommand(target, commandName, {}, { timeoutMs });
+                } catch (_error) {
+                    return null;
+                }
+            };
+            const setpointValue = isCC230
+                ? await optionalCommand("get_setpoint")
+                : await executeDeviceCommand(target, "get_setpoint", {}, { timeoutMs: 12000 });
             const statusValue = isCC230
                 ? null
                 : await executeDeviceCommand(target, "get_status", {}, { timeoutMs: 12000 });
@@ -2763,17 +2772,8 @@
             let errorText = "";
             let warningText = "";
             if (isCC230) {
-                const optionalCommand = async (commandName) => {
-                    try {
-                        return await executeDeviceCommand(target, commandName, {}, { timeoutMs: 12000 });
-                    } catch (_error) {
-                        return null;
-                    }
-                };
                 processTempC = optionalNumber(await optionalCommand("get_process_temp"));
-                bathTempC = optionalNumber(await optionalCommand("get_bath_temp"));
-                errorText = asString(await optionalCommand("get_error"), "");
-                warningText = asString(await optionalCommand("get_warning"), "");
+                bathTempC = optionalNumber(await optionalCommand("get_internal_temp"));
             }
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
@@ -3230,6 +3230,9 @@
                 clearManualInputsDirty(node.id);
                 updateManualLiveMetrics({ kind: "huber", setpointC: confirmedSetpointC, isOn: nextState });
                 updateManualDeviceStatus(target, { kind: "huber", setpointC: confirmedSetpointC, isOn: nextState });
+                if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
+                    void loadPlotMeasurements({ quiet: true });
+                }
                 let statusMsg = `Thermostat ${nextState ? "started" : "stopped"} at ${confirmedSetpointC.toFixed(2)} °C setpoint`;
                 if (syncStatus === "unverified") {
                     statusMsg += " (setpoint sent but readback timed out — command may not have been accepted)";
@@ -3447,7 +3450,7 @@
     if (state.manualMode && state.selectedNodeId) {
         const initialNode = getNodeById(state.selectedNodeId);
         const initialTarget = selectedTarget();
-        if (canLoadIkaSettings(initialNode, initialTarget)) {
+        if (isHuberThermostatTarget(initialNode, initialTarget) || canLoadIkaSettings(initialNode, initialTarget)) {
             void loadManualStateSnapshot(state.selectedNodeId, {
                 quiet: true,
                 refresh: true,

@@ -8,6 +8,7 @@ from reactor_app.services.drivers.huber_cc230 import (
     DriverError,
     HuberCC230Driver,
     _format_cc230_matlab_set_command,
+    _ordered_setpoint_write_variants,
     _format_set_command_b,
     _format_set_command_c,
     _temperature_from_response,
@@ -90,6 +91,25 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(_format_set_command_c(-5.0), "SET -00500")
         self.assertEqual(_format_set_command_c(0.0), "SET +00000")
 
+    def test_negative_setpoints_use_safe_write_variant_order(self):
+        self.assertEqual(
+            _ordered_setpoint_write_variants(-5.0),
+            [
+                (2, "SET -00500"),
+                (1, "SET -005.0"),
+                (3, "SET -00005"),
+                (0, "SETPOINT! -005.00"),
+            ],
+        )
+        self.assertEqual(
+            _ordered_setpoint_write_variants(-5.0, preferred_write_mode=3)[0],
+            (2, "SET -00500"),
+        )
+        self.assertEqual(
+            _ordered_setpoint_write_variants(-5.0, preferred_write_mode=1)[0],
+            (1, "SET -005.0"),
+        )
+
     def test_remote_local_start_stop_commands(self):
         for command_name, expected in (
             ("enable_remote", [b"REMOTE\r\n"]),
@@ -107,9 +127,8 @@ class HuberCC230DriverTests(unittest.TestCase):
             ("get_setpoint", b"SETPOINT +02500\r\n", 25.0, b"SETPOINT?\r\n"),
             ("get_process_temp", b"TEMP +02450\r\n", 24.5, b"TEMP?\r\n"),
             ("get_bath_temp", b"BATH +02400\r\n", 24.0, b"BATH?\r\n"),
-            # CC230 has no TI?/TE? commands; internal uses BATH? and external uses TEMP?.
-            ("get_internal_temp", b"BATH +02300\r\n", 23.0, b"BATH?\r\n"),
-            ("get_external_temp", b"TEMP +02200\r\n", 22.0, b"TEMP?\r\n"),
+            ("get_internal_temp", b"TI +02300\r\n", 23.0, b"TI?\r\n"),
+            ("get_external_temp", b"TE +02200\r\n", 22.0, b"TE?\r\n"),
         )
         for command_name, response, expected, request_bytes in cases:
             with self.subTest(command_name=command_name):
@@ -161,9 +180,29 @@ class HuberCC230DriverTests(unittest.TestCase):
         )
         self.assertEqual(result.metadata["value"], -5.0)
         self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(result.metadata["write_mode_used"], 2)
         self.assertEqual(
             transport.sent,
-            [b"REMOTE\r\n", b"SET -00005\r\n", b"SETPOINT?\r\n"],
+            [b"REMOTE\r\n", b"SET -00500\r\n", b"SETPOINT?\r\n"],
+        )
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_negative_ignores_positive_preferred_mode(self, _mock_sleep):
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={
+                "temp_c": -5,
+                "min_setpoint_c": -40,
+                "max_setpoint_c": 150,
+                "cc230_write_mode": 3,
+            },
+            responses=[b"SETPOINT -00500\r\n"],
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(result.metadata["write_mode_used"], 2)
+        self.assertEqual(
+            transport.sent,
+            [b"REMOTE\r\n", b"SET -00500\r\n", b"SETPOINT?\r\n"],
         )
 
     @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
@@ -216,6 +255,20 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertIn(b"SET +00030\r\n", sent_commands)
         self.assertNotIn(b"SET +030.0\r\n", sent_commands)
         self.assertNotIn(b"SET +03000\r\n", sent_commands)
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_negative_write_setpoint_readback_timeout_uses_safe_first_variant(self, _mock_sleep):
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": -5, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[],
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "unverified")
+        self.assertEqual(result.metadata["write_mode_used"], 2)
+        self.assertEqual(
+            transport.sent,
+            [b"REMOTE\r\n", b"SET -00500\r\n", b"SETPOINT?\r\n", b"SP?\r\n"],
+        )
 
     # ------------------------------------------------------------------ #
     # write_setpoint: legacy fallback chain                               #
@@ -354,6 +407,24 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], "CC230")
         self.assertEqual(transport.sent, [b"TYPE?\r\n"])
         self.assertEqual(transport.drained, 1)
+
+    def test_process_temperature_retries_stale_sensor_ack_before_fallback(self):
+        result, transport = self.execute(
+            "get_process_temp",
+            responses=[b"INTERN\r\n", b"TEMP +02450\r\n"],
+        )
+
+        self.assertEqual(result.metadata["value"], 24.5)
+        self.assertEqual(transport.sent, [b"TEMP?\r\n", b"TEMP?\r\n"])
+
+    def test_process_temperature_falls_back_to_legacy_internal_query(self):
+        result, transport = self.execute(
+            "get_process_temp",
+            responses=[b"INTERN\r\n", socket.timeout, b"TI +02440\r\n"],
+        )
+
+        self.assertEqual(result.metadata["value"], 24.4)
+        self.assertEqual(transport.sent, [b"TEMP?\r\n", b"TEMP?\r\n", b"TI?\r\n"])
 
 
 if __name__ == "__main__":

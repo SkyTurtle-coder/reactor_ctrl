@@ -108,6 +108,39 @@ def _format_cc230_matlab_set_command(temp_c: float) -> str:
     return f"SET {sign}{value_str.zfill(5)}"
 
 
+def _ordered_setpoint_write_variants(
+    value_celsius: float,
+    preferred_write_mode: int | None = None,
+) -> list[tuple[int, str]]:
+    value = float(value_celsius)
+    variants_by_mode: dict[int, str] = {
+        3: _format_cc230_matlab_set_command(value),
+        1: _format_set_command_b(value),
+        2: _format_set_command_c(value),
+        0: f"SETPOINT! {_format_setpoint_celsius(value)}",
+    }
+
+    # Positive values work on the lab unit with the old MATLAB-style SET form.
+    # For negative values the safe first variant is the centi-degree form:
+    # -5.00 C -> SET -00500.  Reusing the positive mode (SET -00005) can be
+    # interpreted as -0.05 C or ignored by older firmware.
+    default_order = [2, 1, 3, 0] if value < 0 else [3, 1, 2, 0]
+    if preferred_write_mode is None:
+        order = default_order
+    else:
+        try:
+            preferred = int(preferred_write_mode)
+        except (TypeError, ValueError):
+            preferred = -1
+        if preferred not in variants_by_mode:
+            order = default_order
+        elif value < 0 and preferred not in {1, 2}:
+            order = default_order
+        else:
+            order = [preferred, *(mode for mode in default_order if mode != preferred)]
+    return [(mode, variants_by_mode[mode]) for mode in order]
+
+
 def _status_payload(text: str | None) -> dict[str, Any]:
     raw = str(text or "").strip()
     tokens = {token.strip().upper() for token in re.split(r"[^A-Za-z0-9+-]+", raw) if token.strip()}
@@ -194,26 +227,20 @@ class HuberCC230Client:
         self.history.append(response)
         return response
 
+    def _read_temperature_chain(self, commands: tuple[str, ...]) -> float:
+        errors: list[str] = []
+        for command in commands:
+            try:
+                response = self.send_command(command)
+                return _temperature_from_response(response.response_text)
+            except (DriverError, OSError, socket.timeout) as exc:
+                errors.append(f"{command}: {exc}")
+                continue
+        raise DriverError("CC230 temperature read failed. Tried " + "; ".join(errors))
+
     def _read_temperature_with_fallback(self, primary_command: str, fallback_command: str | None = None) -> float:
-        primary_error: Exception | None = None
-        try:
-            response = self.send_command(primary_command)
-            return _temperature_from_response(response.response_text)
-        except (DriverError, OSError, socket.timeout) as exc:
-            primary_error = exc
-
-        if not fallback_command:
-            assert primary_error is not None
-            raise primary_error
-
-        try:
-            response = self.send_command(fallback_command)
-            return _temperature_from_response(response.response_text)
-        except Exception as fallback_error:
-            raise DriverError(
-                f"CC230 command {primary_command!r} failed and fallback {fallback_command!r} also failed: "
-                f"{fallback_error}"
-            ) from fallback_error
+        commands = (primary_command,) if not fallback_command else (primary_command, fallback_command)
+        return self._read_temperature_chain(commands)
 
     def _readback_setpoint_celsius(self) -> float | None:
         """Try SETPOINT? then SP? for write readback; return None if both time out."""
@@ -278,18 +305,7 @@ class HuberCC230Client:
         # Variant 1: SET ±XXX.X              (legacy decimal form)
         # Variant 2: SET ±XXXXX              (legacy integer * 100 form)
         # Variant 0: SETPOINT! ±XXX.XX       (last-resort fallback)
-        all_variants: list[tuple[int, str]] = [
-            (3, _format_cc230_matlab_set_command(value)),
-            (1, _format_set_command_b(value)),
-            (2, _format_set_command_c(value)),
-            (0, f"SETPOINT! {_format_setpoint_celsius(value)}"),
-        ]
-        if preferred_write_mode is not None and 0 <= int(preferred_write_mode) <= 3:
-            preferred = [v for v in all_variants if v[0] == int(preferred_write_mode)]
-            others = [v for v in all_variants if v[0] != int(preferred_write_mode)]
-            variants = preferred + others
-        else:
-            variants = all_variants
+        variants = _ordered_setpoint_write_variants(value, preferred_write_mode)
 
         # REMOTE must be active before any write command is accepted.
         self.enable_remote()
@@ -362,18 +378,19 @@ class HuberCC230Client:
         )
 
     def read_process_temperature(self) -> float:
-        return self._read_temperature_with_fallback("TEMP?")
+        # TEMP? can occasionally return a stale text acknowledgement such as
+        # INTERN after a sensor switch. Retry TEMP? once, then fall back to the
+        # legacy MATLAB temperature queries.
+        return self._read_temperature_chain(("TEMP?", "TEMP?", "TI?", "TE?"))
 
     def read_bath_temperature(self) -> float:
-        return self._read_temperature_with_fallback("BATH?")
+        return self._read_temperature_chain(("BATH?", "TI?"))
 
     def read_internal_temperature(self) -> float:
-        # CC230 has no dedicated TI? command; BATH? returns the internal bath temperature.
-        return self._read_temperature_with_fallback("BATH?")
+        return self._read_temperature_chain(("TI?", "BATH?", "TEMP?"))
 
     def read_external_temperature(self) -> float:
-        # CC230 has no dedicated TE? command; TEMP? returns the active sensor temperature.
-        return self._read_temperature_with_fallback("TEMP?")
+        return self._read_temperature_chain(("TE?", "TEMP?"))
 
     def set_internal_sensor(self) -> bool:
         self.enable_remote()
