@@ -15,7 +15,7 @@ LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_MIN_SETPOINT_C = -40.0
 _DEFAULT_MAX_SETPOINT_C = 150.0
-_TEMPERATURE_RE = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
+_TEMPERATURE_RE = re.compile(r"([+-])?\s*(\d+(?:[.,]\d+)?)")
 _STATUS_ON_TOKENS = {"1", "ON", "RUN", "RUNNING", "START", "STARTED", "REMOTE"}
 _STATUS_OFF_TOKENS = {"0", "OFF", "STOP", "STOPPED", "LOCAL"}
 
@@ -69,7 +69,8 @@ def _temperature_from_response(text: str | None) -> float:
     if not matches:
         raise DriverError(f"CC230 temperature response contains no numeric value: {raw!r}.")
 
-    token = matches[-1].replace(",", ".")
+    sign, number = matches[-1]
+    token = f"{sign or ''}{number}".replace(",", ".")
     try:
         value = float(token)
     except ValueError as exc:
