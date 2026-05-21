@@ -582,7 +582,19 @@ def execute_device_command(
     _add_command_event(command, "queued", {"requested_by": requested_by})
     _commit_command_phase(command, "queued")
 
-    request = DeviceCommandRequest(command_name=command_name, payload=payload)
+    # For CC230 set_setpoint: inject the remembered write variant so the driver
+    # tries the most-recently successful mode first instead of always starting from A.
+    effective_payload = payload
+    if (
+        str(command_name or "").strip().lower() in {"set_setpoint", "set_temperature", "write_setpoint"}
+        and str(getattr(device, "protocol", "") or "").strip().lower() == "huber_cc230"
+        and "cc230_write_mode" not in payload
+    ):
+        stored_mode = getattr(connection, "cc230_setpoint_write_mode", None)
+        if stored_mode is not None:
+            effective_payload = {**payload, "cc230_write_mode": int(stored_mode)}
+
+    request = DeviceCommandRequest(command_name=command_name, payload=effective_payload)
     sent_at = _now_utc()
 
     try:
@@ -680,5 +692,33 @@ def execute_device_command(
     except DeviceCommandError:
         _commit_command_phase(command, "measurement_failed")
         raise
+
+    # For CC230 set_setpoint: persist the write mode that worked so the next call
+    # can try it first.  Non-fatal: a failure here must not break the command response.
+    if (
+        str(command_name or "").strip().lower() in {"set_setpoint", "set_temperature", "write_setpoint"}
+        and str(getattr(device, "protocol", "") or "").strip().lower() == "huber_cc230"
+    ):
+        write_mode_used = result.metadata.get("write_mode_used")
+        if write_mode_used is not None:
+            stored_mode = getattr(connection, "cc230_setpoint_write_mode", None)
+            if stored_mode != int(write_mode_used):
+                try:
+                    db.session.execute(
+                        text(
+                            "UPDATE device_connection "
+                            "SET cc230_setpoint_write_mode=:mode "
+                            "WHERE connection_id=:cid"
+                        ),
+                        {"mode": int(write_mode_used), "cid": connection_id},
+                    )
+                    db.session.commit()
+                    _safe_expire(connection, ["cc230_setpoint_write_mode"])
+                except Exception:
+                    logging.getLogger(__name__).warning(
+                        "CC230: failed to persist setpoint write mode for connection %s.",
+                        connection_id,
+                        exc_info=True,
+                    )
 
     return ExecutedDeviceCommand(command=command, result=result, measurement=measurement)

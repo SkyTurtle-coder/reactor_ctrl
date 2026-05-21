@@ -2704,6 +2704,9 @@
                 payload: payload || {},
             }),
         });
+        if (settings.returnMeta) {
+            return response?.result?.metadata;
+        }
         return response?.result?.metadata?.value;
     }
 
@@ -3200,28 +3203,31 @@
                         { timeoutMs: 12000 },
                     );
                 }
-                await executeDeviceCommand(
+                const setpointMeta = await executeDeviceCommand(
                     target,
                     "set_setpoint",
                     { temp_c: setpointC, min_setpoint_c: limits.min, max_setpoint_c: limits.max },
-                    { timeoutMs: 12000 },
+                    { timeoutMs: 12000, returnMeta: true },
                 );
+                const confirmedSetpointC = optionalNumber(setpointMeta?.verified_setpoint) ?? setpointC;
+                const syncStatus = String(setpointMeta?.setpoint_sync_status || "unknown");
                 await executeDeviceCommand(target, nextState ? "start" : "stop", {}, { timeoutMs: 12000 });
                 node.control = {
                     profile_id: node.control?.profile_id || "hc_system_temperature",
                     config: {
                         ...(node.control?.config || {}),
-                        target_temp: setpointC,
+                        target_temp: confirmedSetpointC,
                         is_on: nextState,
                     },
                 };
                 clearManualInputsDirty(node.id);
-                updateManualLiveMetrics({ kind: "huber", setpointC, isOn: nextState });
-                updateManualDeviceStatus(target, { kind: "huber", setpointC, isOn: nextState });
-                setManualStatus(`Thermostat ${nextState ? "started" : "stopped"} at ${setpointC.toFixed(2)} °C setpoint.`, "success");
-                if (state.manualMode && state.selectedNodeId === node.id) {
-                    void loadManualStateSnapshot(node.id, { quiet: true });
+                updateManualLiveMetrics({ kind: "huber", setpointC: confirmedSetpointC, isOn: nextState });
+                updateManualDeviceStatus(target, { kind: "huber", setpointC: confirmedSetpointC, isOn: nextState });
+                let statusMsg = `Thermostat ${nextState ? "started" : "stopped"} at ${confirmedSetpointC.toFixed(2)} °C setpoint`;
+                if (syncStatus === "unverified") {
+                    statusMsg += " (setpoint sent but readback timed out — command may not have been accepted)";
                 }
+                setManualStatus(statusMsg + ".", syncStatus === "unverified" ? "warning" : "success");
             })()
                 .catch((error) => {
                     setManualStatus(error?.message || "Thermostat settings could not be applied.", "error");

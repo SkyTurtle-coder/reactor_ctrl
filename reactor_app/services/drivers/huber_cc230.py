@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import socket
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverValidationError
@@ -18,6 +19,14 @@ _TEMPERATURE_RE = re.compile(r"[+-]?\d+(?:[.,]\d+)?")
 _STATUS_ON_TOKENS = {"1", "ON", "RUN", "RUNNING", "START", "STARTED", "REMOTE"}
 _STATUS_OFF_TOKENS = {"0", "OFF", "STOP", "STOPPED", "LOCAL"}
 
+# Readback tolerance: if SETPOINT? returns a value within this range of the
+# requested value the write is considered confirmed.
+_CC230_SETPOINT_READBACK_TOLERANCE_C = 0.1
+# Short settle after REMOTE before the write command (CC230 needs time to switch modes).
+_CC230_REMOTE_SETTLE_S = 0.2
+# Short settle after the write command before the readback query.
+_CC230_WRITE_SETTLE_S = 0.3
+
 
 @dataclass(frozen=True)
 class CC230CommandResponse:
@@ -25,6 +34,19 @@ class CC230CommandResponse:
     request_bytes: bytes
     response_text: str | None
     response_bytes: bytes
+
+
+@dataclass
+class WriteSetpointResult:
+    """Result of a CC230 setpoint write with readback verification."""
+    requested_value: float
+    verified_setpoint: float | None
+    # "verified"   — readback matched within tolerance
+    # "unverified" — SETPOINT? timed out; write may have succeeded
+    # "failed"     — readback returned wrong value on all variants (DriverError raised instead)
+    setpoint_sync_status: str
+    write_mode_used: int  # 0 = SETPOINT!, 1 = SET decimal, 2 = SET integer
+    attempts: list = field(default_factory=list)
 
 
 def _coerce_float(value: Any, *, field_name: str, default: float | None = None) -> float:
@@ -61,6 +83,20 @@ def _temperature_from_response(text: str | None) -> float:
 def _format_setpoint_celsius(value_celsius: float) -> str:
     # Older Huber RS-232 firmware expects ±XXX.XX format with leading zeros (e.g. +030.00).
     return f"{float(value_celsius):+07.2f}"
+
+
+def _format_set_command_b(value_celsius: float) -> str:
+    # Variant B: SET ±XXX.X  (one decimal, 5-char number part with leading zero)
+    v = float(value_celsius)
+    sign = "+" if v >= 0 else "-"
+    return f"SET {sign}{abs(v):05.1f}"
+
+
+def _format_set_command_c(value_celsius: float) -> str:
+    # Variant C: SET ±XXXXX  (integer *100, 5-digit zero-padded)
+    v_int = int(round(float(value_celsius) * 100))
+    sign = "+" if v_int >= 0 else "-"
+    return f"SET {sign}{abs(v_int):05d}"
 
 
 def _status_payload(text: str | None) -> dict[str, Any]:
@@ -170,6 +206,19 @@ class HuberCC230Client:
                 f"{fallback_error}"
             ) from fallback_error
 
+    def _readback_setpoint_celsius(self) -> float | None:
+        """Try SETPOINT? then SP? for write readback; return None if both time out."""
+        for cmd in ("SETPOINT?", "SP?"):
+            try:
+                response = self.send_command(cmd)
+            except OSError:
+                continue
+            try:
+                return _temperature_from_response(response.response_text)
+            except DriverError:
+                continue
+        return None
+
     def enable_remote(self) -> bool:
         self.send_command("REMOTE", expect_response=False)
         return True
@@ -198,21 +247,108 @@ class HuberCC230Client:
             return _unknown_status_payload(exc)
 
     def read_setpoint(self) -> float:
-        return self._read_temperature_with_fallback("SETPOINT?")
+        # SP? is a legacy fallback for devices where SETPOINT? does not respond.
+        return self._read_temperature_with_fallback("SETPOINT?", "SP?")
 
-    def write_setpoint(self, value_celsius: float, *, min_setpoint_c: float, max_setpoint_c: float) -> float:
-        value = float(value_celsius)
+    def write_setpoint(
+        self,
+        value_celsius: float,
+        *,
+        min_setpoint_c: float,
+        max_setpoint_c: float,
+        preferred_write_mode: int | None = None,
+    ) -> WriteSetpointResult:
+        value = round(float(value_celsius), 4)
         if not min_setpoint_c <= value <= max_setpoint_c:
             raise DriverValidationError(
                 f"Setpoint {value:g} degC is outside configured safety range "
                 f"{min_setpoint_c:g}..{max_setpoint_c:g} degC."
             )
 
-        # REMOTE must be active before SETPOINT! is accepted.
+        # Variant 0: SETPOINT! ±XXX.XX  (standard command, current firmware)
+        # Variant 1: SET ±XXX.X         (legacy decimal form)
+        # Variant 2: SET ±XXXXX         (legacy integer * 100 form)
+        all_variants: list[tuple[int, str]] = [
+            (0, f"SETPOINT! {_format_setpoint_celsius(value)}"),
+            (1, _format_set_command_b(value)),
+            (2, _format_set_command_c(value)),
+        ]
+        if preferred_write_mode is not None and 0 <= int(preferred_write_mode) <= 2:
+            preferred = [v for v in all_variants if v[0] == int(preferred_write_mode)]
+            others = [v for v in all_variants if v[0] != int(preferred_write_mode)]
+            variants = preferred + others
+        else:
+            variants = all_variants
+
+        # REMOTE must be active before any write command is accepted.
         self.enable_remote()
-        # CC230 write commands do not echo a response; send without expecting one.
-        self.send_command(f"SETPOINT! {_format_setpoint_celsius(value)}", expect_response=False)
-        return round(value, 4)
+        time.sleep(_CC230_REMOTE_SETTLE_S)
+
+        attempts: list[dict] = []
+        for mode_index, command_text in variants:
+            LOGGER.info(
+                "CC230 setpoint write: mode=%d command=%r requested=%.4f degC",
+                mode_index, command_text, value,
+            )
+            self.send_command(command_text, expect_response=False)
+            time.sleep(_CC230_WRITE_SETTLE_S)
+
+            readback_value = self._readback_setpoint_celsius()
+            deviation = round(abs(readback_value - value), 4) if readback_value is not None else None
+            attempt: dict[str, Any] = {
+                "mode": mode_index,
+                "command": command_text,
+                "readback_c": readback_value,
+                "deviation_c": deviation,
+            }
+            attempts.append(attempt)
+            LOGGER.info("CC230 setpoint attempt result: %s", attempt)
+
+            if readback_value is None:
+                # Both SETPOINT? and SP? timed out — the device does not support
+                # readback queries.  Accept the write as unverified and stop trying
+                # further variants (their readbacks would also time out).
+                LOGGER.warning(
+                    "CC230 setpoint write (mode=%d): SETPOINT?/SP? readback timed out; "
+                    "setpoint cannot be confirmed. requested=%.4f degC",
+                    mode_index, value,
+                )
+                return WriteSetpointResult(
+                    requested_value=value,
+                    verified_setpoint=None,
+                    setpoint_sync_status="unverified",
+                    write_mode_used=mode_index,
+                    attempts=attempts,
+                )
+
+            if deviation <= _CC230_SETPOINT_READBACK_TOLERANCE_C:
+                LOGGER.info(
+                    "CC230 setpoint verified: mode=%d requested=%.4f readback=%.4f deviation=%.4f degC",
+                    mode_index, value, readback_value, deviation,
+                )
+                return WriteSetpointResult(
+                    requested_value=value,
+                    verified_setpoint=readback_value,
+                    setpoint_sync_status="verified",
+                    write_mode_used=mode_index,
+                    attempts=attempts,
+                )
+
+            LOGGER.warning(
+                "CC230 setpoint mismatch (mode=%d): requested=%.4f readback=%.4f "
+                "deviation=%.4f degC; trying next write variant.",
+                mode_index, value, readback_value, deviation,
+            )
+
+        # All variants returned readback values that are out of tolerance.
+        best = min(attempts, key=lambda a: a["deviation_c"] or float("inf"))
+        raise DriverError(
+            f"CC230 setpoint not accepted after {len(attempts)} attempt(s): "
+            f"requested {value:g} °C, best readback {best['readback_c']:g} °C "
+            f"(deviation {best['deviation_c']:.3f} °C, tolerance "
+            f"{_CC230_SETPOINT_READBACK_TOLERANCE_C} °C). "
+            "Write modes tried: " + ", ".join(str(a["mode"]) for a in attempts) + "."
+        )
 
     def read_process_temperature(self) -> float:
         return self._read_temperature_with_fallback("TEMP?")
@@ -305,10 +441,20 @@ class HuberCC230Driver(DeviceDriver):
             value = client.read_setpoint()
         elif command_name in {"set_setpoint", "set_temperature", "write_setpoint"}:
             temp_c = _coerce_float(payload.get("temp_c", payload.get("temperature_c")), field_name="payload.temp_c")
+            preferred_mode: int | None = None
+            raw_mode = payload.get("cc230_write_mode")
+            if raw_mode is not None:
+                try:
+                    m = int(raw_mode)
+                    if 0 <= m <= 2:
+                        preferred_mode = m
+                except (TypeError, ValueError):
+                    pass
             value = client.write_setpoint(
                 temp_c,
                 min_setpoint_c=min_setpoint,
                 max_setpoint_c=max_setpoint,
+                preferred_write_mode=preferred_mode,
             )
         elif command_name in {"get_process_temp", "read_temperature", "read_process_temperature"}:
             value = client.read_process_temperature()
@@ -344,6 +490,17 @@ class HuberCC230Driver(DeviceDriver):
             }
             for item in client.history
         ]
+
+        extra: dict[str, Any] = {}
+        if isinstance(value, WriteSetpointResult):
+            extra = {
+                "verified_setpoint": value.verified_setpoint,
+                "setpoint_sync_status": value.setpoint_sync_status,
+                "write_mode_used": value.write_mode_used,
+                "setpoint_attempts": value.attempts,
+            }
+            value = value.requested_value
+
         return DeviceCommandResult(
             acknowledged=True,
             response_text=None if last is None else last.response_text,
@@ -352,6 +509,7 @@ class HuberCC230Driver(DeviceDriver):
                 "driver": "huber_cc230",
                 "protocol": "cc230_ascii_rs232",
                 "value": value,
+                **extra,
                 "command_history": history,
                 "request_hex": None if last is None else last.request_bytes.hex(),
             },

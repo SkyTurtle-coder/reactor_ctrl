@@ -1,9 +1,16 @@
 import socket
 import unittest
+from unittest.mock import patch
 
 from reactor_app.services.drivers import DriverValidationError, get_driver, list_supported_protocols, protocol_label
 from reactor_app.services.drivers.base import DeviceCommandRequest
-from reactor_app.services.drivers.huber_cc230 import HuberCC230Driver, _temperature_from_response
+from reactor_app.services.drivers.huber_cc230 import (
+    DriverError,
+    HuberCC230Driver,
+    _format_set_command_b,
+    _format_set_command_c,
+    _temperature_from_response,
+)
 
 
 class _FakeConfig:
@@ -63,6 +70,16 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(_temperature_from_response("2500"), 25.0)
         self.assertEqual(_temperature_from_response("TE -00500"), -5.0)
 
+    def test_format_set_command_b(self):
+        self.assertEqual(_format_set_command_b(30.0), "SET +030.0")
+        self.assertEqual(_format_set_command_b(-5.0), "SET -005.0")
+        self.assertEqual(_format_set_command_b(0.0), "SET +000.0")
+
+    def test_format_set_command_c(self):
+        self.assertEqual(_format_set_command_c(30.0), "SET +03000")
+        self.assertEqual(_format_set_command_c(-5.0), "SET -00500")
+        self.assertEqual(_format_set_command_c(0.0), "SET +00000")
+
     def test_remote_local_start_stop_commands(self):
         for command_name, expected in (
             ("enable_remote", [b"REMOTE\r\n"]),
@@ -90,37 +107,194 @@ class HuberCC230DriverTests(unittest.TestCase):
                 self.assertEqual(result.metadata["value"], expected)
                 self.assertEqual(transport.sent[0], request_bytes)
 
-    def test_read_setpoint_raises_on_timeout(self):
-        with self.assertRaises((socket.timeout, OSError)):
+    def test_read_setpoint_falls_back_to_sp(self):
+        # SETPOINT? times out; SP? provides the value.
+        result, transport = self.execute(
+            "get_setpoint",
+            responses=[socket.timeout, b"SP +02500\r\n"],
+        )
+        self.assertEqual(result.metadata["value"], 25.0)
+        self.assertEqual(transport.sent, [b"SETPOINT?\r\n", b"SP?\r\n"])
+
+    def test_read_setpoint_raises_when_both_timeout(self):
+        # SETPOINT? and SP? both time out → DriverError.
+        with self.assertRaises((socket.timeout, OSError, DriverError)):
             self.execute("get_setpoint", responses=[socket.timeout])
 
-    def test_write_setpoint_sends_remote_then_setpoint_command(self):
+    # ------------------------------------------------------------------ #
+    # write_setpoint: readback verified                                   #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_verified(self, _mock_sleep):
+        # Readback returns the requested value → verified.
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
-            responses=[],  # REMOTE and SETPOINT! do not expect a response
+            responses=[b"SETPOINT +02500\r\n"],
+        )
+        self.assertEqual(result.metadata["value"], 25.0)
+        self.assertEqual(result.metadata["verified_setpoint"], 25.0)
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(result.metadata["write_mode_used"], 0)
+        self.assertEqual(
+            transport.sent,
+            [b"REMOTE\r\n", b"SETPOINT! +025.00\r\n", b"SETPOINT?\r\n"],
         )
 
-        self.assertEqual(result.metadata["value"], 25.0)
-        self.assertEqual(transport.sent, [b"REMOTE\r\n", b"SETPOINT! +025.00\r\n"])
-
-    def test_write_setpoint_format_for_negative_temperature(self):
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_verified_negative_temperature(self, _mock_sleep):
         result, transport = self.execute(
             "set_setpoint",
             payload={"temp_c": -5, "min_setpoint_c": -40, "max_setpoint_c": 150},
-            responses=[],
+            responses=[b"SETPOINT -00500\r\n"],
+        )
+        self.assertEqual(result.metadata["value"], -5.0)
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(
+            transport.sent,
+            [b"REMOTE\r\n", b"SETPOINT! -005.00\r\n", b"SETPOINT?\r\n"],
         )
 
-        self.assertEqual(result.metadata["value"], -5.0)
-        self.assertEqual(transport.sent, [b"REMOTE\r\n", b"SETPOINT! -005.00\r\n"])
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_verified_within_tolerance(self, _mock_sleep):
+        # Readback is within 0.1 °C tolerance (e.g. rounding artefact).
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[b"SETPOINT +02508\r\n"],  # 25.08 °C → deviation 0.08 < 0.1
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertAlmostEqual(result.metadata["verified_setpoint"], 25.08, places=2)
 
-    def test_write_setpoint_rejects_out_of_range_temperature(self):
+    # ------------------------------------------------------------------ #
+    # write_setpoint: readback times out → unverified                     #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_readback_timeout_returns_unverified(self, _mock_sleep):
+        # SETPOINT? and SP? both time out; write accepted as unverified.
+        # Empty responses → both queries raise socket.timeout.
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[],
+        )
+        self.assertEqual(result.metadata["value"], 25.0)
+        self.assertIsNone(result.metadata["verified_setpoint"])
+        self.assertEqual(result.metadata["setpoint_sync_status"], "unverified")
+        self.assertEqual(result.metadata["write_mode_used"], 0)
+        # After the write, exactly SETPOINT? and SP? are queried.
+        self.assertEqual(
+            transport.sent,
+            [b"REMOTE\r\n", b"SETPOINT! +025.00\r\n", b"SETPOINT?\r\n", b"SP?\r\n"],
+        )
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_readback_timeout_does_not_try_next_variant(self, _mock_sleep):
+        # A readback timeout means the device never responds to SETPOINT?; there
+        # is no point trying the next write variant because its readback would also
+        # time out.  Only one write command must be sent.
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 30, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[socket.timeout],  # SETPOINT? times out; SP? also (no more)
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "unverified")
+        # Only one write variant (mode 0) was attempted.
+        sent_commands = [b for b in transport.sent]
+        self.assertIn(b"SETPOINT! +030.00\r\n", sent_commands)
+        self.assertNotIn(b"SET +030.0\r\n", sent_commands)
+        self.assertNotIn(b"SET +03000\r\n", sent_commands)
+
+    # ------------------------------------------------------------------ #
+    # write_setpoint: legacy fallback chain                               #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_falls_back_to_variant_b(self, _mock_sleep):
+        # Mode 0 (SETPOINT!) readback returns wrong value; mode 1 (SET decimal) works.
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[
+                b"SETPOINT +02000\r\n",  # mode 0 readback: 20 °C — wrong
+                b"SETPOINT +02500\r\n",  # mode 1 readback: 25 °C — correct
+            ],
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(result.metadata["write_mode_used"], 1)
+        self.assertEqual(result.metadata["verified_setpoint"], 25.0)
+        sent = transport.sent
+        self.assertIn(b"SETPOINT! +025.00\r\n", sent)
+        self.assertIn(b"SET +025.0\r\n", sent)
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_falls_back_to_variant_c(self, _mock_sleep):
+        # Modes 0 and 1 return wrong values; mode 2 (SET integer) works.
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[
+                b"SETPOINT +02000\r\n",  # mode 0 readback: wrong
+                b"SETPOINT +02000\r\n",  # mode 1 readback: wrong
+                b"SETPOINT +02500\r\n",  # mode 2 readback: correct
+            ],
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(result.metadata["write_mode_used"], 2)
+        sent = transport.sent
+        self.assertIn(b"SET +02500\r\n", sent)
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_preferred_mode_tried_first(self, _mock_sleep):
+        # When preferred_write_mode=1 is passed, SET decimal is tried before SETPOINT!.
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150, "cc230_write_mode": 1},
+            responses=[b"SETPOINT +02500\r\n"],  # first readback confirms
+        )
+        self.assertEqual(result.metadata["write_mode_used"], 1)
+        # SET must appear before SETPOINT! in the sent list.
+        sent = transport.sent
+        set_idx = next(i for i, b in enumerate(sent) if b"SET +" in b and b"SETPOINT" not in b)
+        setpoint_idx = next((i for i, b in enumerate(sent) if b"SETPOINT!" in b), len(sent))
+        self.assertLess(set_idx, setpoint_idx)
+
+    # ------------------------------------------------------------------ #
+    # write_setpoint: all variants rejected                               #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_all_variants_fail_raises_driver_error(self, _mock_sleep):
+        # All three readbacks return a value that is too far from the requested one.
+        with self.assertRaises(DriverError):
+            self.execute(
+                "set_setpoint",
+                payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
+                responses=[
+                    b"SETPOINT +02000\r\n",
+                    b"SETPOINT +02000\r\n",
+                    b"SETPOINT +02000\r\n",
+                ],
+            )
+
+    # ------------------------------------------------------------------ #
+    # write_setpoint: validation                                          #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_rejects_out_of_range_temperature(self, _mock_sleep):
         with self.assertRaises(DriverValidationError):
             self.execute(
                 "set_setpoint",
                 payload={"temp_c": 200, "min_setpoint_c": -40, "max_setpoint_c": 150},
                 responses=[b"SETPOINT +20000\r\n"],
             )
+
+    # ------------------------------------------------------------------ #
+    # Other commands                                                      #
+    # ------------------------------------------------------------------ #
 
     def test_status_error_warning_and_sensor_commands(self):
         status, status_transport = self.execute("get_status", responses=[b"STATUS ON REMOTE\r\n"])
