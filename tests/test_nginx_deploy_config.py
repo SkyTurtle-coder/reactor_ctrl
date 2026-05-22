@@ -17,6 +17,8 @@ class NginxDeployConfigTests(unittest.TestCase):
 
         self.assertIn("server_name v002020.edu.ds.fhnw.ch;", config)
         self.assertIn("server_name u1-process-control.lifesciences.fhnw.ch;", config)
+        self.assertIn("listen 443 ssl;", config)
+        self.assertIn("ssl_certificate /etc/letsencrypt/live/u1-process-control.lifesciences.fhnw.ch/fullchain.pem;", config)
         self.assertIn("return 301 https://u1-process-control.lifesciences.fhnw.ch$request_uri;", config)
 
 
