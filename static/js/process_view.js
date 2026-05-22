@@ -3103,12 +3103,17 @@
     const plotSeriesOptionMap = new Map(plotSeriesOptions.map((option) => [option.id, option]));
     const plotNodeGroups = buildPlotNodeGroups(plotTargetData, plotSeriesOptions);
     const liveDefaultPlotSeriesIds = defaultLivePlotSeriesIds();
-    const persistedPlotSeriesIds = canRestorePersistedState && Array.isArray(persistedViewState?.selectedPlotSeriesIds)
+    const hasPersistedPlotSeriesSelection = Boolean(
+        canRestorePersistedState && Array.isArray(persistedViewState?.selectedPlotSeriesIds),
+    );
+    const persistedPlotSeriesIds = hasPersistedPlotSeriesSelection
         ? persistedViewState.selectedPlotSeriesIds
               .map((item) => asString(item, ""))
               .filter((item) => item && plotSeriesOptionMap.has(item))
         : [];
-    const restoredPlotSeriesIds = Array.from(new Set([...liveDefaultPlotSeriesIds, ...persistedPlotSeriesIds]));
+    const restoredPlotSeriesIds = hasPersistedPlotSeriesSelection
+        ? Array.from(new Set(persistedPlotSeriesIds))
+        : liveDefaultPlotSeriesIds;
     const restoredPlotRangeId = canRestorePersistedState
         ? normalizePlotRangeId(persistedViewState?.selectedPlotRangeId)
         : DEFAULT_PROCESS_PLOT_RANGE_ID;

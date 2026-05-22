@@ -204,6 +204,9 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("selectedPlotRangeId", source)
         self.assertIn("plotPanelOpen", source)
         self.assertIn("plotWindow", source)
+        self.assertIn("hasPersistedPlotSeriesSelection", source)
+        self.assertIn("Array.from(new Set(persistedPlotSeriesIds))", source)
+        self.assertNotIn("new Set([...liveDefaultPlotSeriesIds, ...persistedPlotSeriesIds])", source)
         self.assertIn("renderPlotSelection();", source)
         self.assertIn("void loadPlotMeasurements({ quiet: true });", source)
 
