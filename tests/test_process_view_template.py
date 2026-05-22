@@ -58,6 +58,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-program-start-button", html)
         self.assertIn("process-program-stop-button", html)
         self.assertIn("process-program-stop-dialog", html)
+        self.assertIn("process-confirm-dialog-icon", html)
 
         forbidden_strings = (
             "Status lesen",
@@ -88,6 +89,14 @@ class ProcessViewTemplateTests(unittest.TestCase):
 
         self.assertIn('<details class="card process-plot-panel ui-collapsible-details" id="process-plot-panel">', source)
         self.assertNotIn('id="process-plot-panel" {% if selected_build %}open{% endif %}', source)
+
+    def test_process_stop_dialog_uses_opaque_warning_panel(self):
+        css_path = Path(__file__).resolve().parents[1] / "static" / "css" / "app.css"
+        source = css_path.read_text(encoding="utf-8")
+
+        self.assertIn(".process-confirm-dialog-icon", source)
+        self.assertIn("background: var(--surface);", source)
+        self.assertNotIn("background: var(--card);", source)
 
     def test_process_view_script_no_longer_contains_legacy_manual_ui_labels(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"

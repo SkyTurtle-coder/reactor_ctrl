@@ -168,7 +168,10 @@
 
 <dialog class="process-confirm-dialog" id="process-program-stop-dialog" aria-labelledby="process-program-stop-dialog-title">
     <form method="dialog" class="process-confirm-dialog-body">
-        <h2 id="process-program-stop-dialog-title">Are You sure?</h2>
+        <div class="process-confirm-dialog-header">
+            <span class="process-confirm-dialog-icon" aria-hidden="true">!</span>
+            <h2 id="process-program-stop-dialog-title">Are You sure?</h2>
+        </div>
         <p>
             This will set connected thermostats to 20 &deg;C and stop them, and set stirrers to 0 RPM.
         </p>
