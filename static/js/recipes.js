@@ -239,6 +239,7 @@
         reactorBuildId: parseId(currentRecipeData?.reactor_build_id),
         actorOptions: [],
         steps: [],
+        safeState: [],
         activeStepIndex: null,
         dirty: false,
         loadingBuild: false,
@@ -257,6 +258,8 @@
         workflowContainer: document.getElementById("recipe-workflow"),
         statusMessage: document.getElementById("recipe-status-msg"),
         flowHint: document.getElementById("recipe-no-flowsheet-hint"),
+        safeStateTbody: document.getElementById("recipe-safe-state-tbody"),
+        safeStateCard: document.getElementById("recipe-safe-state-card"),
     };
 
     // ── Actor lookups ────────────────────────────────────────────────────────
@@ -517,6 +520,107 @@
         const dupes = duplicatePriorities(step);
         if (!dupes.length) { return ""; }
         return `<div class="recipe-priority-warning">Duplicate priority ${escapeHtml(dupes.join(", "))}. Equal priorities run in table order.</div>`;
+    }
+
+    // ── Safe state ───────────────────────────────────────────────────────────
+    function defaultSafeStateEntry(option) {
+        const fields = targetFieldsForActor(option.value);
+        return {
+            actorId: option.value,
+            actorType: option.actor_type || "",
+            targetTempC: fields.includes("target_temp_c") ? 20 : null,
+            rpm: fields.includes("rpm") ? 0 : null,
+        };
+    }
+
+    function normalizeSafeStateEntry(raw) {
+        if (!raw || typeof raw !== "object") { return null; }
+        const actorId = asString(raw.actor_id || raw.actor);
+        if (!actorId) { return null; }
+        const params = raw.params && typeof raw.params === "object" ? raw.params : {};
+        const targetTempC = params.target_temp_c != null ? parseOptionalNumber(params.target_temp_c) : null;
+        const rpm = params.rpm != null ? parseOptionalNumber(params.rpm) : null;
+        return { actorId, actorType: asString(raw.actor_type), targetTempC, rpm };
+    }
+
+    function syncSafeStateToActors(loadedEntries) {
+        const loaded = new Map(
+            (loadedEntries || []).map((e) => [asString(e.actorId || e.actor_id).toLowerCase(), e]),
+        );
+        state.safeState = state.actorOptions.map((option) => {
+            const key = option.value.toLowerCase();
+            return loaded.get(key) || defaultSafeStateEntry(option);
+        });
+    }
+
+    function renderSafeStateRow(entry, disabled) {
+        const option = actorOption(entry.actorId);
+        const fullLabel = option?.label || `${entry.actorId} (not in flowsheet)`;
+        const shortLabel = fullLabel.split(" | ")[0];
+        const activeFields = targetFieldsForActor(entry.actorId);
+        const primaryField = activeFields[0] || null;
+        const paramLabel = primaryField ? (ACTOR_PARAM_FULL_LABELS[primaryField] || primaryField) : "—";
+        const unit = primaryField ? (ACTOR_PARAM_UNITS[primaryField] || "—") : "—";
+
+        let setpointHtml;
+        if (primaryField === "target_temp_c") {
+            const v = entry.targetTempC == null ? "" : String(entry.targetTempC);
+            setpointHtml = `<input type="number" step="0.01" min="-40" max="150" data-safe-actor="${escapeHtml(entry.actorId)}" data-safe-field="target_temp_c" class="recipe-num-input${v === "" ? " recipe-input-empty" : ""}" value="${escapeHtml(v)}"${v === "" ? ' placeholder="—"' : ""}${disabled ? " disabled" : ""}>`;
+        } else if (primaryField === "rpm") {
+            const v = entry.rpm == null ? "" : String(entry.rpm);
+            setpointHtml = `<input type="number" step="1" min="0" max="2000" data-safe-actor="${escapeHtml(entry.actorId)}" data-safe-field="rpm" class="recipe-num-input${v === "" ? " recipe-input-empty" : ""}" value="${escapeHtml(v)}"${v === "" ? ' placeholder="—"' : ""}${disabled ? " disabled" : ""}>`;
+        } else {
+            setpointHtml = `<span class="recipe-device-na">—</span>`;
+        }
+
+        return `
+            <tr class="recipe-device-row">
+                <td class="recipe-device-col-name">
+                    <span class="recipe-device-name" title="${escapeHtml(fullLabel)}">${escapeHtml(shortLabel)}</span>
+                </td>
+                <td class="recipe-device-col-param">${escapeHtml(paramLabel)}</td>
+                <td class="recipe-device-col-action"><span class="recipe-device-na">OFF</span></td>
+                <td class="recipe-device-col-setpoint">${setpointHtml}</td>
+                <td class="recipe-device-col-unit"><span class="recipe-unit-badge">${escapeHtml(unit)}</span></td>
+            </tr>`;
+    }
+
+    function renderSafeStateTable() {
+        if (!dom.safeStateTbody) { return; }
+        const disabled = !canEditSteps();
+        if (!state.safeState.length) {
+            dom.safeStateTbody.innerHTML = `<tr class="recipe-device-empty-row"><td colspan="5">${
+                state.reactorBuildId ? "No configurable devices in this flowsheet." : "Select a flowsheet to configure the safe state."
+            }</td></tr>`;
+            return;
+        }
+        dom.safeStateTbody.innerHTML = state.safeState.map((entry) => renderSafeStateRow(entry, disabled)).join("");
+        for (const input of dom.safeStateTbody.querySelectorAll("input[data-safe-actor]")) {
+            input.addEventListener("input", onSafeStateInput);
+        }
+    }
+
+    function onSafeStateInput(event) {
+        const actorId = asString(event.target.dataset.safeActor);
+        const field = asString(event.target.dataset.safeField);
+        const entry = state.safeState.find((e) => e.actorId.toLowerCase() === actorId.toLowerCase());
+        if (!entry) { return; }
+        const parsed = parseOptionalNumber(event.target.value);
+        if (field === "target_temp_c") { entry.targetTempC = parsed; }
+        else if (field === "rpm") { entry.rpm = parsed; }
+        markUnsaved();
+    }
+
+    function collectSafeStatePayload() {
+        return state.safeState.map((entry) => ({
+            actor_id: entry.actorId,
+            actor_type: entry.actorType,
+            params: {
+                target_temp_c: entry.targetTempC ?? null,
+                pressure_mbar_a: null,
+                rpm: entry.rpm ?? null,
+            },
+        }));
     }
 
     // ── Step card rendering ──────────────────────────────────────────────────
@@ -969,7 +1073,9 @@
         } finally {
             state.loadingBuild = false;
             syncBuildSelect();
+            syncSafeStateToActors();
             renderWorkflow();
+            renderSafeStateTable();
         }
     }
 
@@ -986,7 +1092,9 @@
             updateStatusBadge("draft");
             markSaved();
             syncBuildSelect();
+            syncSafeStateToActors([]);
             renderWorkflow();
+            renderSafeStateTable();
             setStatus("");
             return;
         }
@@ -1000,10 +1108,16 @@
         if (dom.titleInput) { dom.titleInput.value = asString(recipeData.title); }
         if (dom.operatorInput) { dom.operatorInput.value = asString(recipeData.operator_name); }
 
+        const loadedSafeState = Array.isArray(recipeData.safe_state)
+            ? recipeData.safe_state.map(normalizeSafeStateEntry).filter(Boolean)
+            : [];
+        syncSafeStateToActors(loadedSafeState);
+
         updateStatusBadge(asString(recipeData.status, "draft"));
         markSaved();
         syncBuildSelect();
         renderWorkflow();
+        renderSafeStateTable();
 
         if (state.reactorBuildId && invalidActorCount() > 0) {
             setStatus("One or more device assignments no longer match the selected flowsheet.", "error");
@@ -1113,6 +1227,7 @@
             updated_by: operatorName || "unknown",
             reactor_build_id: state.reactorBuildId,
             steps,
+            safe_state: collectSafeStatePayload(),
             has_invalid_priority: hasInvalidPriority,
         };
     }
@@ -1174,10 +1289,15 @@
             const savedRecipe = await fetchJson(requestUrl, { method: requestMethod, headers, body: JSON.stringify(payload) });
             state.recipeId = parseId(savedRecipe.recipe_id);
             state.steps = Array.isArray(savedRecipe.steps) ? savedRecipe.steps.map(normalizeLoadedStep) : [];
+            const savedSafeState = Array.isArray(savedRecipe.safe_state)
+                ? savedRecipe.safe_state.map(normalizeSafeStateEntry).filter(Boolean)
+                : [];
+            syncSafeStateToActors(savedSafeState);
             updateStatusBadge(asString(savedRecipe.status, "draft"));
             markSaved();
             updateSelectorOption(savedRecipe);
             renderWorkflow();
+            renderSafeStateTable();
             setStatus(`Saved at ${savedRecipe.updated_at || new Date().toISOString()}`);
             window.history.replaceState(null, "", `/recipes?recipe_id=${savedRecipe.recipe_id}`);
         } catch (error) {

@@ -2191,6 +2191,7 @@ def _recipe_to_dict(item: Recipe, *, include_steps: bool = True) -> dict[str, An
     }
     if include_steps:
         payload["steps"] = item.steps_json if isinstance(item.steps_json, list) else []
+        payload["safe_state"] = item.safe_state_json if isinstance(item.safe_state_json, list) else []
     return payload
 
 
@@ -2424,6 +2425,73 @@ def _parse_recipe_step(
     return normalized
 
 
+def _validate_recipe_safe_state(
+    raw_safe_state: Any,
+    *,
+    allowed_actor_lookup: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if raw_safe_state in (None, ""):
+        return []
+    if not isinstance(raw_safe_state, list):
+        raise ValueError("Field 'safe_state' must be a list.")
+    allowed_actor_by_key = {
+        _normalized_recipe_actor_key(actor_id): actor_meta
+        for actor_id, actor_meta in (allowed_actor_lookup or {}).items()
+        if str(actor_id or "").strip()
+    }
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(raw_safe_state, start=1):
+        if not isinstance(raw, dict):
+            continue
+        actor_id = str(raw.get("actor_id") or raw.get("actor") or "").strip()
+        if not actor_id:
+            continue
+        normalized_key = _normalized_recipe_actor_key(actor_id)
+        if normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+        if allowed_actor_by_key and normalized_key not in allowed_actor_by_key:
+            raise ValueError(
+                f"Field 'safe_state[{index}].actor_id' must match an actuator instance_id from the selected flowsheet."
+            )
+        actor_meta = allowed_actor_by_key.get(normalized_key) or {"actor": actor_id, "profile_id": "", "symbol_id": ""}
+        canonical_actor = str(actor_meta.get("actor") or actor_id).strip()
+        target_fields = _recipe_target_fields_for_actor(actor_meta)
+        params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+        normalized_params: dict[str, Any] = {}
+        for param_field in _RECIPE_ACTOR_NUMERIC_PARAM_FIELDS:
+            legacy_field = _RECIPE_PARAM_TO_LEGACY_FIELD.get(param_field)
+            if legacy_field not in target_fields:
+                normalized_params[param_field] = None
+                continue
+            value = params.get(param_field)
+            if value is None or value == "":
+                normalized_params[param_field] = None
+            else:
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"Field 'safe_state[{index}].params.{param_field}' must be a number."
+                    ) from exc
+                if param_field == "target_temp_c":
+                    if parsed < _RECIPE_MIN_TEMP_C or parsed > _RECIPE_MAX_TEMP_C:
+                        raise ValueError(
+                            f"Field 'safe_state[{index}].params.target_temp_c' must be between "
+                            f"{_RECIPE_MIN_TEMP_C:g} and {_RECIPE_MAX_TEMP_C:g} °C."
+                        )
+                elif param_field == "rpm" and parsed < 0:
+                    raise ValueError(f"Field 'safe_state[{index}].params.rpm' must not be negative.")
+                normalized_params[param_field] = parsed
+        result.append({
+            "actor_id": canonical_actor,
+            "actor_type": _recipe_actor_type_for_meta(actor_meta),
+            "params": normalized_params,
+        })
+    return result
+
+
 def _validate_recipe_steps(
     raw_steps: Any,
     *,
@@ -2583,6 +2651,8 @@ def _apply_recipe_payload(item: Recipe, payload: dict[str, Any], *, partial: boo
 
     if not partial or "steps" in payload:
         item.steps_json = _validate_recipe_steps(payload.get("steps"), allowed_actor_lookup=allowed_actor_lookup)
+    if not partial or "safe_state" in payload:
+        item.safe_state_json = _validate_recipe_safe_state(payload.get("safe_state"), allowed_actor_lookup=allowed_actor_lookup)
     if "status" in payload:
         item.status = _validate_choice(
             payload.get("status"),

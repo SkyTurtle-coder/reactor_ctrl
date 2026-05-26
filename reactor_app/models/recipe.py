@@ -19,6 +19,7 @@ class Recipe(db.Model):
         index=True,
     )
     steps_json = db.Column(db.JSON, nullable=False)
+    safe_state_json = db.Column(db.JSON, nullable=True)
     created_by = db.Column(db.String(120), nullable=False)
     updated_by = db.Column(db.String(120))
     is_active = db.Column(db.Boolean, nullable=False, server_default=db.text("1"), index=True)

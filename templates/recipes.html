@@ -108,6 +108,32 @@
         </p>
     </div>
 
+    <div class="card recipe-safe-state-card" id="recipe-safe-state-card">
+        <div class="card-header">
+            <h2>Safe State</h2>
+        </div>
+        <div class="card-body recipe-safe-state-body">
+            <p class="muted recipe-safe-state-hint">
+                Defines the setpoints applied to all devices when the program is stopped or an error occurs. All devices are always switched off.
+            </p>
+            <div class="recipe-safe-state-table-wrap">
+                <table class="recipe-device-table">
+                    <thead>
+                        <tr>
+                            <th class="recipe-device-col-name">Device</th>
+                            <th class="recipe-device-col-param">Parameter</th>
+                            <th class="recipe-device-col-action">Status</th>
+                            <th class="recipe-device-col-setpoint">Setpoint</th>
+                            <th class="recipe-device-col-unit">Unit</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recipe-safe-state-tbody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <div class="recipe-status-bar" aria-live="polite">
         <p id="recipe-status-msg" class="muted"></p>
     </div>

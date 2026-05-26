@@ -751,6 +751,7 @@ def _program_snapshot_for_recipe(recipe: Recipe, recipe_build: ReactorBuild) -> 
         "build_name": recipe_build.build_name,
         "steps": steps,
         "bindings": bindings,
+        "safe_state": recipe.safe_state_json if isinstance(recipe.safe_state_json, list) else [],
     }
 
 
@@ -1397,6 +1398,7 @@ def _apply_safe_stop_to_binding(
     binding: dict[str, Any],
     *,
     requested_by: str,
+    safe_params: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     actor = str(binding.get("actor") or "").strip()
     if not actor:
@@ -1418,12 +1420,15 @@ def _apply_safe_stop_to_binding(
 
     if _is_huber_temperature_binding(binding):
         min_setpoint, max_setpoint = _huber_setpoint_limits(binding.get("protocol"))
-        safe_target.update({"temp": _SAFE_HUBER_SETPOINT_C, "is_on": False})
+        safe_p = safe_params or {}
+        safe_temp = float(safe_p["target_temp_c"]) if safe_p.get("target_temp_c") is not None else _SAFE_HUBER_SETPOINT_C
+        safe_temp = max(min_setpoint, min(max_setpoint, safe_temp))
+        safe_target.update({"temp": safe_temp, "is_on": False})
         for command_name, payload in (
             (
                 "set_setpoint",
                 {
-                    "temp_c": _SAFE_HUBER_SETPOINT_C,
+                    "temp_c": safe_temp,
                     "min_setpoint_c": min_setpoint,
                     "max_setpoint_c": max_setpoint,
                 },
@@ -1446,19 +1451,21 @@ def _apply_safe_stop_to_binding(
         return safe_target, errors
 
     if _is_ika_motor_binding(binding):
-        safe_target.update({"rpm": 0, "is_on": False})
+        safe_p = safe_params or {}
+        safe_rpm = int(max(0, round(float(safe_p["rpm"])))) if safe_p.get("rpm") is not None else 0
+        safe_target.update({"rpm": safe_rpm, "is_on": False})
         try:
             queue_manual_state_update(
                 app,
                 device,
                 desired_is_on=False,
-                desired_speed=0,
+                desired_speed=safe_rpm,
                 requested_by=requested_by,
             )
         except Exception as exc:
             errors.append(f"{actor}: queue safe stirrer state failed: {exc}")
 
-        for command_text in ("OUT_SP_4 0", "STOP_4"):
+        for command_text in (f"OUT_SP_4 {safe_rpm}", "STOP_4"):
             try:
                 _execute_recipe_device_command(
                     app,
@@ -1498,10 +1505,21 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     safe_targets: dict[str, dict[str, Any]] = {}
     safe_errors: list[str] = []
 
+    raw_safe_state = snapshot.get("safe_state") if isinstance(snapshot.get("safe_state"), list) else []
+    safe_state_lookup: dict[str, dict[str, Any]] = {}
+    for entry in raw_safe_state:
+        if not isinstance(entry, dict):
+            continue
+        actor_key = str(entry.get("actor_id") or entry.get("actor") or "").strip().lower()
+        if actor_key:
+            safe_state_lookup[actor_key] = entry.get("params") or {}
+
     for binding in bindings:
         if not isinstance(binding, dict):
             continue
-        safe_target, errors = _apply_safe_stop_to_binding(app, binding, requested_by=requested_by)
+        actor_key = str(binding.get("actor") or "").strip().lower()
+        safe_params = safe_state_lookup.get(actor_key) or {}
+        safe_target, errors = _apply_safe_stop_to_binding(app, binding, requested_by=requested_by, safe_params=safe_params)
         if isinstance(safe_target, dict) and safe_target.get("actor"):
             safe_targets[str(safe_target["actor"])] = safe_target
         safe_errors.extend(errors)
