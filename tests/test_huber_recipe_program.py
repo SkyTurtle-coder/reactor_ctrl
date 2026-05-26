@@ -421,6 +421,31 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertEqual(safe_target["temp"], 20.0)
         self.assertFalse(safe_target["is_on"])
 
+    def test_cc230_safe_stop_sets_twenty_degrees_before_stop(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="CC230-7",
+            display_name="Huber CC230",
+            device_type="thermostat",
+            protocol="huber_cc230",
+        )
+        binding = {**self._binding(), "protocol": "huber_cc230", "device_display_name": "Huber CC230"}
+
+        with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+            with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
+                safe_target, errors = recipe_program_runtime._apply_safe_stop_to_binding(
+                    app,
+                    binding,
+                    requested_by="integration_stop",
+                )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(self._dispatch_command_names(dispatch_command), ["set_setpoint", "stop"])
+        self.assertEqual(self._dispatch_command(dispatch_command, 0).payload["temp_c"], 20.0)
+        self.assertEqual(safe_target["temp"], 20.0)
+        self.assertFalse(safe_target["is_on"])
+
     def test_huber_safe_stop_collects_error_when_stop_command_fails(self):
         app = Flask(__name__)
         device = Device(

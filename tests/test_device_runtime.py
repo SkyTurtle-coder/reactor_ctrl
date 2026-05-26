@@ -292,28 +292,56 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
             protocol="huber_cc230",
             current_binding=binding,
         )
+        command = ControlCommand(
+            command_id=901,
+            device_id=8,
+            request_uuid="req-901",
+            requested_by="test",
+            command_name="set_setpoint",
+            status="sent",
+        )
         measurement = SimpleNamespace(measurement_id=17, channel_code="setpoint_C")
         captured = {}
+        fake_channel = SimpleNamespace(channel_id=18, channel_code="setpoint_C")
 
-        def fake_persist_result_measurement(**kwargs):
+        spec = device_runtime._result_measurement_spec(
+            device=device,
+            command=command,
+            command_name="set_setpoint",
+            payload={"temp_c": 25.0},
+            result=DeviceCommandResult(
+                acknowledged=True,
+                response_text="OK",
+                response_hex="4f4b",
+                metadata={"value": 25.0, "verified_setpoint": 24.95},
+            ),
+        )
+        self.assertEqual(spec["raw_payload"]["command_id"], 901)
+        self.assertEqual(spec["raw_payload"]["command_name"], "set_setpoint")
+        self.assertEqual(spec["numeric_value"], 24.95)
+
+        def fake_create_measurement_record(**kwargs):
             captured.update(kwargs)
             return measurement
 
         with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
             with patch.object(device_runtime, "get_driver", return_value=_FakeHuberSetpointDriver()):
-                with patch.object(device_runtime, "_persist_result_measurement", side_effect=fake_persist_result_measurement):
-                    with patch.object(device_runtime, "_persist_measurement", return_value=None):
-                        execution = device_runtime.execute_device_command(
-                            device,
-                            command_name="set_setpoint",
-                            payload={"temp_c": 25.0},
-                            requested_by="test",
-                        )
+                with patch.object(device_runtime, "_upsert_measurement_channel", return_value=fake_channel):
+                    with patch.object(device_runtime, "_create_measurement_record", side_effect=fake_create_measurement_record):
+                        with patch.object(device_runtime, "_persist_measurement", return_value=None):
+                            execution = device_runtime.execute_device_command(
+                                device,
+                                command_name="set_setpoint",
+                                payload={"temp_c": 25.0},
+                                requested_by="test",
+                            )
 
         self.assertIs(execution.measurement, measurement)
-        self.assertEqual(captured["command_name"], "set_setpoint")
-        self.assertEqual(captured["finished_at"].tzinfo, timezone.utc)
-        self.assertEqual(captured["result"].metadata["verified_setpoint"], 24.95)
+        self.assertEqual(captured["command"].command_name, "set_setpoint")
+        self.assertEqual(captured["channel"].channel_code, "setpoint_C")
+        self.assertEqual(captured["numeric_value"], 24.95)
+        self.assertEqual(captured["measured_at"].tzinfo, timezone.utc)
+        self.assertEqual(captured["raw_payload"]["command_id"], execution.command.command_id)
 
 
 # ---------------------------------------------------------------------------

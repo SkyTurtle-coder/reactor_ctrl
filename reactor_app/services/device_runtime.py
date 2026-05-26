@@ -1522,6 +1522,7 @@ def _create_measurement_record(
 def _result_measurement_spec(
     *,
     device: Device,
+    command: ControlCommand,
     command_name: str,
     payload: dict[str, Any],
     result: DeviceCommandResult,
@@ -1579,6 +1580,7 @@ def _persist_result_measurement(
 ) -> Measurement | None:
     spec = _result_measurement_spec(
         device=device,
+        command=command,
         command_name=command_name,
         payload=payload,
         result=result,
