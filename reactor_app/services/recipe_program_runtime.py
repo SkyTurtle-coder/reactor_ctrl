@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from copy import deepcopy
@@ -1398,6 +1399,9 @@ def _device_command_failure_message(
     detail = str(getattr(command, "error_message", "") or str(exc) or "").strip()
     status = str(getattr(command, "status", "") or "").strip()
     command_id = getattr(command, "command_id", None)
+    details = getattr(exc, "details", None)
+    error_kind = str(details.get("error_kind") or "").strip().lower() if isinstance(details, dict) else ""
+    device_success = bool(details.get("device_success")) if isinstance(details, dict) else False
 
     message = (
         f"Recipe device command failed at {_recipe_step_label(evaluation)}: "
@@ -1409,7 +1413,11 @@ def _device_command_failure_message(
     if command_id:
         message = f"{message} Command ID: {command_id}."
     if detail:
-        message = f"{message} Device error: {detail}"
+        if error_kind == "persistence":
+            outcome = "device outcome confirmed" if device_success else "device outcome not confirmed"
+            message = f"{message} Persistence error: {detail} ({outcome})."
+        else:
+            message = f"{message} Device error: {detail}"
     return message
 
 
@@ -1628,6 +1636,42 @@ def _apply_safe_stop_to_binding(
     return safe_target, errors
 
 
+def _apply_recipe_safe_state(
+    app: Flask,
+    snapshot: dict[str, Any],
+    *,
+    requested_by: str,
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    safe_targets: dict[str, dict[str, Any]] = {}
+    safe_errors: list[str] = []
+
+    raw_safe_state = snapshot.get("safe_state") if isinstance(snapshot.get("safe_state"), list) else []
+    safe_state_lookup: dict[str, dict[str, Any]] = {}
+    for entry in raw_safe_state:
+        if not isinstance(entry, dict):
+            continue
+        actor_key = str(entry.get("actor_id") or entry.get("actor") or "").strip().lower()
+        if actor_key:
+            safe_state_lookup[actor_key] = entry.get("params") or {}
+
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        actor_key = str(binding.get("actor") or "").strip().lower()
+        safe_params = safe_state_lookup.get(actor_key) or {}
+        safe_target, errors = _apply_safe_stop_to_binding(
+            app,
+            binding,
+            requested_by=requested_by,
+            safe_params=safe_params,
+        )
+        if isinstance(safe_target, dict) and safe_target.get("actor"):
+            safe_targets[str(safe_target["actor"])] = safe_target
+        safe_errors.extend(errors)
+    return safe_targets, safe_errors
+
+
 def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     app.logger.info(
         "Recipe stop requested by '%s': cancelling pending commands and applying safe-state.",
@@ -1651,27 +1695,7 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
             status=RuntimeStatus.PREEMPTED,
             reason="Recipe stop requested before command execution.",
         )
-    safe_targets: dict[str, dict[str, Any]] = {}
-    safe_errors: list[str] = []
-
-    raw_safe_state = snapshot.get("safe_state") if isinstance(snapshot.get("safe_state"), list) else []
-    safe_state_lookup: dict[str, dict[str, Any]] = {}
-    for entry in raw_safe_state:
-        if not isinstance(entry, dict):
-            continue
-        actor_key = str(entry.get("actor_id") or entry.get("actor") or "").strip().lower()
-        if actor_key:
-            safe_state_lookup[actor_key] = entry.get("params") or {}
-
-    for binding in bindings:
-        if not isinstance(binding, dict):
-            continue
-        actor_key = str(binding.get("actor") or "").strip().lower()
-        safe_params = safe_state_lookup.get(actor_key) or {}
-        safe_target, errors = _apply_safe_stop_to_binding(app, binding, requested_by=requested_by, safe_params=safe_params)
-        if isinstance(safe_target, dict) and safe_target.get("actor"):
-            safe_targets[str(safe_target["actor"])] = safe_target
-        safe_errors.extend(errors)
+    safe_targets, safe_errors = _apply_recipe_safe_state(app, snapshot, requested_by=requested_by)
 
     now = _now_utc()
     error_message = "; ".join(safe_errors) if safe_errors else None
@@ -2083,9 +2107,37 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
         state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
         if state is None:
             return
+        requested_by = str(getattr(state, "requested_by", "") or "recipe_program").strip() or "recipe_program"
+        safe_targets: dict[str, dict[str, Any]] = {}
+        safe_errors: list[str] = []
+        bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            device_id = binding.get("device_id")
+            if device_id in (None, ""):
+                continue
+            cancel_runtime_commands(
+                app,
+                device_id=int(device_id),
+                priority_gt=CommandPriority.SAFETY,
+                status=RuntimeStatus.PREEMPTED,
+                reason="Recipe runtime fatal error before safe-state execution.",
+            )
+        try:
+            safe_targets, safe_errors = _apply_recipe_safe_state(app, snapshot, requested_by=requested_by)
+        except Exception as safe_exc:
+            safe_errors.append(str(safe_exc))
+            app.logger.critical(
+                "Recipe runtime fatal error safe-state orchestration failed (worker_id=%s): %s",
+                worker_id,
+                safe_exc,
+                exc_info=True,
+            )
         now = _now_utc()
         state.status = "error"
-        state.last_error = str(exc)
+        state.last_applied_targets_json = safe_targets
+        state.last_error = str(exc) if not safe_errors else f"{exc}; safe-state: {'; '.join(safe_errors)}"
         state.finished_at = now
         state.last_progress_at = now
         _release_program_lease(state)
@@ -2112,6 +2164,13 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
             except Exception:
                 pass
         db.session.commit()
+        if safe_errors:
+            app.logger.critical(
+                "Recipe safe-state had %d failure(s) during fatal error handling (worker_id=%s): %s",
+                len(safe_errors),
+                worker_id,
+                "; ".join(safe_errors),
+            )
         app.logger.warning("Recipe program reconciler failed: %s", exc)
 
 
@@ -2151,3 +2210,9 @@ def start_recipe_program_reconciler(app: Flask) -> None:
     )
     thread.start()
     app.extensions[_WORKER_EXTENSION_KEY] = thread
+    app.logger.info(
+        "Recipe program reconciler started pid=%s thread_id=%s worker_id=%s",
+        os.getpid(),
+        thread.ident,
+        worker_id,
+    )

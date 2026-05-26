@@ -544,5 +544,97 @@ class ExecuteCommandPostSuccessDbFailureTests(unittest.TestCase):
         self.assertEqual(execution.result.response_text, "OK")
 
 
+class TransitionControlCommandRecordTests(unittest.TestCase):
+    class _Session(_FakeExecuteCommandSession):
+        def __init__(self, command):
+            super().__init__()
+            self.command = command
+            self.command_flush_attempts = 0
+
+        def get(self, model, item_id):
+            if model is ControlCommand and int(item_id) == int(self.command.command_id):
+                return self.command
+            return None
+
+        def refresh(self, _item):
+            return None
+
+    def test_transition_retries_after_transient_mysql_1020(self):
+        command = ControlCommand(
+            command_id=77,
+            device_id=1,
+            request_uuid="req-transition-77",
+            requested_by="tester",
+            command_name="manual_text",
+            status="running",
+        )
+
+        class RetrySession(self._Session):
+            def flush(self, *args, **kwargs):
+                targets = list(args[0]) if args else list(self.objects)
+                if any(isinstance(item, ControlCommand) for item in targets):
+                    self.command_flush_attempts += 1
+                    if self.command_flush_attempts == 1:
+                        raise _make_mysql_operational_error(1020)
+                super().flush(*args, **kwargs)
+
+        session = RetrySession(command)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            updated = device_runtime.transition_control_command_record(
+                command,
+                device_runtime.RuntimeStatus.SENT,
+                event_payload={"sent_at": "2026-05-26T12:00:00+00:00"},
+            )
+
+        self.assertEqual(updated.status, "sent")
+        self.assertGreaterEqual(session.rollback_calls, 1)
+        self.assertGreaterEqual(session.commit_calls, 1)
+
+    def test_completed_to_sent_transition_is_noop(self):
+        command = ControlCommand(
+            command_id=88,
+            device_id=1,
+            request_uuid="req-transition-88",
+            requested_by="tester",
+            command_name="manual_text",
+            status="completed",
+        )
+        session = self._Session(command)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            updated = device_runtime.transition_control_command_record(
+                command,
+                device_runtime.RuntimeStatus.SENT,
+                event_payload={"sent_at": "2026-05-26T12:05:00+00:00"},
+            )
+
+        self.assertEqual(updated.status, "completed")
+        self.assertEqual(session.commit_calls, 0)
+        self.assertFalse(any(op[0] == "add_event" for op in session.operations))
+
+    def test_describe_device_command_error_uses_persistence_prefix(self):
+        command = ControlCommand(
+            command_id=91,
+            device_id=5,
+            request_uuid="req-transition-91",
+            requested_by="tester",
+            command_name="set_speed",
+            status="sent",
+            error_message="Persistence error while updating control_command during sent.",
+        )
+        exc = device_runtime.ControlCommandPersistenceError(
+            "Persistence error while updating control_command during sent.",
+            status_code=500,
+            command=command,
+            details={"error_kind": "persistence"},
+        )
+
+        message = device_runtime.describe_device_command_error(exc)
+
+        self.assertIn("Persistence error", message)
+        self.assertNotIn("Device command failed", message)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,15 +3,16 @@ from __future__ import annotations
 import socket
 import threading
 import logging
+import os
 import time
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
 from sqlalchemy import inspect as sa_inspect, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, PendingRollbackError
 
 from ..extensions import db
 from ..models import ControlCommand, ControlCommandEvent, Device, DeviceManualState, Measurement, MeasurementChannel
@@ -37,6 +38,8 @@ _UNSET = object()
 _TRANSIENT_DB_ERROR_CODES: frozenset[int] = frozenset({1020, 1205, 1213})
 _DB_RETRY_ATTEMPTS = 3
 _DB_RETRY_BACKOFF_S = 0.05
+_SESSION_TRANSIENT_DB_ERROR_FLAG = "reactor_ctrl_last_transient_db_error"
+_PERSISTENCE_ERROR_KIND = "persistence"
 
 _T = TypeVar("_T")
 
@@ -76,10 +79,7 @@ def _run_db_with_retry(
             if not is_transient_db_error(exc):
                 raise
             # Rollback before retrying so the session is clean.
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
+            rollback_session_safely(db.session)
             if attempt < attempts:
                 original = getattr(exc, "orig", None)
                 args = getattr(original, "args", ())
@@ -226,6 +226,228 @@ class DeviceCommandError(RuntimeError):
         self.details = details
 
 
+class ControlCommandPersistenceError(DeviceCommandError):
+    pass
+
+
+def _db_error_code(exc: Exception | None) -> int | None:
+    original = getattr(exc, "orig", None)
+    args = getattr(original, "args", ())
+    if not args:
+        args = getattr(exc, "args", ())
+    if not args:
+        return None
+    try:
+        return int(args[0])
+    except (TypeError, ValueError):
+        return None
+
+
+def rollback_session_safely(session: Any | None = None) -> bool:
+    target_session = session or db.session
+    try:
+        target_session.rollback()
+        return True
+    except Exception:
+        logging.getLogger(__name__).warning("Database session rollback failed.", exc_info=True)
+        return False
+
+
+def is_transient_db_error(exc: Exception) -> bool:
+    """Return True for transient DB conflicts and poisoned follow-up session state."""
+    if isinstance(exc, PendingRollbackError):
+        return True
+    if isinstance(exc, OperationalError):
+        return (_db_error_code(exc) or 0) in _TRANSIENT_DB_ERROR_CODES
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, Exception):
+        return is_transient_db_error(cause)
+    context = getattr(exc, "__context__", None)
+    if isinstance(context, Exception):
+        return is_transient_db_error(context)
+    return False
+
+
+def retry_db_operation(
+    operation: Callable[[int], _T],
+    *,
+    attempts: int = _DB_RETRY_ATTEMPTS,
+    backoff_s: float = _DB_RETRY_BACKOFF_S,
+    label: str,
+    command_id: int | None = None,
+    extra: dict[str, Any] | None = None,
+    session: Any | None = None,
+) -> _T:
+    logger = logging.getLogger(__name__)
+    target_session = session or db.session
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            target_session.info.pop(_SESSION_TRANSIENT_DB_ERROR_FLAG, None)
+        except Exception:
+            pass
+        try:
+            return operation(attempt)
+        except Exception as exc:
+            last_exc = exc
+            transient = is_transient_db_error(exc)
+            if transient:
+                try:
+                    target_session.info[_SESSION_TRANSIENT_DB_ERROR_FLAG] = True
+                except Exception:
+                    pass
+            rollback_session_safely(target_session)
+            if not transient or attempt >= attempts:
+                raise
+            logger.warning(
+                "Transient DB error during %s; retrying attempt %d/%d pid=%s thread_id=%s command_id=%s context=%s",
+                label,
+                attempt,
+                attempts,
+                os.getpid(),
+                threading.get_ident(),
+                command_id,
+                extra or {},
+                exc_info=True,
+            )
+            time.sleep(max(0.0, float(backoff_s)))
+    raise last_exc  # type: ignore[misc]
+
+
+_CONTROL_COMMAND_SYNC_FIELDS: tuple[str, ...] = (
+    "command_id",
+    "device_id",
+    "request_uuid",
+    "requested_by",
+    "command_name",
+    "command_payload",
+    "command_source",
+    "command_priority",
+    "correlation_id",
+    "worker_id",
+    "status",
+    "requested_at",
+    "scheduled_for",
+    "started_at",
+    "sent_at",
+    "ack_at",
+    "finished_at",
+    "queue_timeout_s",
+    "execution_timeout_s",
+    "total_deadline_at",
+    "cancel_requested_at",
+    "retry_count",
+    "error_message",
+)
+
+_CONTROL_COMMAND_TRANSITION_ORDER: dict[str, int] = {
+    RuntimeStatus.IDLE: 0,
+    RuntimeStatus.PENDING: 10,
+    RuntimeStatus.QUEUED: 10,
+    RuntimeStatus.RECOVERING: 15,
+    RuntimeStatus.STOP_REQUESTED: 18,
+    RuntimeStatus.RUNNING: 20,
+    RuntimeStatus.SENT: 30,
+    RuntimeStatus.ACKED: 40,
+    RuntimeStatus.COMPLETED: 100,
+    RuntimeStatus.STOPPED: 100,
+    RuntimeStatus.FAILED: 100,
+    RuntimeStatus.ERROR: 100,
+    RuntimeStatus.TIMEOUT: 100,
+    RuntimeStatus.CANCELLED: 100,
+    RuntimeStatus.SKIPPED: 100,
+    RuntimeStatus.PREEMPTED: 100,
+    RuntimeStatus.INTERRUPTED: 100,
+    RuntimeStatus.EXPIRED: 100,
+}
+
+
+def _command_error_kind(exc: DeviceCommandError) -> str | None:
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    value = str(details.get("error_kind") or "").strip().lower()
+    return value or None
+
+
+def _copy_control_command_state(source: ControlCommand | None, target: ControlCommand | None) -> None:
+    if source is None or target is None or source is target:
+        return
+    for field_name in _CONTROL_COMMAND_SYNC_FIELDS:
+        try:
+            setattr(target, field_name, getattr(source, field_name))
+        except Exception:
+            continue
+
+
+def _persistence_error_details(
+    command: ControlCommand | None,
+    *,
+    phase: str,
+    exc: Exception,
+    device_success: bool,
+) -> dict[str, Any]:
+    runtime_status = _status_value(getattr(command, "status", None), RuntimeStatus.FAILED)
+    return {
+        "error_kind": _PERSISTENCE_ERROR_KIND,
+        "phase": str(phase or "").strip().lower() or "unknown",
+        "runtime_status": runtime_status,
+        "device_success": bool(device_success),
+        "device_failed": not bool(device_success),
+        "persistence_success": False,
+        "persistence_failed": True,
+        "persistence_retryable": is_transient_db_error(exc),
+        "command_id": getattr(command, "command_id", None),
+        "request_uuid": getattr(command, "request_uuid", None),
+        "db_error_code": _db_error_code(exc),
+    }
+
+
+def _build_control_command_persistence_error(
+    message: str,
+    *,
+    command: ControlCommand | None,
+    phase: str,
+    exc: Exception,
+    device_success: bool,
+) -> ControlCommandPersistenceError:
+    return ControlCommandPersistenceError(
+        message,
+        status_code=500,
+        command=command,
+        details=_persistence_error_details(
+            command,
+            phase=phase,
+            exc=exc,
+            device_success=device_success,
+        ),
+    )
+
+
+def _transition_sort_key(status: str | None) -> int:
+    return _CONTROL_COMMAND_TRANSITION_ORDER.get(
+        _status_value(status, RuntimeStatus.PENDING),
+        0,
+    )
+
+
+def _blocked_transition_reason(current_status: str, target_status: str) -> str | None:
+    if current_status == target_status:
+        return None
+    if current_status in RuntimeStatus.TERMINAL:
+        return f"terminal status '{current_status}' is immutable"
+    if target_status == RuntimeStatus.RECOVERING and current_status in RuntimeStatus.ACTIVE_STATES:
+        return None
+    if current_status == RuntimeStatus.RECOVERING and (
+        target_status in RuntimeStatus.TERMINAL
+        or target_status in {RuntimeStatus.PENDING, RuntimeStatus.RUNNING, RuntimeStatus.SENT, RuntimeStatus.ACKED}
+    ):
+        return None
+    if _transition_sort_key(target_status) < _transition_sort_key(current_status):
+        return f"out-of-order transition '{current_status}' -> '{target_status}'"
+    return None
+
+
 def describe_device_command_error(exc: DeviceCommandError) -> str:
     command = getattr(exc, "command", None)
     command_name = str(getattr(command, "command_name", "") or "").strip()
@@ -242,7 +464,7 @@ def describe_device_command_error(exc: DeviceCommandError) -> str:
     if device_id:
         parts.append(f"device_id={device_id}")
 
-    prefix = "Device command failed"
+    prefix = "Persistence error" if _command_error_kind(exc) == _PERSISTENCE_ERROR_KIND else "Device command failed"
     if parts:
         prefix = f"{prefix} ({', '.join(parts)})"
     if detail and detail != base_message:
@@ -356,6 +578,7 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
             request_uuid,
             exc,
         )
+        rollback_session_safely(db.session)
         raise
 
 
@@ -428,10 +651,7 @@ def _add_and_commit_command_phase(
                 raise
             # Rollback is already done inside _commit_command_phase on error.
             # If the error came from _add_command_event, we need to rollback too.
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
+            rollback_session_safely(db.session)
             if attempt < _DB_RETRY_ATTEMPTS:
                 original = getattr(getattr(cause, "orig", None), "args", ())
                 code = int(original[0]) if original else "?"
@@ -465,10 +685,7 @@ def _add_and_commit_command_phase(
                     status_code=500,
                     command=command,
                 ) from exc
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
+            rollback_session_safely(db.session)
             if attempt < _DB_RETRY_ATTEMPTS:
                 original = getattr(getattr(exc, "orig", None), "args", ())
                 code = int(original[0]) if original else "?"
@@ -502,59 +719,123 @@ def _add_and_commit_command_phase(
     ) from last_exc
 
 
-def create_control_command_record(
-    *,
-    device_id: int,
-    request_uuid: str,
-    requested_by: str,
-    command_name: str,
-    command_payload: dict[str, Any],
-    status: str,
-    requested_at: datetime | None = None,
-    scheduled_for: datetime | None = None,
-    command_source: str | None = None,
-    command_priority: int | None = None,
-    correlation_id: str | None = None,
-    worker_id: str | None = None,
-    started_at: datetime | None = None,
-    queue_timeout_s: float | None = None,
-    execution_timeout_s: float | None = None,
-    total_deadline_at: datetime | None = None,
+def _commit_command_phase(command: ControlCommand, phase: str, *, device_success: bool = False) -> None:
+    logger = logging.getLogger(__name__)
+    command_id = getattr(command, "command_id", None)
+    request_uuid = getattr(command, "request_uuid", None)
+    try:
+        db.session.commit()
+    except Exception as exc:
+        rollback_session_safely(db.session)
+        if is_transient_db_error(exc):
+            logger.warning(
+                "Transient DB error persisting command phase %s (command_id=%s, request_uuid=%s); treating as persistence failure.",
+                phase,
+                command_id,
+                request_uuid,
+            )
+        else:
+            logger.exception(
+                "Failed to commit device command phase %s (command_id=%s, request_uuid=%s).",
+                phase,
+                command_id,
+                request_uuid,
+            )
+        raise _build_control_command_persistence_error(
+            f"Persistence error while updating control_command during {phase}.",
+            command=command,
+            phase=phase,
+            exc=exc,
+            device_success=device_success,
+        ) from exc
+
+
+def _add_and_commit_command_phase(
+    command: ControlCommand,
+    phase: str,
+    event_type: str,
     event_payload: dict[str, Any] | None = None,
-) -> ControlCommand:
-    command = ControlCommand(
-        device_id=int(device_id),
-        request_uuid=str(request_uuid),
-        requested_by=requested_by,
-        command_name=command_name,
-        command_payload=command_payload,
-        status=_status_value(status, RuntimeStatus.PENDING),
-        requested_at=_as_utc_datetime(requested_at) or _now_utc(),
-        scheduled_for=_as_utc_datetime(scheduled_for),
+    *,
+    device_success: bool = False,
+) -> None:
+    logger = logging.getLogger(__name__)
+    command_id = getattr(command, "command_id", None)
+    request_uuid = getattr(command, "request_uuid", None)
+    last_exc: Exception | None = None
+    for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
+        try:
+            _add_command_event(command, event_type, event_payload)
+            _commit_command_phase(command, phase, device_success=device_success)
+            return
+        except ControlCommandPersistenceError as exc:
+            last_exc = exc
+            cause = exc.__cause__
+            if not isinstance(cause, Exception) or not is_transient_db_error(cause):
+                raise
+            rollback_session_safely(db.session)
+            if attempt < _DB_RETRY_ATTEMPTS:
+                logger.warning(
+                    "Transient DB error (MySQL %s) in phase %s (command_id=%s) on attempt %d/%d; retrying in %.0f ms.",
+                    _db_error_code(cause) or "?",
+                    phase,
+                    command_id,
+                    attempt,
+                    _DB_RETRY_ATTEMPTS,
+                    _DB_RETRY_BACKOFF_S * 1000,
+                )
+                time.sleep(_DB_RETRY_BACKOFF_S)
+        except Exception as exc:
+            last_exc = exc
+            if not is_transient_db_error(exc):
+                rollback_session_safely(db.session)
+                logger.exception(
+                    "Failed to add/commit command phase %s (command_id=%s, request_uuid=%s).",
+                    phase,
+                    command_id,
+                    request_uuid,
+                )
+                raise _build_control_command_persistence_error(
+                    f"Persistence error while updating control_command during {phase}.",
+                    command=command,
+                    phase=phase,
+                    exc=exc,
+                    device_success=device_success,
+                ) from exc
+            rollback_session_safely(db.session)
+            if attempt < _DB_RETRY_ATTEMPTS:
+                logger.warning(
+                    "Transient DB error (MySQL %s) in phase %s (command_id=%s) on attempt %d/%d; retrying in %.0f ms.",
+                    _db_error_code(exc) or "?",
+                    phase,
+                    command_id,
+                    attempt,
+                    _DB_RETRY_ATTEMPTS,
+                    _DB_RETRY_BACKOFF_S * 1000,
+                )
+                time.sleep(_DB_RETRY_BACKOFF_S)
+
+    logger.warning(
+        "Transient DB error in phase %s (command_id=%s, request_uuid=%s) after %d retries; giving up.",
+        phase,
+        command_id,
+        request_uuid,
+        _DB_RETRY_ATTEMPTS,
     )
-    _apply_command_runtime_metadata(
-        command,
-        command_source=command_source,
-        command_priority=command_priority,
-        correlation_id=correlation_id,
-        worker_id=worker_id,
-        started_at=started_at,
-        queue_timeout_s=queue_timeout_s,
-        execution_timeout_s=execution_timeout_s,
-        total_deadline_at=total_deadline_at,
-    )
-    db.session.add(command)
-    db.session.flush()
-    _add_and_commit_command_phase(command, command.status, command.status, event_payload)
-    return command
+    if isinstance(last_exc, ControlCommandPersistenceError):
+        raise last_exc
+    raise _build_control_command_persistence_error(
+        f"Persistence error while updating control_command during {phase}.",
+        command=command,
+        phase=phase,
+        exc=last_exc or RuntimeError("unknown persistence error"),
+        device_success=device_success,
+    ) from last_exc
 
 
-def transition_control_command_record(
+def _apply_control_command_transition(
     command: ControlCommand,
     status: str,
     *,
-    event_type: str | None = None,
-    event_payload: dict[str, Any] | None = None,
     error_message: str | None | object = _UNSET,
     scheduled_for: datetime | None | object = _UNSET,
     started_at: datetime | None | object = _UNSET,
@@ -569,10 +850,8 @@ def transition_control_command_record(
     execution_timeout_s: float | None | object = _UNSET,
     total_deadline_at: datetime | None | object = _UNSET,
     cancel_requested_at: datetime | None | object = _UNSET,
-    commit: bool = True,
-) -> ControlCommand:
+) -> bool:
     next_status = _status_value(status, str(command.status or RuntimeStatus.PENDING))
-    next_event_type = str(event_type or next_status).strip().lower() or next_status
     changed = False
 
     if str(command.status or "").strip().lower() != next_status:
@@ -618,13 +897,293 @@ def transition_control_command_record(
         cancel_requested_at=cancel_requested_at,
     ):
         changed = True
+    return changed
 
-    should_add_event = bool(changed or event_payload is not None or next_event_type != next_status)
-    if should_add_event:
-        if commit:
-            _add_and_commit_command_phase(command, next_event_type, next_event_type, event_payload)
+
+def safe_update_control_command_status(
+    command_id: int,
+    status: str,
+    *,
+    command: ControlCommand | None = None,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+    error_message: str | None | object = _UNSET,
+    scheduled_for: datetime | None | object = _UNSET,
+    started_at: datetime | None | object = _UNSET,
+    sent_at: datetime | None | object = _UNSET,
+    ack_at: datetime | None | object = _UNSET,
+    finished_at: datetime | None | object = _UNSET,
+    command_source: str | object = _UNSET,
+    command_priority: int | None | object = _UNSET,
+    correlation_id: str | None | object = _UNSET,
+    worker_id: str | None | object = _UNSET,
+    queue_timeout_s: float | None | object = _UNSET,
+    execution_timeout_s: float | None | object = _UNSET,
+    total_deadline_at: datetime | None | object = _UNSET,
+    cancel_requested_at: datetime | None | object = _UNSET,
+    device_success: bool = False,
+) -> ControlCommand:
+    logger = logging.getLogger(__name__)
+    next_status = _status_value(status, str(getattr(command, "status", RuntimeStatus.PENDING)))
+    explicit_event_type = event_type is not None
+    next_event_type = str(event_type or next_status).strip().lower() or next_status
+    transition_context = {
+        "worker_id": None if worker_id is _UNSET else worker_id,
+        "command_source": None if command_source is _UNSET else command_source,
+        "command_priority": None if command_priority is _UNSET else command_priority,
+        "correlation_id": None if correlation_id is _UNSET else correlation_id,
+    }
+
+    def _operation(attempt: int) -> ControlCommand:
+        session_get = getattr(db.session, "get", None)
+        if callable(session_get):
+            row = session_get(ControlCommand, int(command_id))
+        elif command is not None and getattr(command, "command_id", None) == int(command_id):
+            row = command
         else:
-            _add_command_event(command, next_event_type, event_payload)
+            row = None
+        if row is None:
+            raise RuntimeError(f"ControlCommand {command_id} could not be loaded for transition.")
+
+        current_status = _status_value(getattr(row, "status", None), RuntimeStatus.PENDING)
+        blocked_reason = _blocked_transition_reason(current_status, next_status)
+        if blocked_reason is not None:
+            logger.warning(
+                "Ignoring control_command transition pid=%s thread_id=%s command_id=%s request_uuid=%s old_status=%s new_status=%s worker_id=%s source=%s priority=%s correlation_id=%s attempt=%s reason=%s",
+                os.getpid(),
+                threading.get_ident(),
+                command_id,
+                getattr(row, "request_uuid", None),
+                current_status,
+                next_status,
+                getattr(row, "worker_id", None),
+                getattr(row, "command_source", None),
+                getattr(row, "command_priority", None),
+                getattr(row, "correlation_id", None),
+                attempt,
+                blocked_reason,
+            )
+            _copy_control_command_state(row, command)
+            return row
+
+        changed = _apply_control_command_transition(
+            row,
+            next_status,
+            error_message=error_message,
+            scheduled_for=scheduled_for,
+            started_at=started_at,
+            sent_at=sent_at,
+            ack_at=ack_at,
+            finished_at=finished_at,
+            command_source=command_source,
+            command_priority=command_priority,
+            correlation_id=correlation_id,
+            worker_id=worker_id,
+            queue_timeout_s=queue_timeout_s,
+            execution_timeout_s=execution_timeout_s,
+            total_deadline_at=total_deadline_at,
+            cancel_requested_at=cancel_requested_at,
+        )
+
+        should_add_event = bool(changed or event_payload is not None or next_event_type != next_status or explicit_event_type)
+        if should_add_event:
+            _add_command_event(row, next_event_type, event_payload)
+        try:
+            db.session.commit()
+        except Exception as exc:
+            raise _build_control_command_persistence_error(
+                f"Persistence error while updating control_command during {next_event_type}.",
+                command=row,
+                phase=next_event_type,
+                exc=exc,
+                device_success=device_success,
+            ) from exc
+        try:
+            db.session.refresh(row)
+        except Exception:
+            pass
+        _copy_control_command_state(row, command)
+        logger.debug(
+            "Persisted control_command transition pid=%s thread_id=%s command_id=%s request_uuid=%s old_status=%s new_status=%s worker_id=%s source=%s priority=%s correlation_id=%s attempt=%s",
+            os.getpid(),
+            threading.get_ident(),
+            command_id,
+            getattr(row, "request_uuid", None),
+            current_status,
+            next_status,
+            getattr(row, "worker_id", None),
+            getattr(row, "command_source", None),
+            getattr(row, "command_priority", None),
+            getattr(row, "correlation_id", None),
+            attempt,
+        )
+        return row
+
+    try:
+        return retry_db_operation(
+            _operation,
+            label=f"control_command transition {next_event_type}",
+            command_id=int(command_id),
+            extra=transition_context,
+            session=db.session,
+        )
+    except ControlCommandPersistenceError:
+        raise
+    except Exception as exc:
+        raise _build_control_command_persistence_error(
+            f"Persistence error while updating control_command during {next_event_type}.",
+            command=command,
+            phase=next_event_type,
+            exc=exc,
+            device_success=device_success,
+        ) from exc
+
+
+def create_control_command_record(
+    *,
+    device_id: int,
+    request_uuid: str,
+    requested_by: str,
+    command_name: str,
+    command_payload: dict[str, Any],
+    status: str,
+    requested_at: datetime | None = None,
+    scheduled_for: datetime | None = None,
+    command_source: str | None = None,
+    command_priority: int | None = None,
+    correlation_id: str | None = None,
+    worker_id: str | None = None,
+    started_at: datetime | None = None,
+    queue_timeout_s: float | None = None,
+    execution_timeout_s: float | None = None,
+    total_deadline_at: datetime | None = None,
+    event_payload: dict[str, Any] | None = None,
+) -> ControlCommand:
+    command = ControlCommand(
+        device_id=int(device_id),
+        request_uuid=str(request_uuid),
+        requested_by=requested_by,
+        command_name=command_name,
+        command_payload=command_payload,
+        status=_status_value(status, RuntimeStatus.PENDING),
+        requested_at=_as_utc_datetime(requested_at) or _now_utc(),
+        scheduled_for=_as_utc_datetime(scheduled_for),
+    )
+    _apply_command_runtime_metadata(
+        command,
+        command_source=command_source,
+        command_priority=command_priority,
+        correlation_id=correlation_id,
+        worker_id=worker_id,
+        started_at=started_at,
+        queue_timeout_s=queue_timeout_s,
+        execution_timeout_s=execution_timeout_s,
+        total_deadline_at=total_deadline_at,
+    )
+    try:
+        db.session.add(command)
+        db.session.flush([command])
+    except Exception as exc:
+        rollback_session_safely(db.session)
+        raise _build_control_command_persistence_error(
+            "Persistence error while creating control_command.",
+            command=command,
+            phase=command.status,
+            exc=exc,
+            device_success=False,
+        ) from exc
+    safe_update_control_command_status(
+        int(command.command_id),
+        command.status,
+        command=command,
+        event_type=command.status,
+        event_payload=event_payload,
+        scheduled_for=command.scheduled_for,
+        started_at=command.started_at,
+        command_source=command.command_source,
+        command_priority=command.command_priority,
+        correlation_id=command.correlation_id,
+        worker_id=command.worker_id,
+        queue_timeout_s=command.queue_timeout_s,
+        execution_timeout_s=command.execution_timeout_s,
+        total_deadline_at=command.total_deadline_at,
+    )
+    return command
+
+
+def transition_control_command_record(
+    command: ControlCommand,
+    status: str,
+    *,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+    error_message: str | None | object = _UNSET,
+    scheduled_for: datetime | None | object = _UNSET,
+    started_at: datetime | None | object = _UNSET,
+    sent_at: datetime | None | object = _UNSET,
+    ack_at: datetime | None | object = _UNSET,
+    finished_at: datetime | None | object = _UNSET,
+    command_source: str | object = _UNSET,
+    command_priority: int | None | object = _UNSET,
+    correlation_id: str | None | object = _UNSET,
+    worker_id: str | None | object = _UNSET,
+    queue_timeout_s: float | None | object = _UNSET,
+    execution_timeout_s: float | None | object = _UNSET,
+    total_deadline_at: datetime | None | object = _UNSET,
+    cancel_requested_at: datetime | None | object = _UNSET,
+    commit: bool = True,
+    device_success: bool = False,
+) -> ControlCommand:
+    next_status = _status_value(status, str(command.status or RuntimeStatus.PENDING))
+    explicit_event_type = event_type is not None
+    next_event_type = str(event_type or next_status).strip().lower() or next_status
+
+    if commit and getattr(command, "command_id", None) is not None:
+        return safe_update_control_command_status(
+            int(command.command_id),
+            next_status,
+            command=command,
+            event_type=next_event_type,
+            event_payload=event_payload,
+            error_message=error_message,
+            scheduled_for=scheduled_for,
+            started_at=started_at,
+            sent_at=sent_at,
+            ack_at=ack_at,
+            finished_at=finished_at,
+            command_source=command_source,
+            command_priority=command_priority,
+            correlation_id=correlation_id,
+            worker_id=worker_id,
+            queue_timeout_s=queue_timeout_s,
+            execution_timeout_s=execution_timeout_s,
+            total_deadline_at=total_deadline_at,
+            cancel_requested_at=cancel_requested_at,
+            device_success=device_success,
+        )
+
+    changed = _apply_control_command_transition(
+        command,
+        next_status,
+        error_message=error_message,
+        scheduled_for=scheduled_for,
+        started_at=started_at,
+        sent_at=sent_at,
+        ack_at=ack_at,
+        finished_at=finished_at,
+        command_source=command_source,
+        command_priority=command_priority,
+        correlation_id=correlation_id,
+        worker_id=worker_id,
+        queue_timeout_s=queue_timeout_s,
+        execution_timeout_s=execution_timeout_s,
+        total_deadline_at=total_deadline_at,
+        cancel_requested_at=cancel_requested_at,
+    )
+
+    should_add_event = bool(changed or event_payload is not None or next_event_type != next_status or explicit_event_type)
+    if should_add_event:
+        _add_command_event(command, next_event_type, event_payload)
     return command
 
 
@@ -741,9 +1300,6 @@ def _fail_command(
     binding_connection_id: int | None,
 ) -> None:
     finished_at = _now_utc()
-    command.status = _status_value(status, RuntimeStatus.FAILED)
-    command.error_message = message
-    command.finished_at = finished_at
 
     # These runtime telemetry fields can be touched by the recipe and manual
     # reconcilers at the same time. Use a savepoint so a concurrent 1020 error
@@ -758,24 +1314,23 @@ def _fail_command(
     except Exception:
         pass
 
-    _add_and_commit_command_phase(
+    transition_control_command_record(
         command,
-        command.status,
-        command.status,
-        {"message": message, "finished_at": finished_at.isoformat()},
+        status,
+        event_payload={"message": message, "finished_at": finished_at.isoformat()},
+        error_message=message,
+        finished_at=finished_at,
     )
 
 
 def _fail_command_without_connection_health(command: ControlCommand, *, status: str, message: str) -> None:
     finished_at = _now_utc()
-    command.status = _status_value(status, RuntimeStatus.FAILED)
-    command.error_message = message
-    command.finished_at = finished_at
-    _add_and_commit_command_phase(
+    transition_control_command_record(
         command,
-        command.status,
-        command.status,
-        {"message": message, "finished_at": finished_at.isoformat()},
+        status,
+        event_payload={"message": message, "finished_at": finished_at.isoformat()},
+        error_message=message,
+        finished_at=finished_at,
     )
 
 
@@ -787,6 +1342,28 @@ def _raise_if_interrupted(
     if cancellation_token is None:
         return
     cancellation_token.throw_if_interrupted(location=location)
+
+
+def _with_command_outcome_metadata(
+    result: DeviceCommandResult,
+    *,
+    device_success: bool,
+    persistence_success: bool,
+    persistence_retryable: bool = False,
+    runtime_status: str | None = None,
+    persistence_error_phase: str | None = None,
+) -> DeviceCommandResult:
+    metadata = dict(result.metadata) if isinstance(result.metadata, dict) else {}
+    metadata["device_success"] = bool(device_success)
+    metadata["device_failed"] = not bool(device_success)
+    metadata["persistence_success"] = bool(persistence_success)
+    metadata["persistence_failed"] = not bool(persistence_success)
+    metadata["persistence_retryable"] = bool(persistence_retryable)
+    if runtime_status:
+        metadata["runtime_status"] = runtime_status
+    if persistence_error_phase:
+        metadata["persistence_error_phase"] = persistence_error_phase
+    return replace(result, metadata=metadata)
 
 
 def _parse_measurement_datetime(value: Any) -> datetime | None:
@@ -1163,6 +1740,9 @@ def execute_device_command(
                 )
                 result = driver.execute(transport=None, request=request)
             _raise_if_interrupted(cancellation_token, location="device_runtime.post_driver_execute")
+    except ControlCommandPersistenceError:
+        rollback_session_safely(db.session)
+        raise
     except CommandExecutionInterrupted as exc:
         _fail_command_without_connection_health(command, status=exc.status, message=str(exc))
         raise
@@ -1240,8 +1820,9 @@ def execute_device_command(
                 "response_hex": result.response_hex,
                 "metadata": result.metadata,
             },
+            device_success=True,
         )
-    except DeviceCommandError as exc:
+    except ControlCommandPersistenceError as exc:
         cause = exc.__cause__
         if isinstance(cause, Exception) and is_transient_db_error(cause):
             logger.warning(
@@ -1275,8 +1856,29 @@ def execute_device_command(
         if measurement is not None:
             # _persist_measurement already flushed; commit via add-and-commit so
             # the "measurement_saved" event and commit are retried atomically.
-            _commit_command_phase(command, "measurement")
+            _commit_command_phase(command, "measurement", device_success=True)
         _raise_if_interrupted(cancellation_token, location="device_runtime.post_measurement")
+    except ControlCommandPersistenceError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, Exception) and is_transient_db_error(cause):
+            logger.warning(
+                "Post-execution DB persistence failed for measurement phase "
+                "(command_id=%s); device comms succeeded, continuing without measurement.",
+                getattr(command, "command_id", None),
+                exc_info=True,
+            )
+            rollback_session_safely(db.session)
+            measurement = None
+            result = _with_command_outcome_metadata(
+                result,
+                device_success=True,
+                persistence_success=False,
+                persistence_retryable=True,
+                runtime_status=str(getattr(command, "status", "") or RuntimeStatus.SENT),
+                persistence_error_phase="measurement",
+            )
+        else:
+            raise
     except CommandExecutionInterrupted as exc:
         _fail_command_without_connection_health(command, status=exc.status, message=str(exc))
         raise
@@ -1340,8 +1942,9 @@ def execute_device_command(
                 "finished_at": finished_at.isoformat(),
                 "acknowledged": bool(result.acknowledged),
             },
+            device_success=True,
         )
-    except DeviceCommandError as exc:
+    except ControlCommandPersistenceError as exc:
         cause = exc.__cause__
         if isinstance(cause, Exception) and is_transient_db_error(cause):
             # Transient DB error persisting COMPLETED status — device comms already
@@ -1354,11 +1957,28 @@ def execute_device_command(
                 _DB_RETRY_ATTEMPTS,
                 exc_info=True,
             )
-            try:
-                db.session.rollback()
-            except Exception:
-                pass
+            rollback_session_safely(db.session)
+            result = _with_command_outcome_metadata(
+                result,
+                device_success=True,
+                persistence_success=False,
+                persistence_retryable=True,
+                runtime_status=str(getattr(command, "status", "") or RuntimeStatus.SENT),
+                persistence_error_phase="completed",
+            )
         else:
             raise
 
+    result = _with_command_outcome_metadata(
+        result,
+        device_success=True,
+        persistence_success=bool(result.metadata.get("persistence_success", True)) if isinstance(result.metadata, dict) else True,
+        persistence_retryable=bool(result.metadata.get("persistence_retryable", False)) if isinstance(result.metadata, dict) else False,
+        runtime_status=str(getattr(command, "status", "") or RuntimeStatus.COMPLETED),
+        persistence_error_phase=(
+            str(result.metadata.get("persistence_error_phase")).strip()
+            if isinstance(result.metadata, dict) and result.metadata.get("persistence_error_phase")
+            else None
+        ),
+    )
     return ExecutedDeviceCommand(command=command, result=result, measurement=measurement)

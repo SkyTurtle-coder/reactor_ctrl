@@ -13,6 +13,8 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import logging
+import os
+import threading
 from typing import Any, Callable
 
 from flask import has_app_context
@@ -464,10 +466,23 @@ def get_runtime_command_scheduler(app: Any | None, *, start: bool = True) -> Run
             on_cancel_requested=_runtime_cancel_callback(app_obj),
         ),
     )
+    logger.info(
+        "Runtime scheduler created pid=%s thread_id=%s scheduler_id=%s worker_count=%s",
+        os.getpid(),
+        threading.get_ident(),
+        hex(id(scheduler)),
+        worker_count,
+    )
     app_obj.extensions[_RUNTIME_SCHEDULER_EXTENSION_KEY] = scheduler
     _recover_runtime_commands(app_obj, scheduler)
     if start:
         scheduler.start()
+        logger.info(
+            "Runtime scheduler started pid=%s thread_id=%s scheduler_id=%s",
+            os.getpid(),
+            threading.get_ident(),
+            hex(id(scheduler)),
+        )
     return scheduler
 
 

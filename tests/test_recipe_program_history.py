@@ -24,6 +24,14 @@ from reactor_app.models import (
 from reactor_app.services import recipe_program_runtime
 
 
+def _make_mysql_operational_error(code: int, message: str = "db conflict") -> Exception:
+    from sqlalchemy.exc import OperationalError
+
+    original = Exception(code, message)
+    original.args = (code, message)
+    return OperationalError(statement="UPDATE control_command", params={}, orig=original)
+
+
 class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
     @staticmethod
     def _naive_utc(value: datetime) -> datetime:
@@ -612,6 +620,126 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             self.assertIn("Huber Unistat 430", state.last_error)
             self.assertIn("No response", state.last_error)
             self.assertEqual(events[-1].event_type, "error")
+
+    def test_transient_persistence_conflict_does_not_set_program_error(self):
+        started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)
+        worker_id = "worker-1"
+
+        with self.app.app_context():
+            recipe = self._seed_recipe(
+                steps_json=[self._huber_step("Heat", 1, 25, status_on=True)],
+                actor_id="HUBER-01",
+                profile_id="hc_system_temperature",
+                protocol="huber_unistat_430",
+                device_type="thermostat",
+                symbol_id="hc_system",
+                label="Huber Unistat 430",
+            )
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at):
+                recipe_program_runtime.start_recipe_program(self.app, recipe, requested_by="integration_test")
+                db.session.commit()
+
+            transient_command = SimpleNamespace(
+                command_id=487558,
+                command_name="set_setpoint",
+                status="sent",
+                error_message="Persistence error while updating control_command during sent.",
+            )
+            transient_exc = recipe_program_runtime.DeviceCommandError(
+                "Persistence error while updating control_command during sent.",
+                status_code=500,
+                command=transient_command,
+                details={"error_kind": "persistence"},
+            )
+            transient_exc.__cause__ = _make_mysql_operational_error(1020, "Record has changed since last read")
+
+            failed_once = {"value": False}
+            requested_temp = {"value": None}
+
+            def dispatch_side_effect(*args, **kwargs):
+                runtime_command = args[1]
+                if runtime_command.command_type == "set_setpoint" and not failed_once["value"]:
+                    failed_once["value"] = True
+                    raise transient_exc
+                if runtime_command.command_type == "set_setpoint":
+                    requested_temp["value"] = runtime_command.payload.get("temp_c")
+                metadata = {"value": requested_temp["value"]} if runtime_command.command_type == "get_setpoint" else {}
+                return SimpleNamespace(result=SimpleNamespace(metadata=metadata))
+
+            with patch.object(recipe_program_runtime, "dispatch_device_command", side_effect=dispatch_side_effect):
+                self._acquire_program_lease(worker_id=worker_id, lease_until=started_at + timedelta(seconds=15))
+                with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at + timedelta(seconds=10)):
+                    recipe_program_runtime._process_recipe_program_state(self.app, worker_id=worker_id)
+
+                state = db.session.get(RecipeProgramState, 1)
+                run = RecipeProgramRun.query.one()
+                self.assertEqual(state.status, "running")
+                self.assertEqual(run.status, "running")
+                self.assertIsNone(state.last_error)
+
+                self._acquire_program_lease(worker_id=worker_id, lease_until=started_at + timedelta(seconds=30))
+                with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at + timedelta(seconds=20)):
+                    recipe_program_runtime._process_recipe_program_state(self.app, worker_id=worker_id)
+
+                state = db.session.get(RecipeProgramState, 1)
+                run = RecipeProgramRun.query.one()
+                self.assertEqual(state.status, "running")
+                self.assertEqual(run.status, "running")
+                self.assertNotEqual(state.last_applied_targets_json, {})
+
+    def test_fatal_recipe_error_attempts_safe_state(self):
+        started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)
+        worker_id = "worker-1"
+
+        with self.app.app_context():
+            recipe = self._seed_recipe(
+                steps_json=[self._huber_step("Heat", 1, 25, status_on=True)],
+                actor_id="HUBER-01",
+                profile_id="hc_system_temperature",
+                protocol="huber_unistat_430",
+                device_type="thermostat",
+                symbol_id="hc_system",
+                label="Huber Unistat 430",
+            )
+
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at):
+                recipe_program_runtime.start_recipe_program(self.app, recipe, requested_by="integration_test")
+                db.session.commit()
+
+            self._acquire_program_lease(worker_id=worker_id, lease_until=started_at + timedelta(seconds=15))
+            command = SimpleNamespace(
+                command_id=390181,
+                command_name="set_setpoint",
+                status="failed",
+                error_message="driver validation failed",
+            )
+            safe_targets = {"HUBER-01": {"actor": "HUBER-01", "temp": 20.0, "is_on": False}}
+
+            def fail_command(*args, **kwargs):
+                runtime_command = args[1]
+                if runtime_command.command_type == "set_setpoint":
+                    raise recipe_program_runtime.DeviceCommandError(
+                        "driver validation failed",
+                        status_code=400,
+                        command=command,
+                    )
+                return SimpleNamespace(result=SimpleNamespace(metadata={"value": 25.0}))
+
+            with patch.object(recipe_program_runtime, "dispatch_device_command", side_effect=fail_command):
+                with patch.object(recipe_program_runtime, "_apply_recipe_safe_state", return_value=(safe_targets, [])) as safe_state_mock:
+                    with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_mock:
+                        with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at + timedelta(seconds=10)):
+                            recipe_program_runtime._process_recipe_program_state(self.app, worker_id=worker_id)
+
+            state = db.session.get(RecipeProgramState, 1)
+            run = RecipeProgramRun.query.one()
+
+            self.assertEqual(state.status, "error")
+            self.assertEqual(run.status, "error")
+            self.assertEqual(state.last_applied_targets_json, safe_targets)
+            safe_state_mock.assert_called_once()
+            cancel_mock.assert_called()
 
     def test_can_start_different_recipe_after_error(self):
         started_at = datetime(2026, 4, 14, 8, 0, 0, tzinfo=timezone.utc)

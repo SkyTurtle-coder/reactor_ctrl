@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from contextlib import contextmanager
@@ -1795,3 +1796,9 @@ def start_device_manual_reconciler(app: Flask) -> None:
     )
     thread.start()
     app.extensions[_WORKER_EXTENSION_KEY] = thread
+    app.logger.info(
+        "Device manual reconciler started pid=%s thread_id=%s worker_id=%s",
+        os.getpid(),
+        thread.ident,
+        worker_id,
+    )
