@@ -71,6 +71,8 @@
     const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;
     const PROCESS_PLOT_STALE_AFTER_MS = 60000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
+    const PROCESS_DISPLAY_REFRESH_MS = 1500;
+    const PROCESS_DISPLAY_ERROR_BACKOFF_MS = 15000;
     const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
     const PROCESS_PLOT_RANGE_OPTIONS = Object.freeze([
         { id: "30m", label: "Last 30 min", sinceMinutes: 30, maxPoints: 180 },
@@ -402,6 +404,34 @@
         };
     }
 
+    function normalizeDisplay(display) {
+        const payload = display && typeof display === "object" ? display : {};
+        return {
+            source_node_id: asString(payload.source_node_id, ""),
+            channel_code: asString(payload.channel_code, ""),
+            label: asString(payload.label, ""),
+            unit: asString(payload.unit, ""),
+        };
+    }
+
+    function isDisplayNode(node) {
+        return Boolean(
+            node &&
+                (String(node.symbol_id || "").trim().toLowerCase() === "display" ||
+                    String(node.category || "").trim().toLowerCase() === "displays"),
+        );
+    }
+
+    function displayValueKey(sourceNodeId, channelCode) {
+        return `${String(sourceNodeId || "")}::${String(channelCode || "")}`;
+    }
+
+    function selectedDisplayValueId(node) {
+        const sourceNodeId = asString(node?.display?.source_node_id, "");
+        const channelCode = asString(node?.display?.channel_code, "");
+        return sourceNodeId && channelCode ? displayValueKey(sourceNodeId, channelCode) : "";
+    }
+
     function normalizeAnchor(anchor, index) {
         return {
             id: asString(anchor?.id, `anchor-${index + 1}`),
@@ -436,6 +466,7 @@
             width,
             height,
             control: normalizeControl(node?.control, node?.symbol_id),
+            display: normalizeDisplay(node?.display),
             anchors,
         };
     }
@@ -892,8 +923,12 @@
         const activeProgramActors = new Set(programActiveActors(state.programData));
 
         for (const node of state.nodes) {
+            const displayNode = isDisplayNode(node);
             const element = document.createElement("article");
             element.className = "builder-node process-node";
+            if (displayNode) {
+                element.classList.add("builder-node-display");
+            }
             if (state.selectedNodeId === node.id) {
                 element.classList.add("is-selected");
             }
@@ -935,7 +970,22 @@
 
             const graphic = document.createElement("div");
             graphic.className = "builder-node-graphic";
-            if (node.svg_url) {
+            if (displayNode) {
+                const displayBox = document.createElement("div");
+                displayBox.className = "builder-display-box";
+
+                const displayLabel = document.createElement("div");
+                displayLabel.className = "builder-display-label";
+                displayLabel.dataset.displayLabelNodeId = node.id;
+
+                const displayValue = document.createElement("div");
+                displayValue.className = "builder-display-value";
+                displayValue.dataset.displayValueNodeId = node.id;
+
+                displayBox.appendChild(displayLabel);
+                displayBox.appendChild(displayValue);
+                graphic.appendChild(displayBox);
+            } else if (node.svg_url) {
                 const image = document.createElement("img");
                 image.src = node.svg_url;
                 image.alt = node.label;
@@ -960,6 +1010,7 @@
             element.appendChild(body);
             nodeLayer.appendChild(element);
         }
+        renderDisplayValues();
     }
 
     function updateEmptyState() {
@@ -1743,6 +1794,166 @@
 
     function plotSeriesRequestKey(option) {
         return `${option.deviceId}:${option.channelCode}`;
+    }
+
+    function displayOptionForNode(node) {
+        const selectedId = selectedDisplayValueId(node);
+        return selectedId ? plotSeriesOptionMap.get(selectedId) || null : null;
+    }
+
+    function displayLabelForNode(node) {
+        const configuredLabel = asString(node?.display?.label, "");
+        if (configuredLabel) {
+            return configuredLabel;
+        }
+        const option = displayOptionForNode(node);
+        return option ? option.channelLabel : "";
+    }
+
+    function displayRenderState(node) {
+        const selectedId = selectedDisplayValueId(node);
+        if (!selectedId) {
+            return { text: "No value selected", tone: "placeholder" };
+        }
+        const option = displayOptionForNode(node);
+        if (!option) {
+            return { text: "Value unavailable", tone: "unavailable" };
+        }
+        const liveValue = state.displayLiveValues[selectedId];
+        if (!liveValue || liveValue.status !== "ok") {
+            return { text: "No data", tone: "no-data" };
+        }
+        return {
+            text: formatPlotValue(liveValue.value, liveValue.unit || option.unit),
+            tone: "ok",
+        };
+    }
+
+    function renderDisplayValues() {
+        if (!nodeLayer) {
+            return;
+        }
+        for (const valueElement of nodeLayer.querySelectorAll("[data-display-value-node-id]")) {
+            const node = getNodeById(valueElement.dataset.displayValueNodeId);
+            if (!node) {
+                continue;
+            }
+            const renderState = displayRenderState(node);
+            valueElement.textContent = renderState.text;
+            valueElement.dataset.displayTone = renderState.tone;
+        }
+        for (const labelElement of nodeLayer.querySelectorAll("[data-display-label-node-id]")) {
+            const node = getNodeById(labelElement.dataset.displayLabelNodeId);
+            const labelText = displayLabelForNode(node);
+            labelElement.textContent = labelText;
+            labelElement.hidden = !labelText;
+        }
+    }
+
+    function selectedDisplaySeriesOptions() {
+        const selected = [];
+        const seenIds = new Set();
+        for (const node of state.nodes) {
+            if (!isDisplayNode(node)) {
+                continue;
+            }
+            const selectedId = selectedDisplayValueId(node);
+            if (!selectedId || seenIds.has(selectedId)) {
+                continue;
+            }
+            const option = plotSeriesOptionMap.get(selectedId);
+            if (!option) {
+                continue;
+            }
+            seenIds.add(selectedId);
+            selected.push(option);
+        }
+        return selected;
+    }
+
+    async function loadDisplayMeasurements(options) {
+        const settings = options || {};
+        if (settings.quiet && state.isDisplayLiveBusy) {
+            return;
+        }
+
+        const selectedOptions = selectedDisplaySeriesOptions();
+        if (!selectedOptions.length) {
+            state.displayLiveValues = {};
+            renderDisplayValues();
+            return;
+        }
+
+        const requestId = state.displayLiveRequestId + 1;
+        state.displayLiveRequestId = requestId;
+        state.isDisplayLiveBusy = true;
+
+        try {
+            const params = new URLSearchParams();
+            const seenSeriesKeys = new Set();
+            for (const option of selectedOptions) {
+                const seriesKey = plotSeriesRequestKey(option);
+                if (seenSeriesKeys.has(seriesKey)) {
+                    continue;
+                }
+                seenSeriesKeys.add(seriesKey);
+                params.append("series", seriesKey);
+            }
+            params.set("since_minutes", "1");
+            params.set("max_points", "2");
+            params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));
+
+            const payload = await fetchJson(
+                `/api/plot-series/live?${params.toString()}`,
+                { timeoutMs: 5000, maxRetries: 1 },
+            );
+            if (requestId !== state.displayLiveRequestId) {
+                return;
+            }
+
+            const payloadSeries = Array.isArray(payload?.series) ? payload.series : [];
+            const payloadSeriesByKey = new Map(
+                payloadSeries
+                    .map((series) => {
+                        const deviceId = Number(series?.device_id);
+                        const channelCode = asString(series?.channel_code, "");
+                        return Number.isInteger(deviceId) && deviceId > 0 && channelCode
+                            ? [`${deviceId}:${channelCode}`, series]
+                            : null;
+                    })
+                    .filter(Boolean),
+            );
+
+            const liveValues = {};
+            for (const option of selectedOptions) {
+                const series = payloadSeriesByKey.get(plotSeriesRequestKey(option));
+                const items = Array.isArray(series?.items) ? series.items : [];
+                const latest = items[items.length - 1];
+                const numericValue = asNumber(latest?.numeric_value, null);
+                liveValues[option.id] = Number.isFinite(numericValue)
+                    ? {
+                          status: "ok",
+                          value: numericValue,
+                          unit: asString(latest?.unit || series?.unit || option.unit, option.unit),
+                          measured_at: asString(latest?.measured_at || series?.latest_measurement_at, ""),
+                      }
+                    : { status: "no-data" };
+            }
+            state.displayLiveValues = liveValues;
+            state.displayBackoffUntil = 0;
+            renderDisplayValues();
+        } catch (error) {
+            if (requestId === state.displayLiveRequestId) {
+                state.displayBackoffUntil = Date.now() + PROCESS_DISPLAY_ERROR_BACKOFF_MS;
+            }
+            if (!settings.quiet) {
+                console.warn("Display values could not be loaded", error);
+            }
+        } finally {
+            if (requestId === state.displayLiveRequestId) {
+                state.isDisplayLiveBusy = false;
+            }
+        }
     }
 
     async function loadPlotMeasurements(options) {
@@ -3136,6 +3347,10 @@
         plotBackoffUntil: 0,
         isPlotBusy: false,
         plotRequestId: 0,
+        displayLiveValues: {},
+        displayBackoffUntil: 0,
+        isDisplayLiveBusy: false,
+        displayLiveRequestId: 0,
         inputsDirtyForNodeId: null,
         isSending: false,
         isManualBusy: false,
@@ -3444,6 +3659,17 @@
     }, PROCESS_PLOT_REFRESH_MS);
 
     window.setInterval(() => {
+        if (
+            document.hidden ||
+            state.isDisplayLiveBusy ||
+            Date.now() < (state.displayBackoffUntil || 0)
+        ) {
+            return;
+        }
+        void loadDisplayMeasurements({ quiet: true });
+    }, PROCESS_DISPLAY_REFRESH_MS);
+
+    window.setInterval(() => {
         if (document.hidden) {
             return;
         }
@@ -3469,6 +3695,7 @@
     syncManualModeToggle();
     renderAll();
     updateProgramCard();
+    void loadDisplayMeasurements({ quiet: true });
     if (state.manualMode && state.selectedNodeId) {
         const initialNode = getNodeById(state.selectedNodeId);
         const initialTarget = selectedTarget();
