@@ -69,10 +69,15 @@ _DEFAULT_TIMEOUT_POLICY: dict[int, dict[str, float]] = {
         "execution_timeout_s": 12.0,  # was 6
         "total_timeout_s": 30.0,   # was 12
     },
+    # POLLING commands use a short per-read socket timeout (1.5 s) but some devices
+    # (CC230) require a primary + fallback command chain when the primary does not
+    # respond.  Two commands × 1.5 s = 3 s worst-case driver time.  10 s gives
+    # ample headroom for multi-step chains without blocking higher-priority work —
+    # preemption via CancellationToken kicks in within 250 ms when needed.
     int(CommandPriority.POLLING): {
-        "queue_timeout_s": 2.0,    # was 1
-        "execution_timeout_s": 5.0,   # was 3
-        "total_timeout_s": 8.0,    # was 4
+        "queue_timeout_s": 2.0,    # was 1 — short: polling drops rather than blocks
+        "execution_timeout_s": 10.0,   # was 5 — allow primary+fallback chain (2×1.5 s + overhead)
+        "total_timeout_s": 15.0,   # was 8
     },
 }
 _RECOVERY_MANUAL_MAX_AGE_SECONDS = 15.0

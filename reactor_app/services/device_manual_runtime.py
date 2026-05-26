@@ -47,11 +47,18 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
 _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
-# Background polling must finish well within the 5-second device lock acquisition
-# timeout so that user-triggered commands (start, set_setpoint, …) are never
-# blocked. The CC230 sometimes ignores queries (e.g. SETPOINT? STATUS?), so we
-# cap the per-command serial read at 3 s to guarantee the lock is released in time.
-_CC230_POLL_RESPONSE_TIMEOUT_MS = 3000
+# Background polling must finish well within the execution_timeout_s for POLLING
+# commands so that user-triggered commands (start, set_setpoint, …) can preempt
+# polling within one cooperative-poll interval (250 ms).
+#
+# The CC230 sometimes ignores primary queries (e.g. SETPOINT?, TE?) forcing the
+# driver to wait for the full socket read_timeout before trying the fallback
+# command.  A primary + fallback chain therefore takes up to 2 × read_timeout.
+# With execution_timeout_s = 10 s for POLLING and 2 commands in the fallback
+# chain at 1.5 s each the worst-case driver time is 3 s — well inside the budget.
+# Working commands (TEMP?, TI?, BATH?) respond in well under 200 ms at 9600 baud
+# so 1.5 s gives 7× headroom even against occasional NPort latency spikes.
+_CC230_POLL_RESPONSE_TIMEOUT_MS = 1500
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
     {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Actual Temperature", "unit": "degC"},

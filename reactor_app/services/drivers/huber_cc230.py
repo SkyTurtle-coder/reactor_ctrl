@@ -288,8 +288,11 @@ class HuberCC230Client:
             return _unknown_status_payload(exc)
 
     def read_setpoint(self) -> float:
-        # SP? is a legacy fallback for devices where SETPOINT? does not respond.
-        return self._read_temperature_with_fallback("SETPOINT?", "SP?")
+        # SP? is tried first: on older CC230 units SETPOINT? often produces no
+        # response (3 s socket timeout) while SP? replies immediately.  Keeping
+        # SETPOINT? as fallback preserves compatibility with units where SP? is
+        # the one that does not respond.
+        return self._read_temperature_chain(("SP?", "SETPOINT?"))
 
     def write_setpoint(
         self,

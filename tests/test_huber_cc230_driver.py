@@ -130,7 +130,7 @@ class HuberCC230DriverTests(unittest.TestCase):
 
     def test_read_temperatures(self):
         cases = (
-            ("get_setpoint", b"SETPOINT +02500\r\n", 25.0, b"SETPOINT?\r\n"),
+            ("get_setpoint", b"SP +02500\r\n", 25.0, b"SP?\r\n"),
             ("get_process_temp", b"TEMP +02450\r\n", 24.5, b"TEMP?\r\n"),
             ("get_bath_temp", b"BATH +02400\r\n", 24.0, b"BATH?\r\n"),
             ("get_internal_temp", b"TI +02300\r\n", 23.0, b"TI?\r\n"),
@@ -142,14 +142,15 @@ class HuberCC230DriverTests(unittest.TestCase):
                 self.assertEqual(result.metadata["value"], expected)
                 self.assertEqual(transport.sent[0], request_bytes)
 
-    def test_read_setpoint_falls_back_to_sp(self):
-        # SETPOINT? times out; SP? provides the value.
+    def test_read_setpoint_falls_back_to_setpoint_query(self):
+        # SP? is tried first (more reliable on older units); if it times out
+        # the driver falls back to SETPOINT?.
         result, transport = self.execute(
             "get_setpoint",
-            responses=[socket.timeout, b"SP +02500\r\n"],
+            responses=[socket.timeout, b"SETPOINT +02500\r\n"],
         )
         self.assertEqual(result.metadata["value"], 25.0)
-        self.assertEqual(transport.sent, [b"SETPOINT?\r\n", b"SP?\r\n"])
+        self.assertEqual(transport.sent, [b"SP?\r\n", b"SETPOINT?\r\n"])
 
     def test_read_setpoint_raises_when_both_timeout(self):
         # SETPOINT? and SP? both time out → DriverError.

@@ -95,6 +95,25 @@ class TimeoutPolicyTests(unittest.TestCase):
             self._policy(CommandPriority.RECIPE)["queue_timeout_s"],
         )
 
+    def test_polling_execution_timeout_fits_cc230_fallback_chain(self):
+        """POLLING execution budget must accommodate the CC230 primary + fallback command chain.
+
+        CC230 ignores some queries (e.g. SETPOINT?, TE?) causing a full socket
+        read timeout before the driver can try the fallback command.  With
+        _CC230_POLL_RESPONSE_TIMEOUT_MS = 1500 ms, a two-command fallback chain
+        takes at most 2 × 1.5 s = 3 s.  Verify the execution_timeout leaves
+        enough headroom.
+        """
+        from reactor_app.services.device_manual_runtime import _CC230_POLL_RESPONSE_TIMEOUT_MS
+        max_fallback_chain_s = 2 * (_CC230_POLL_RESPONSE_TIMEOUT_MS / 1000)
+        execution_timeout_s = self._policy(CommandPriority.POLLING)["execution_timeout_s"]
+        self.assertLess(
+            max_fallback_chain_s,
+            execution_timeout_s,
+            f"POLLING execution_timeout ({execution_timeout_s} s) is too short for the CC230 "
+            f"primary+fallback command chain ({max_fallback_chain_s} s)",
+        )
+
 
 # ---------------------------------------------------------------------------
 # _device_error_runtime_status
