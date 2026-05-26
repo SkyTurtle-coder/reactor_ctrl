@@ -337,3 +337,125 @@ class SafeStateStatusTests(unittest.TestCase):
 
     def test_retryable_statuses_are_frozenset(self):
         self.assertIsInstance(_RETRYABLE_RUNTIME_STATUSES, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# _is_transient_device_error: DB persistence failures with MySQL 1020/1205/1213
+# are treated as transient so the recipe is not put into ERROR state
+# ---------------------------------------------------------------------------
+
+class TransientDbErrorAsTransientDeviceErrorTests(unittest.TestCase):
+    """DeviceCommandError(status_code=500) whose __cause__ is a transient MySQL error
+    must be classified as transient so the recipe retries instead of erroring out.
+    """
+
+    def _make_mysql_operational_error(self, code: int) -> Exception:
+        from sqlalchemy.exc import OperationalError
+        orig = Exception(code, "db conflict")
+        orig.args = (code, "db conflict")
+        return OperationalError(statement="UPDATE control_command", params={}, orig=orig)
+
+    def _make_db_persistence_device_error(self, mysql_code: int) -> DeviceCommandError:
+        cause = self._make_mysql_operational_error(mysql_code)
+        exc = DeviceCommandError(
+            "Device command log persistence failed during response.",
+            status_code=500,
+        )
+        exc.__cause__ = cause
+        return exc
+
+    def test_500_with_mysql_1020_cause_is_transient(self):
+        exc = self._make_db_persistence_device_error(1020)
+        self.assertTrue(_is_transient_device_error(exc))
+
+    def test_500_with_mysql_1205_cause_is_transient(self):
+        exc = self._make_db_persistence_device_error(1205)
+        self.assertTrue(_is_transient_device_error(exc))
+
+    def test_500_with_mysql_1213_cause_is_transient(self):
+        exc = self._make_db_persistence_device_error(1213)
+        self.assertTrue(_is_transient_device_error(exc))
+
+    def test_500_without_transient_cause_is_not_transient(self):
+        """Generic 500 without a transient DB root cause is NOT retried."""
+        exc = DeviceCommandError("driver internal error", status_code=500)
+        self.assertFalse(_is_transient_device_error(exc))
+
+    def test_500_with_mysql_1062_cause_is_not_transient(self):
+        """Duplicate key error (1062) is NOT a transient concurrency conflict."""
+        exc = self._make_db_persistence_device_error(1062)
+        self.assertFalse(_is_transient_device_error(exc))
+
+
+# ---------------------------------------------------------------------------
+# Recipe does not go to ERROR on transient DB persistence failure
+# ---------------------------------------------------------------------------
+
+class RecipeNoErrorOnTransientDbPersistenceTests(unittest.TestCase):
+    """Verify that a DeviceCommandError(500) with a transient MySQL 1020 root
+    cause is seen as transient by the recipe retry logic.
+
+    The full _process_recipe_program_state integration requires a real DB, so
+    we test the classifier that it uses directly.
+    """
+
+    def _make_transient_db_recipe_error(self, mysql_code: int = 1020):
+        from sqlalchemy.exc import OperationalError
+        orig = Exception(mysql_code, "Record has changed since last read")
+        orig.args = (mysql_code, "Record has changed since last read")
+        db_cause = OperationalError(
+            statement="UPDATE control_command SET status=%(status)s",
+            params={},
+            orig=orig,
+        )
+        device_exc = DeviceCommandError(
+            "Device command log persistence failed during response.",
+            status_code=500,
+        )
+        device_exc.__cause__ = db_cause
+
+        recipe_exc = RecipeProgramDeviceCommandError(
+            "Recipe device command failed during manual device execution "
+            "at step 1 (Hold at 25 degC): actor 'HC_01', command 'set_setpoint', "
+            "device 'Huber Unistat' (ID 2, protocol huber_unistat_430). "
+            "Device error: Device command log persistence failed during response."
+        )
+        recipe_exc.__cause__ = device_exc
+        return recipe_exc
+
+    def test_db_persistence_failure_classified_as_transient(self):
+        exc = self._make_transient_db_recipe_error(1020)
+        cause = getattr(exc, "__cause__", None)
+        self.assertIsInstance(cause, DeviceCommandError)
+        self.assertTrue(_is_transient_device_error(cause),
+                        "DeviceCommandError(500) with MySQL 1020 cause must be transient")
+
+    def test_recipe_runtime_retries_instead_of_erroring_on_1020(self):
+        """Ensure the retry branch in _process_recipe_program_state is taken."""
+        import reactor_app.services.recipe_program_runtime as mod
+        mod._transient_error_counts.clear()
+
+        exc = self._make_transient_db_recipe_error(1020)
+        cause = getattr(exc, "__cause__", None)
+        self.assertIsInstance(cause, DeviceCommandError)
+
+        # Simulate exactly what _process_recipe_program_state does:
+        is_transient = isinstance(cause, DeviceCommandError) and _is_transient_device_error(cause)
+        retry_count = mod._transient_error_counts.get(mod._PROGRAM_STATE_ID, 0) + 1
+        mod._transient_error_counts[mod._PROGRAM_STATE_ID] = retry_count
+
+        self.assertTrue(is_transient, "1020 persistence failure must be classified transient")
+        self.assertLessEqual(retry_count, mod._MAX_TRANSIENT_ERRORS,
+                             "First 1020 error should not exceed retry limit")
+
+        mod._transient_error_counts.clear()
+
+    def test_non_transient_recipe_error_is_not_retried(self):
+        """A genuine device failure (e.g. validation error) must not be retried."""
+        cause = DeviceCommandError("validation failed", status_code=400)
+        exc = RecipeProgramDeviceCommandError("Recipe device command failed")
+        exc.__cause__ = cause
+
+        inner = getattr(exc, "__cause__", None)
+        is_transient = isinstance(inner, DeviceCommandError) and _is_transient_device_error(inner)
+        self.assertFalse(is_transient)

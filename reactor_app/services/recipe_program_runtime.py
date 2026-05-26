@@ -118,6 +118,13 @@ def _is_transient_mysql_error(exc: OperationalError) -> bool:
     return _mysql_error_code(exc) in _TRANSIENT_MYSQL_ERROR_CODES
 
 
+def _is_transient_mysql_error_exc(exc: Exception) -> bool:
+    """Like _is_transient_mysql_error but accepts any Exception type."""
+    if not isinstance(exc, OperationalError):
+        return False
+    return _mysql_error_code(exc) in _TRANSIENT_MYSQL_ERROR_CODES
+
+
 def _device_error_runtime_status(exc: "DeviceCommandError") -> str | None:
     """Return the runtime_status embedded in a DeviceCommandError, or None."""
     details = getattr(exc, "details", None)
@@ -133,9 +140,12 @@ def _is_transient_device_error(exc: "DeviceCommandError") -> bool:
     - Queue/execution timeout (runtime_status timeout or expired, or HTTP 504)
     - Device-busy without a non-retryable runtime_status (HTTP 409)
     - Socket-level connection/timeout errors embedded in the message
+    - DB persistence failures whose root cause is a transient MySQL error
+      (1020/1205/1213) — these are InnoDB concurrency conflicts, not device
+      failures, and must never put the recipe into ERROR state.
 
     Non-transient errors (not retried):
-    - Validation errors (400), server-side errors (500)
+    - Validation errors (400)
     - Cancelled / preempted / skipped (programme-level interrupts)
     - Driver-level hardware errors
     """
@@ -148,6 +158,11 @@ def _is_transient_device_error(exc: "DeviceCommandError") -> bool:
     if status_code == 409 and runtime_status in (None, ""):
         # device-busy without an explicit status is a lock-contention timeout
         return True
+    # DB persistence failure (500) whose root cause is a transient MySQL error.
+    if status_code == 500:
+        cause = getattr(exc, "__cause__", None)
+        if isinstance(cause, Exception) and _is_transient_mysql_error_exc(cause):
+            return True
     msg = str(exc).lower()
     if "timeout" in msg or "timed out" in msg or "connection" in msg:
         return True

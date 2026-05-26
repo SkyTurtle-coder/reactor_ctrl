@@ -3,13 +3,15 @@ from __future__ import annotations
 import socket
 import threading
 import logging
+import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
 from sqlalchemy import inspect as sa_inspect, text
+from sqlalchemy.exc import OperationalError
 
 from ..extensions import db
 from ..models import ControlCommand, ControlCommandEvent, Device, DeviceManualState, Measurement, MeasurementChannel
@@ -25,6 +27,72 @@ _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS = 5.0
 _DEVICE_COMMAND_LOCKS: dict[int, threading.RLock] = {}
 _DEVICE_COMMAND_LOCKS_GUARD = threading.Lock()
 _UNSET = object()
+
+# ---------------------------------------------------------------------------
+# Transient MySQL/InnoDB error codes
+# 1020 = ER_CHECKREAD  "Record has changed since last read in table"
+# 1205 = ER_LOCK_WAIT_TIMEOUT  "Lock wait timeout exceeded"
+# 1213 = ER_LOCK_DEADLOCK  "Deadlock found when trying to get lock"
+# ---------------------------------------------------------------------------
+_TRANSIENT_DB_ERROR_CODES: frozenset[int] = frozenset({1020, 1205, 1213})
+_DB_RETRY_ATTEMPTS = 3
+_DB_RETRY_BACKOFF_S = 0.05
+
+_T = TypeVar("_T")
+
+
+def is_transient_db_error(exc: Exception) -> bool:
+    """Return True for MySQL 1020/1205/1213 OperationalError variants."""
+    if not isinstance(exc, OperationalError):
+        return False
+    original = getattr(exc, "orig", None)
+    args = getattr(original, "args", ())
+    if not args:
+        return False
+    try:
+        return int(args[0]) in _TRANSIENT_DB_ERROR_CODES
+    except (TypeError, ValueError):
+        return False
+
+
+def _run_db_with_retry(
+    operation: Callable[[], _T],
+    *,
+    attempts: int = _DB_RETRY_ATTEMPTS,
+    backoff_s: float = _DB_RETRY_BACKOFF_S,
+) -> _T:
+    """Execute *operation()*, retrying up to *attempts* times on transient DB errors.
+
+    Always rolls back before retrying.  Raises the last exception if all
+    retries are exhausted.
+    """
+    logger = logging.getLogger(__name__)
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except Exception as exc:
+            last_exc = exc
+            if not is_transient_db_error(exc):
+                raise
+            # Rollback before retrying so the session is clean.
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            if attempt < attempts:
+                original = getattr(exc, "orig", None)
+                args = getattr(original, "args", ())
+                code = int(args[0]) if args else "?"
+                logger.warning(
+                    "Transient DB error (MySQL %s) on attempt %d/%d — retrying in %.0f ms.",
+                    code,
+                    attempt,
+                    attempts,
+                    backoff_s * 1000,
+                )
+                time.sleep(backoff_s)
+    raise last_exc  # type: ignore[misc]
 
 
 def _now_utc() -> datetime:
@@ -251,6 +319,13 @@ def device_command_sequence_lock(device_id: int, *, timeout_s: float = _DEVICE_C
 
 
 def _add_command_event(command: ControlCommand, event_type: str, event_payload: dict[str, Any] | None = None) -> None:
+    """Flush the ControlCommand and append a ControlCommandEvent.
+
+    The flush may raise a transient DB error (1020/1205/1213) if another
+    worker concurrently updated the same command row.  Callers that also call
+    ``_commit_command_phase`` should use ``_add_and_commit_command_phase``
+    instead, which retries the full add+commit sequence atomically.
+    """
     logger = logging.getLogger(__name__)
     try:
         command_state = sa_inspect(command)
@@ -274,7 +349,8 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
         db.session.flush([event])
     except Exception as exc:
         request_uuid = getattr(command, "request_uuid", None)
-        logger.exception(
+        log_fn = logger.warning if is_transient_db_error(exc) else logger.exception
+        log_fn(
             "Failed to add ControlCommandEvent(command_id=%s, request_uuid=%s): %s",
             getattr(command, "command_id", None),
             request_uuid,
@@ -284,26 +360,146 @@ def _add_command_event(command: ControlCommand, event_type: str, event_payload: 
 
 
 def _commit_command_phase(command: ControlCommand, phase: str) -> None:
+    """Commit the current session transaction for *phase*.
+
+    This is intentionally a simple commit with no internal retry because
+    retrying just the commit after a rollback would commit an empty
+    transaction.  Use ``_add_and_commit_command_phase`` for the full
+    event-add + commit pair with retry semantics.
+    """
+    logger = logging.getLogger(__name__)
+    command_id = getattr(command, "command_id", None)
+    request_uuid = getattr(command, "request_uuid", None)
     try:
         db.session.commit()
     except Exception as exc:
-        command_id = getattr(command, "command_id", None)
-        request_uuid = getattr(command, "request_uuid", None)
+        # Always ensure session is clean after any failure.
         try:
             db.session.rollback()
         except Exception:
             pass
-        logging.getLogger(__name__).exception(
-            "Failed to commit device command phase %s (command_id=%s, request_uuid=%s).",
-            phase,
-            command_id,
-            request_uuid,
-        )
+        if is_transient_db_error(exc):
+            logger.warning(
+                "Transient DB error persisting command phase %s (command_id=%s, request_uuid=%s) — "
+                "treating as persistence failure.",
+                phase,
+                command_id,
+                request_uuid,
+            )
+        else:
+            logger.exception(
+                "Failed to commit device command phase %s (command_id=%s, request_uuid=%s).",
+                phase,
+                command_id,
+                request_uuid,
+            )
         raise DeviceCommandError(
             f"Device command log persistence failed during {phase}.",
             status_code=500,
             command=command,
         ) from exc
+
+
+def _add_and_commit_command_phase(
+    command: ControlCommand,
+    phase: str,
+    event_type: str,
+    event_payload: dict[str, Any] | None = None,
+) -> None:
+    """Add a ControlCommandEvent for *phase* and commit, retrying the full
+    sequence up to ``_DB_RETRY_ATTEMPTS`` times on transient MySQL errors.
+
+    A retry rolls back the session first so any stale flush state is cleared
+    before the next attempt.
+    """
+    logger = logging.getLogger(__name__)
+    command_id = getattr(command, "command_id", None)
+    request_uuid = getattr(command, "request_uuid", None)
+    last_exc: Exception | None = None
+    for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
+        try:
+            _add_command_event(command, event_type, event_payload)
+            _commit_command_phase(command, phase)
+            return
+        except DeviceCommandError as exc:
+            last_exc = exc
+            cause = exc.__cause__
+            if not isinstance(cause, Exception) or not is_transient_db_error(cause):
+                raise
+            # Rollback is already done inside _commit_command_phase on error.
+            # If the error came from _add_command_event, we need to rollback too.
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            if attempt < _DB_RETRY_ATTEMPTS:
+                original = getattr(getattr(cause, "orig", None), "args", ())
+                code = int(original[0]) if original else "?"
+                logger.warning(
+                    "Transient DB error (MySQL %s) in phase %s (command_id=%s) "
+                    "on attempt %d/%d — retrying in %.0f ms.",
+                    code,
+                    phase,
+                    command_id,
+                    attempt,
+                    _DB_RETRY_ATTEMPTS,
+                    _DB_RETRY_BACKOFF_S * 1000,
+                )
+                time.sleep(_DB_RETRY_BACKOFF_S)
+        except Exception as exc:
+            # Non-DeviceCommandError (e.g. OperationalError from _add_command_event flush)
+            last_exc = exc
+            if not is_transient_db_error(exc):
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+                logger.exception(
+                    "Failed to add/commit command phase %s (command_id=%s, request_uuid=%s).",
+                    phase,
+                    command_id,
+                    request_uuid,
+                )
+                raise DeviceCommandError(
+                    f"Device command log persistence failed during {phase}.",
+                    status_code=500,
+                    command=command,
+                ) from exc
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            if attempt < _DB_RETRY_ATTEMPTS:
+                original = getattr(getattr(exc, "orig", None), "args", ())
+                code = int(original[0]) if original else "?"
+                logger.warning(
+                    "Transient DB error (MySQL %s) in phase %s (command_id=%s) "
+                    "on attempt %d/%d — retrying in %.0f ms.",
+                    code,
+                    phase,
+                    command_id,
+                    attempt,
+                    _DB_RETRY_ATTEMPTS,
+                    _DB_RETRY_BACKOFF_S * 1000,
+                )
+                time.sleep(_DB_RETRY_BACKOFF_S)
+
+    # All retries exhausted.
+    logger.warning(
+        "Transient DB error in phase %s (command_id=%s, request_uuid=%s) "
+        "after %d retries — giving up.",
+        phase,
+        command_id,
+        request_uuid,
+        _DB_RETRY_ATTEMPTS,
+    )
+    if isinstance(last_exc, DeviceCommandError):
+        raise last_exc  # type: ignore[misc]
+    raise DeviceCommandError(
+        f"Device command log persistence failed during {phase}.",
+        status_code=500,
+        command=command,
+    ) from last_exc
 
 
 def create_control_command_record(
@@ -349,8 +545,7 @@ def create_control_command_record(
     )
     db.session.add(command)
     db.session.flush()
-    _add_command_event(command, command.status, event_payload)
-    _commit_command_phase(command, command.status)
+    _add_and_commit_command_phase(command, command.status, command.status, event_payload)
     return command
 
 
@@ -426,9 +621,10 @@ def transition_control_command_record(
 
     should_add_event = bool(changed or event_payload is not None or next_event_type != next_status)
     if should_add_event:
-        _add_command_event(command, next_event_type, event_payload)
-    if commit and should_add_event:
-        _commit_command_phase(command, next_event_type)
+        if commit:
+            _add_and_commit_command_phase(command, next_event_type, next_event_type, event_payload)
+        else:
+            _add_command_event(command, next_event_type, event_payload)
     return command
 
 
@@ -562,8 +758,12 @@ def _fail_command(
     except Exception:
         pass
 
-    _add_command_event(command, command.status, {"message": message, "finished_at": finished_at.isoformat()})
-    _commit_command_phase(command, command.status)
+    _add_and_commit_command_phase(
+        command,
+        command.status,
+        command.status,
+        {"message": message, "finished_at": finished_at.isoformat()},
+    )
 
 
 def _fail_command_without_connection_health(command: ControlCommand, *, status: str, message: str) -> None:
@@ -571,8 +771,12 @@ def _fail_command_without_connection_health(command: ControlCommand, *, status: 
     command.status = _status_value(status, RuntimeStatus.FAILED)
     command.error_message = message
     command.finished_at = finished_at
-    _add_command_event(command, command.status, {"message": message, "finished_at": finished_at.isoformat()})
-    _commit_command_phase(command, command.status)
+    _add_and_commit_command_phase(
+        command,
+        command.status,
+        command.status,
+        {"message": message, "finished_at": finished_at.isoformat()},
+    )
 
 
 def _raise_if_interrupted(
@@ -1004,6 +1208,7 @@ def execute_device_command(
         raise DeviceCommandError("Device command execution failed.", status_code=502, command=command) from exc
 
     finished_at = _now_utc()
+    logger = logging.getLogger(__name__)
 
     # See _fail_command for why these telemetry fields are written outside ORM
     # dirty tracking. The binding update is guarded by connection_id so a stale
@@ -1019,22 +1224,45 @@ def execute_device_command(
     _safe_expire(connection, ["last_seen_at", "last_error", "updated_at"])
     _safe_expire(binding, ["last_seen_at", "is_online"])
 
-    _add_command_event(
-        command,
-        "response",
-        {
-            "finished_at": finished_at.isoformat(),
-            "response_text": result.response_text,
-            "response_hex": result.response_hex,
-            "metadata": result.metadata,
-        },
-    )
-    _commit_command_phase(command, "response")
+    # Post-execution persistence: device comms already succeeded.
+    # Transient DB conflicts (MySQL 1020/1205/1213) must NOT raise DeviceCommandError
+    # because the command actually completed on the device.  _add_and_commit_command_phase
+    # retries up to _DB_RETRY_ATTEMPTS times internally; if all retries are exhausted
+    # and the error is still transient, log a WARNING and continue.
+    try:
+        _add_and_commit_command_phase(
+            command,
+            "response",
+            "response",
+            {
+                "finished_at": finished_at.isoformat(),
+                "response_text": result.response_text,
+                "response_hex": result.response_hex,
+                "metadata": result.metadata,
+            },
+        )
+    except DeviceCommandError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, Exception) and is_transient_db_error(cause):
+            logger.warning(
+                "Post-execution DB persistence failed for response phase "
+                "(command_id=%s) after %d retries — device comms succeeded, continuing.",
+                getattr(command, "command_id", None),
+                _DB_RETRY_ATTEMPTS,
+                exc_info=True,
+            )
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+        else:
+            raise
 
     active_control_sensor = _sensor_value_from_command(command_name, result)
     if active_control_sensor is not None:
         _record_active_control_sensor(device.device_id, active_control_sensor)
 
+    measurement: Measurement | None = None
     try:
         _raise_if_interrupted(cancellation_token, location="device_runtime.pre_measurement")
         measurement = _persist_measurement(
@@ -1045,16 +1273,33 @@ def execute_device_command(
             finished_at=finished_at,
         )
         if measurement is not None:
+            # _persist_measurement already flushed; commit via add-and-commit so
+            # the "measurement_saved" event and commit are retried atomically.
             _commit_command_phase(command, "measurement")
         _raise_if_interrupted(cancellation_token, location="device_runtime.post_measurement")
     except CommandExecutionInterrupted as exc:
         _fail_command_without_connection_health(command, status=exc.status, message=str(exc))
         raise
     except DeviceCommandError as exc:
-        _fail_command_without_connection_health(command, status=RuntimeStatus.FAILED, message=str(exc))
-        details = dict(exc.details) if isinstance(exc.details, dict) else {}
-        details.setdefault("runtime_status", command.status)
-        raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=details) from exc
+        cause = exc.__cause__
+        if isinstance(cause, Exception) and is_transient_db_error(cause):
+            # Measurement persistence hit a transient DB error; device comms succeeded.
+            logger.warning(
+                "Post-execution DB persistence failed for measurement phase "
+                "(command_id=%s) — device comms succeeded, continuing without measurement.",
+                getattr(command, "command_id", None),
+                exc_info=True,
+            )
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+            measurement = None
+        else:
+            _fail_command_without_connection_health(command, status=RuntimeStatus.FAILED, message=str(exc))
+            details = dict(exc.details) if isinstance(exc.details, dict) else {}
+            details.setdefault("runtime_status", command.status)
+            raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=details) from exc
 
     # For CC230 set_setpoint: persist the write mode that worked so the next call
     # can try it first.  Non-fatal: a failure here must not break the command response.
@@ -1078,21 +1323,42 @@ def execute_device_command(
                     db.session.commit()
                     _safe_expire(connection, ["cc230_setpoint_write_mode"])
                 except Exception:
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         "CC230: failed to persist setpoint write mode for connection %s.",
                         connection_id,
                         exc_info=True,
                     )
 
-    transition_control_command_record(
-        command,
-        RuntimeStatus.COMPLETED,
-        ack_at=finished_at if result.acknowledged else None,
-        finished_at=finished_at,
-        error_message=None,
-        event_payload={
-            "finished_at": finished_at.isoformat(),
-            "acknowledged": bool(result.acknowledged),
-        },
-    )
+    try:
+        transition_control_command_record(
+            command,
+            RuntimeStatus.COMPLETED,
+            ack_at=finished_at if result.acknowledged else None,
+            finished_at=finished_at,
+            error_message=None,
+            event_payload={
+                "finished_at": finished_at.isoformat(),
+                "acknowledged": bool(result.acknowledged),
+            },
+        )
+    except DeviceCommandError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, Exception) and is_transient_db_error(cause):
+            # Transient DB error persisting COMPLETED status — device comms already
+            # succeeded.  Log a warning but do NOT propagate as a device error.
+            logger.warning(
+                "Post-execution DB persistence failed for completed phase "
+                "(command_id=%s) after %d retries — "
+                "device comms succeeded, returning result without raising.",
+                getattr(command, "command_id", None),
+                _DB_RETRY_ATTEMPTS,
+                exc_info=True,
+            )
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+        else:
+            raise
+
     return ExecutedDeviceCommand(command=command, result=result, measurement=measurement)

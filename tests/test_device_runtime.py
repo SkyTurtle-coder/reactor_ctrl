@@ -263,5 +263,286 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertEqual(event_types, ["running", "sent", "response", "completed"])
 
 
+# ---------------------------------------------------------------------------
+# Helpers for transient DB error simulation
+# ---------------------------------------------------------------------------
+
+def _make_mysql_operational_error(code: int, message: str = "db error") -> Exception:
+    """Create a SQLAlchemy OperationalError wrapping a pymysql-style error."""
+    from sqlalchemy.exc import OperationalError
+    orig = Exception(code, message)
+    orig.args = (code, message)
+    return OperationalError(statement="UPDATE control_command", params={}, orig=orig)
+
+
+def _make_transient_db_device_command_error(command=None) -> "device_runtime.DeviceCommandError":
+    """Create a DeviceCommandError whose __cause__ is a transient MySQL 1020 error."""
+    cause = _make_mysql_operational_error(1020)
+    exc = device_runtime.DeviceCommandError(
+        "Device command log persistence failed during response.",
+        status_code=500,
+        command=command,
+    )
+    exc.__cause__ = cause
+    return exc
+
+
+# ---------------------------------------------------------------------------
+# is_transient_db_error
+# ---------------------------------------------------------------------------
+
+class IsTransientDbErrorTests(unittest.TestCase):
+    def test_mysql_1020_is_transient(self):
+        exc = _make_mysql_operational_error(1020)
+        self.assertTrue(device_runtime.is_transient_db_error(exc))
+
+    def test_mysql_1205_is_transient(self):
+        exc = _make_mysql_operational_error(1205)
+        self.assertTrue(device_runtime.is_transient_db_error(exc))
+
+    def test_mysql_1213_is_transient(self):
+        exc = _make_mysql_operational_error(1213)
+        self.assertTrue(device_runtime.is_transient_db_error(exc))
+
+    def test_mysql_1062_is_not_transient(self):
+        exc = _make_mysql_operational_error(1062)
+        self.assertFalse(device_runtime.is_transient_db_error(exc))
+
+    def test_generic_exception_is_not_transient(self):
+        self.assertFalse(device_runtime.is_transient_db_error(RuntimeError("something")))
+
+    def test_value_error_is_not_transient(self):
+        self.assertFalse(device_runtime.is_transient_db_error(ValueError("bad value")))
+
+
+# ---------------------------------------------------------------------------
+# _add_and_commit_command_phase retry tests
+# ---------------------------------------------------------------------------
+
+class CommitPhaseRetryTests(unittest.TestCase):
+    """_add_and_commit_command_phase retries the full add+commit sequence on 1020."""
+
+    def _make_command(self, command_id=99):
+        cmd = ControlCommand(
+            device_id=1,
+            request_uuid="req-retry",
+            requested_by="test",
+            command_name="set_speed",
+            status="running",
+        )
+        cmd.command_id = command_id
+        return cmd
+
+    def test_commit_phase_retries_on_mysql_1020_then_succeeds(self):
+        """First attempt raises MySQL 1020; second attempt succeeds."""
+        call_count = {"n": 0}
+
+        class RetrySession(_FakeExecuteCommandSession):
+            def flush(self, *args, **kwargs):
+                # Assign command_id so event can be created
+                targets = args[0] if args else self.objects
+                if targets is None:
+                    targets = self.objects
+                for item in targets:
+                    if isinstance(item, ControlCommand) and item.command_id is None:
+                        item.command_id = 99
+                self.operations.append(("flush", None))
+
+            def commit(self):
+                call_count["n"] += 1
+                self.operations.append(("commit", call_count["n"]))
+                if call_count["n"] == 1:
+                    raise _make_mysql_operational_error(1020)
+
+        session = RetrySession()
+        cmd = self._make_command(99)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            # Should not raise — second attempt succeeds
+            device_runtime._add_and_commit_command_phase(cmd, "sent", "sent", {"info": "x"})
+
+        # Two commits attempted (1st failed, 2nd succeeded)
+        commit_ops = [op for op in session.operations if op[0] == "commit"]
+        self.assertEqual(len(commit_ops), 2)
+        # Rollback was called after first failure
+        rollback_ops = [op for op in session.operations if op[0] == "rollback"]
+        self.assertGreaterEqual(len(rollback_ops), 1)
+
+    def test_commit_phase_raises_device_error_after_exhausting_retries(self):
+        """Three consecutive 1020 errors → DeviceCommandError raised."""
+
+        class AlwaysFailSession(_FakeExecuteCommandSession):
+            def flush(self, *args, **kwargs):
+                targets = args[0] if args else self.objects
+                if targets is None:
+                    targets = self.objects
+                for item in targets:
+                    if isinstance(item, ControlCommand) and item.command_id is None:
+                        item.command_id = 99
+                self.operations.append(("flush", None))
+
+            def commit(self):
+                self.operations.append(("commit_attempt", None))
+                raise _make_mysql_operational_error(1020)
+
+        session = AlwaysFailSession()
+        cmd = self._make_command(99)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            with self.assertRaises(device_runtime.DeviceCommandError) as ctx:
+                device_runtime._add_and_commit_command_phase(cmd, "sent", "sent", {"info": "x"})
+
+        self.assertEqual(ctx.exception.status_code, 500)
+        # Session must have been rolled back — not in pending-rollback state
+        rollback_ops = [op for op in session.operations if op[0] == "rollback"]
+        self.assertGreaterEqual(len(rollback_ops), 1)
+
+    def test_session_not_in_pending_rollback_after_transient_error(self):
+        """After a 1020 flush error, session.rollback() is called and session is reusable."""
+        rolled_back = {"called": False}
+
+        class FlushFailSession(_FakeExecuteCommandSession):
+            def flush(self, *args, **kwargs):
+                targets = args[0] if args else self.objects
+                if targets is None:
+                    targets = self.objects
+                # Only fail on second flush (event flush)
+                flush_count = sum(1 for op in self.operations if op[0] == "flush")
+                if flush_count >= 1:
+                    raise _make_mysql_operational_error(1020)
+                for item in targets:
+                    if isinstance(item, ControlCommand) and item.command_id is None:
+                        item.command_id = 99
+                self.operations.append(("flush", None))
+
+            def rollback(self):
+                rolled_back["called"] = True
+                self.rollback_calls += 1
+                self.operations.append(("rollback", self.rollback_calls))
+
+        session = FlushFailSession()
+        cmd = self._make_command(99)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            with self.assertRaises(device_runtime.DeviceCommandError):
+                device_runtime._add_and_commit_command_phase(cmd, "sent", "sent", {})
+
+        # Rollback must have been called after the transient flush error
+        self.assertTrue(rolled_back["called"], "session.rollback() must be called after a transient flush error")
+
+
+# ---------------------------------------------------------------------------
+# _add_command_event retry on deadlock (1213)
+# ---------------------------------------------------------------------------
+
+class AddCommandEventRetryTests(unittest.TestCase):
+    def test_add_event_flushes_normally(self):
+        """Baseline: _add_command_event works with a clean session."""
+        session = _FakeCommandEventSession()
+        command = ControlCommand(
+            device_id=1,
+            request_uuid="req-event",
+            requested_by="test",
+            command_name="ping",
+            status="running",
+        )
+        command.command_id = 77
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            device_runtime._add_command_event(command, "running", {"info": "ok"})
+
+        event = next(item for item in session.objects if isinstance(item, ControlCommandEvent))
+        self.assertEqual(event.command_id, 77)
+        self.assertEqual(event.event_type, "running")
+
+
+# ---------------------------------------------------------------------------
+# Post-execution DB failure does not raise when device comms succeeded
+# ---------------------------------------------------------------------------
+
+class ExecuteCommandPostSuccessDbFailureTests(unittest.TestCase):
+    """Device comms succeed; transient 1020 in response/completed commit does not raise."""
+
+    def _make_session_with_commit_failure(self, fail_on_commit: int, error_code: int = 1020):
+        """Return a session that raises a transient DB error on the N-th commit."""
+        call_count = {"n": 0}
+
+        class _Session(_FakeExecuteCommandSession):
+            def commit(self):
+                call_count["n"] += 1
+                self.commit_calls += 1
+                self.operations.append(("commit", call_count["n"]))
+                if call_count["n"] == fail_on_commit:
+                    raise _make_mysql_operational_error(error_code)
+
+        return _Session()
+
+    def test_post_success_response_commit_failure_1020_does_not_raise(self):
+        """commit() for 'response' phase raises 1020 on all retries → no exception raised."""
+        # The response phase commit is commit #3 (RUNNING, SENT, then response).
+        # With retry, commit #3 and #4 and #5 (all attempts) fail — should not raise.
+        fail_calls = set()
+        call_count = {"n": 0}
+
+        class _Session(_FakeExecuteCommandSession):
+            def commit(self):
+                call_count["n"] += 1
+                self.commit_calls += 1
+                self.operations.append(("commit", call_count["n"]))
+                # Fail all commits from 3rd onward (response, completed phases)
+                if call_count["n"] >= 3:
+                    raise _make_mysql_operational_error(1020)
+
+        session = _Session()
+        driver = _FakeDriver(session)
+        connection = SimpleNamespace(connection_id=5, is_enabled=True, transport_type="tcp_socket")
+        binding = SimpleNamespace(device_id=9, connection_id=5, connection=connection)
+        device = SimpleNamespace(device_id=9, protocol="fake", current_binding=binding)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            with patch.object(device_runtime, "get_driver", return_value=driver):
+                # Must NOT raise DeviceCommandError
+                execution = device_runtime.execute_device_command(
+                    device,
+                    command_name="manual_text",
+                    payload={},
+                    requested_by="test",
+                )
+
+        # Device comms succeeded — result is returned
+        self.assertIsNotNone(execution)
+        self.assertEqual(execution.result.response_text, "OK")
+
+    def test_post_success_completed_transition_failure_1020_does_not_raise(self):
+        """The final COMPLETED transition raises 1020 after all retries → no exception."""
+        call_count = {"n": 0}
+
+        class _Session(_FakeExecuteCommandSession):
+            def commit(self):
+                call_count["n"] += 1
+                self.commit_calls += 1
+                self.operations.append(("commit", call_count["n"]))
+                # Let RUNNING and SENT commits succeed; fail everything from response onward
+                if call_count["n"] >= 3:
+                    raise _make_mysql_operational_error(1020)
+
+        session = _Session()
+        driver = _FakeDriver(session)
+        connection = SimpleNamespace(connection_id=5, is_enabled=True, transport_type="tcp_socket")
+        binding = SimpleNamespace(device_id=9, connection_id=5, connection=connection)
+        device = SimpleNamespace(device_id=9, protocol="fake", current_binding=binding)
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            with patch.object(device_runtime, "get_driver", return_value=driver):
+                execution = device_runtime.execute_device_command(
+                    device,
+                    command_name="manual_text",
+                    payload={},
+                    requested_by="test",
+                )
+
+        self.assertEqual(execution.result.response_text, "OK")
+
+
 if __name__ == "__main__":
     unittest.main()
