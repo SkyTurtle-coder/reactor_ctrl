@@ -99,24 +99,36 @@ def _command_actor(command: ControlCommand | None) -> str:
 def _command_event_severity(event_type: str, command: ControlCommand | None) -> str:
     normalized_event = str(event_type or "").strip().lower()
     normalized_status = str(getattr(command, "status", "") or "").strip().lower()
-    if normalized_event in {"failed", "timeout", "measurement_failed"} or normalized_status in {"failed", "timeout"}:
+    if normalized_event in {"failed", "timeout", "expired", "interrupted", "measurement_failed"} or normalized_status in {"failed", "timeout", "expired", "interrupted"}:
         return "error"
-    if normalized_event in {"response", "measurement_saved"}:
+    if normalized_event in {"cancelled", "skipped", "preempted"}:
+        return "warning"
+    if normalized_event in {"response", "measurement_saved", "completed"}:
         return "success"
-    if normalized_event in {"queued", "sent"}:
+    if normalized_event in {"pending", "queued", "running", "sent", "recovering", "cancel_requested"}:
         return "info"
     return "info"
 
 
 def _command_event_title(event_type: str) -> str:
     return {
+        "pending": "Command pending",
         "queued": "Command queued",
+        "running": "Command running",
         "sent": "Command sent",
         "response": "Device response",
+        "completed": "Command completed",
         "measurement_saved": "Measurement saved",
         "measurement_failed": "Measurement failed",
         "failed": "Command failed",
         "timeout": "Command timeout",
+        "expired": "Command expired",
+        "interrupted": "Command interrupted",
+        "cancel_requested": "Cancellation requested",
+        "cancelled": "Command cancelled",
+        "skipped": "Command skipped",
+        "preempted": "Command preempted",
+        "recovering": "Command recovering",
     }.get(str(event_type or "").strip().lower(), f"Command event: {event_type}")
 
 
@@ -126,9 +138,15 @@ def _command_event_message(event: ControlCommandEvent) -> str:
     event_type = str(event.event_type or "").strip().lower()
     command_text = _command_text(command)
 
+    if event_type == "pending":
+        requested_by = _payload_text(payload, "requested_by", getattr(command, "requested_by", "system"))
+        return f"{command_text} is pending for {requested_by}."
     if event_type == "queued":
         requested_by = _payload_text(payload, "requested_by", getattr(command, "requested_by", "system"))
         return f"{command_text} requested by {requested_by}."
+    if event_type == "running":
+        worker_id = _payload_text(payload, "worker_id")
+        return f"{command_text} started on {worker_id}." if worker_id else f"{command_text} started."
     if event_type == "sent":
         return f"{command_text} was sent to the device."
     if event_type == "response":
@@ -139,6 +157,8 @@ def _command_event_message(event: ControlCommandEvent) -> str:
         if response_hex:
             return f"{command_text} returned hex payload: {response_hex}"
         return f"{command_text} returned an acknowledgement."
+    if event_type == "completed":
+        return f"{command_text} completed successfully."
     if event_type == "measurement_saved":
         channel_code = _payload_text(payload, "channel_code", "measurement")
         value = payload.get("numeric_value", payload.get("text_value")) if isinstance(payload, dict) else None
@@ -147,8 +167,12 @@ def _command_event_message(event: ControlCommandEvent) -> str:
         return f"{channel_code} saved from {command_text}: {value}{suffix}"
     if event_type == "measurement_failed":
         return _payload_text(payload, "message", f"Measurement persistence failed for {command_text}.")
-    if event_type in {"failed", "timeout"}:
+    if event_type == "cancel_requested":
+        return _payload_text(payload, "reason", f"Cancellation was requested for {command_text}.")
+    if event_type in {"failed", "timeout", "expired", "interrupted", "cancelled", "skipped", "preempted"}:
         return _payload_text(payload, "message", getattr(command, "error_message", "") or f"{command_text} failed.")
+    if event_type == "recovering":
+        return _payload_text(payload, "message", f"{command_text} is being recovered after restart.")
     return f"{command_text}: {event.event_type}"
 
 
@@ -160,9 +184,9 @@ def _is_noisy_command_event(event: ControlCommandEvent) -> bool:
     command = event.command
     event_type = str(event.event_type or "").strip().lower()
 
-    if event_type == "queued":
+    if event_type in {"pending", "queued", "running", "recovering"}:
         return True
-    if event_type in {"failed", "timeout", "measurement_failed"}:
+    if event_type in {"failed", "timeout", "expired", "interrupted", "measurement_failed", "cancelled", "skipped", "preempted"}:
         return False
     if command is None:
         return False

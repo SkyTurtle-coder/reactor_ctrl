@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import socket
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from time import perf_counter
+
+from ..cancellation import CancellationToken
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,8 @@ class TcpSocketTransport:
     def __init__(self, config: TcpSocketConfig):
         self.config = config
         self._sock: socket.socket | None = None
+        self._cancellation_token: CancellationToken | None = None
+        self._cooperative_poll_interval_s = 0.25
 
     @property
     def recv_size(self) -> int:
@@ -56,16 +61,63 @@ class TcpSocketTransport:
     def is_connected(self) -> bool:
         return self._sock is not None
 
+    def bind_runtime_control(self, *, cancellation_token: CancellationToken | None = None) -> None:
+        self._cancellation_token = cancellation_token
+
+    def get_remaining_timeout(self, *, phase: str = "read", default_s: float | None = None) -> float | None:
+        timeout_s = default_s
+        if timeout_s is None:
+            phase_key = str(phase or "read").strip().lower()
+            if phase_key == "connect":
+                timeout_s = self.config.connect_timeout_s
+            elif phase_key == "write":
+                timeout_s = self.config.write_timeout_s
+            else:
+                timeout_s = self.config.read_timeout_s
+
+        if self._cancellation_token is None:
+            return timeout_s
+
+        deadline_remaining = self._cancellation_token.time_remaining(now=datetime.now(timezone.utc))
+        if deadline_remaining is None:
+            return timeout_s
+        if timeout_s is None:
+            return max(0.001, deadline_remaining)
+        return max(0.001, min(timeout_s, deadline_remaining))
+
+    def _throw_if_interrupted(self, *, location: str) -> None:
+        if self._cancellation_token is None:
+            return
+        self._cancellation_token.throw_if_interrupted(location=location)
+
+    def _operation_deadline(self, *, phase: str, default_s: float) -> float:
+        effective_timeout_s = self.get_remaining_timeout(phase=phase, default_s=default_s) or default_s
+        return perf_counter() + max(0.001, float(effective_timeout_s))
+
+    def _step_timeout(self, operation_deadline: float) -> float:
+        remaining = operation_deadline - perf_counter()
+        if remaining <= 0:
+            return 0.0
+        return max(0.001, min(remaining, self._cooperative_poll_interval_s))
+
     def connect(self) -> None:
         if self._sock is not None:
             return
 
+        self._throw_if_interrupted(location="transport.connect")
+        connect_timeout_s = self.get_remaining_timeout(phase="connect", default_s=self.config.connect_timeout_s)
         sock = socket.create_connection(
             (self.config.host, self.config.port),
-            timeout=self.config.connect_timeout_s,
+            timeout=connect_timeout_s,
         )
-        sock.settimeout(self.config.read_timeout_s)
-        self._sock = sock
+        try:
+            sock.settimeout(self.get_remaining_timeout(phase="read", default_s=self.config.read_timeout_s))
+            self._sock = sock
+            self._throw_if_interrupted(location="transport.connect")
+        except Exception:
+            sock.close()
+            self._sock = None
+            raise
 
     def close(self) -> None:
         if self._sock is None:
@@ -78,15 +130,55 @@ class TcpSocketTransport:
     def send(self, payload: bytes) -> None:
         self.connect()
         assert self._sock is not None
+        if self._cancellation_token is None:
+            self._sock.settimeout(self.config.write_timeout_s)
+            self._sock.sendall(payload)
+            self._sock.settimeout(self.config.read_timeout_s)
+            return
 
-        self._sock.settimeout(self.config.write_timeout_s)
-        self._sock.sendall(payload)
-        self._sock.settimeout(self.config.read_timeout_s)
+        self._throw_if_interrupted(location="transport.send")
+        operation_deadline = self._operation_deadline(phase="write", default_s=self.config.write_timeout_s)
+        view = memoryview(payload)
+        bytes_sent = 0
+        while bytes_sent < len(view):
+            self._throw_if_interrupted(location="transport.send")
+            timeout_s = self._step_timeout(operation_deadline)
+            if timeout_s <= 0:
+                self._throw_if_interrupted(location="transport.send")
+                raise socket.timeout("Timed out while sending device request bytes.")
+            self._sock.settimeout(timeout_s)
+            try:
+                sent = self._sock.send(view[bytes_sent:])
+            except socket.timeout:
+                self._throw_if_interrupted(location="transport.send")
+                if perf_counter() >= operation_deadline:
+                    raise
+                continue
+            if sent <= 0:
+                raise ConnectionError("Connection closed while sending device request bytes.")
+            bytes_sent += sent
+        self._sock.settimeout(self.get_remaining_timeout(phase="read", default_s=self.config.read_timeout_s))
 
     def receive(self, recv_size: int | None = None) -> bytes:
         self.connect()
         assert self._sock is not None
-        return self._sock.recv(recv_size or self.config.recv_size)
+        if self._cancellation_token is None:
+            return self._sock.recv(recv_size or self.config.recv_size)
+
+        operation_deadline = self._operation_deadline(phase="read", default_s=self.config.read_timeout_s)
+        while True:
+            self._throw_if_interrupted(location="transport.receive")
+            timeout_s = self._step_timeout(operation_deadline)
+            if timeout_s <= 0:
+                self._throw_if_interrupted(location="transport.receive")
+                raise socket.timeout("Timed out while waiting for device response bytes.")
+            self._sock.settimeout(timeout_s)
+            try:
+                return self._sock.recv(recv_size or self.config.recv_size)
+            except socket.timeout:
+                self._throw_if_interrupted(location="transport.receive")
+                if perf_counter() >= operation_deadline:
+                    raise
 
     def receive_until(self, delimiter: bytes, *, max_bytes: int = 65536) -> bytes:
         self.connect()
@@ -98,8 +190,34 @@ class TcpSocketTransport:
 
         buffer = bytearray()
         chunk_size = min(self.config.recv_size, max_bytes)
+        if self._cancellation_token is None:
+            while len(buffer) < max_bytes:
+                chunk = self._sock.recv(chunk_size)
+                if not chunk:
+                    raise socket.timeout("Connection closed before the expected response terminator was received.")
+                buffer.extend(chunk)
+                if delimiter in buffer:
+                    return bytes(buffer)
+                chunk_size = min(self.config.recv_size, max_bytes - len(buffer))
+                if chunk_size <= 0:
+                    break
+            raise socket.timeout("Response terminator was not received before the maximum response size was reached.")
+
+        operation_deadline = self._operation_deadline(phase="read", default_s=self.config.read_timeout_s)
         while len(buffer) < max_bytes:
-            chunk = self._sock.recv(chunk_size)
+            self._throw_if_interrupted(location="transport.receive_until")
+            timeout_s = self._step_timeout(operation_deadline)
+            if timeout_s <= 0:
+                self._throw_if_interrupted(location="transport.receive_until")
+                raise socket.timeout("Response terminator was not received before the read deadline expired.")
+            self._sock.settimeout(timeout_s)
+            try:
+                chunk = self._sock.recv(chunk_size)
+            except socket.timeout:
+                self._throw_if_interrupted(location="transport.receive_until")
+                if perf_counter() >= operation_deadline:
+                    raise
+                continue
             if not chunk:
                 raise socket.timeout("Connection closed before the expected response terminator was received.")
             buffer.extend(chunk)

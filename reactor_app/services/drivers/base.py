@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..cancellation import CancellationToken
 from ..transports.interface import ITransport
 
 
@@ -11,6 +12,17 @@ from ..transports.interface import ITransport
 class DeviceCommandRequest:
     command_name: str
     payload: dict[str, Any]
+    cancellation_token: CancellationToken | None = None
+
+    def time_remaining(self) -> float | None:
+        if self.cancellation_token is None:
+            return None
+        return self.cancellation_token.time_remaining()
+
+    def throw_if_interrupted(self, *, location: str | None = None) -> None:
+        if self.cancellation_token is None:
+            return
+        self.cancellation_token.throw_if_interrupted(location=location)
 
 
 @dataclass(frozen=True)

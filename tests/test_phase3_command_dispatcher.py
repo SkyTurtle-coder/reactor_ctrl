@@ -248,13 +248,13 @@ class DispatchDeviceCommandTests(unittest.TestCase):
             result = dispatch_device_command(device, command)
 
         self.assertIs(result, mock_result)
-        mock_exec.assert_called_once_with(
-            device,
-            command_name="get_internal_temp",
-            payload={},
-            requested_by="test",
-            acquire_lock=True,
-        )
+        mock_exec.assert_called_once()
+        args, kwargs = mock_exec.call_args
+        self.assertIs(args[0], device)
+        self.assertEqual(kwargs["command_name"], "get_internal_temp")
+        self.assertEqual(kwargs["payload"], {})
+        self.assertEqual(kwargs["requested_by"], "test")
+        self.assertTrue(kwargs["acquire_lock"])
 
     def test_passes_acquire_lock_false(self):
         device = self._make_device()
@@ -281,6 +281,7 @@ class DispatchDeviceCommandTests(unittest.TestCase):
         payload = kwargs["payload"]
         self.assertEqual(payload["response_timeout_ms"], 2000)
         self.assertEqual(payload["connect_timeout_ms"], 2000)
+        self.assertEqual(payload["write_timeout_ms"], 2000)
 
     def test_timeout_s_does_not_override_existing_payload_keys(self):
         device = self._make_device()

@@ -76,6 +76,51 @@ _OPTIONAL_COLUMN_SPECS: tuple[tuple[str, str, str], ...] = (
         "active_control_sensor",
         "VARCHAR(16) NULL",
     ),
+    (
+        "control_command",
+        "command_source",
+        "VARCHAR(32) NULL",
+    ),
+    (
+        "control_command",
+        "command_priority",
+        "INT NULL",
+    ),
+    (
+        "control_command",
+        "correlation_id",
+        "VARCHAR(64) NULL",
+    ),
+    (
+        "control_command",
+        "worker_id",
+        "VARCHAR(64) NULL",
+    ),
+    (
+        "control_command",
+        "started_at",
+        "DATETIME(3) NULL",
+    ),
+    (
+        "control_command",
+        "queue_timeout_s",
+        "DOUBLE NULL",
+    ),
+    (
+        "control_command",
+        "execution_timeout_s",
+        "DOUBLE NULL",
+    ),
+    (
+        "control_command",
+        "total_deadline_at",
+        "DATETIME(3) NULL",
+    ),
+    (
+        "control_command",
+        "cancel_requested_at",
+        "DATETIME(3) NULL",
+    ),
 )
 
 _ACTIVITY_LOG_INDEX_SPECS = (
@@ -83,6 +128,12 @@ _ACTIVITY_LOG_INDEX_SPECS = (
         "control_command",
         "ix_control_command_requested_at",
         "CREATE INDEX ix_control_command_requested_at ON control_command (requested_at)",
+    ),
+    (
+        "control_command",
+        "ix_control_command_status_started_deadline",
+        "CREATE INDEX ix_control_command_status_started_deadline "
+        "ON control_command (status, started_at, total_deadline_at)",
     ),
     (
         "control_command_event",

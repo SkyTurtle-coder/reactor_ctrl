@@ -7,6 +7,7 @@ from .command_dispatcher import (
     start_runtime_command_scheduler,
     stop_runtime_command_scheduler,
 )
+from .cancellation import CancellationToken, CommandExecutionInterrupted
 from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_runtime import (
     DeviceCommandError,
@@ -43,6 +44,8 @@ from .transports import ITransport, TcpSocketConfig, TcpSocketProbeResult, TcpSo
 __all__ = [
     "CommandPriority",
     "CommandSource",
+    "CancellationToken",
+    "CommandExecutionInterrupted",
     "DeviceCapability",
     "DeviceCommand",
     "DeviceCommandError",

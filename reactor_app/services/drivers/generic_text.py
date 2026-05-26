@@ -56,6 +56,7 @@ class GenericTextDriver(DeviceDriver):
     protocol_names = ("generic_text", "ascii_text", "line_text", "rs232_text")
 
     def execute(self, *, transport: ITransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+        request.throw_if_interrupted(location="driver.generic_text.start")
         payload = request.payload
         text = payload.get("text", payload.get("command_text"))
         if text is None or not str(text).strip():
@@ -81,16 +82,19 @@ class GenericTextDriver(DeviceDriver):
         except LookupError as exc:
             raise DriverValidationError(f"Encoding '{encoding}' is not supported.") from exc
 
+        request.throw_if_interrupted(location="driver.generic_text.pre_send")
         transport.send(request_bytes)
 
         response_bytes = b""
         if expect_response:
+            request.throw_if_interrupted(location="driver.generic_text.pre_receive")
             response_terminator = _LINE_ENDINGS[response_terminator_name]
             response_bytes = (
                 transport.receive_until(response_terminator, max_bytes=max_response_bytes)
                 if response_terminator
                 else transport.receive(recv_size=max_response_bytes)
             )
+            request.throw_if_interrupted(location="driver.generic_text.post_receive")
 
         response_text = None
         if response_bytes:

@@ -7,6 +7,7 @@ from typing import Any
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverValidationError
 from .capabilities import DeviceCapability
+from ..cancellation import CancellationToken
 from ..transports.interface import ITransport
 
 
@@ -284,8 +285,14 @@ class HuberUnistatTCP:
 
 
 class _TransportHuberClient:
-    def __init__(self, transport: ITransport):
+    def __init__(self, transport: ITransport, *, cancellation_token: CancellationToken | None = None):
         self.transport = transport
+        self.cancellation_token = cancellation_token
+
+    def _throw_if_interrupted(self, *, location: str) -> None:
+        if self.cancellation_token is None:
+            return
+        self.cancellation_token.throw_if_interrupted(location=location)
 
     def request(self, addr_hex: str, value_hex: str) -> tuple[str, bytes, bytes]:
         addr = _normalize_addr(addr_hex)
@@ -293,11 +300,13 @@ class _TransportHuberClient:
         request_text = HuberUnistatTCP.build_request(addr, value)
         request_bytes = request_text.encode("ascii")
         LOGGER.debug("Huber PB send: %r", request_text)
+        self._throw_if_interrupted(location="driver.huber_unistat.pre_send")
         self.transport.send(request_bytes)
         stale_responses: list[str] = []
         last_mismatch: DriverError | None = None
 
         for _ in range(_MAX_STALE_PB_RESPONSES + 1):
+            self._throw_if_interrupted(location="driver.huber_unistat.pre_receive")
             response_bytes = self.transport.receive_until(b"\n", max_bytes=max(self.transport.recv_size, 64))
             for response_line in _split_response_lines(response_bytes):
                 response_text = response_line.decode("ascii", errors="replace")
@@ -315,6 +324,7 @@ class _TransportHuberClient:
                         )
                         continue
                     raise
+                self._throw_if_interrupted(location="driver.huber_unistat.post_receive")
                 return value_response, request_bytes, response_line
 
         if last_mismatch is not None:
@@ -346,9 +356,10 @@ class HuberUnistatDriver(DeviceDriver):
         })
 
     def execute(self, *, transport: ITransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+        request.throw_if_interrupted(location="driver.huber_unistat.start")
         command_name = str(request.command_name or "").strip().lower()
         payload = request.payload or {}
-        client = _TransportHuberClient(transport)
+        client = _TransportHuberClient(transport, cancellation_token=request.cancellation_token)
 
         min_setpoint = _coerce_float(
             payload.get("min_setpoint_c"),
@@ -486,8 +497,11 @@ class HuberUnistatDriver(DeviceDriver):
         )
 
     def _read_start_preflight(self, client: _TransportHuberClient) -> dict[str, Any]:
+        client._throw_if_interrupted(location="driver.huber_unistat.start_preflight")
         status_hex, _, _ = client.read_var("0A")
+        client._throw_if_interrupted(location="driver.huber_unistat.start_preflight")
         error_hex, _, _ = client.read_var("05")
+        client._throw_if_interrupted(location="driver.huber_unistat.start_preflight")
         warning_hex, _, _ = client.read_var("06")
         status_raw = int(status_hex, 16)
         return {

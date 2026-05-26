@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..cancellation import CancellationToken
 from .interface import ITransport, TransportTypeNotSupportedError
 from .tcp_socket import TcpSocketConfig, TcpSocketTransport
 
@@ -60,7 +61,12 @@ def _build_tcp_config(connection: Any, payload: dict[str, Any]) -> TcpSocketConf
     )
 
 
-def build_transport(connection: Any, payload: dict[str, Any]) -> ITransport:
+def build_transport(
+    connection: Any,
+    payload: dict[str, Any],
+    *,
+    cancellation_token: CancellationToken | None = None,
+) -> ITransport:
     """Return a ready-to-use ``ITransport`` for *connection*.
 
     Only ``tcp_socket`` connections are supported today.  Any other type raises
@@ -77,7 +83,9 @@ def build_transport(connection: Any, payload: dict[str, Any]) -> ITransport:
     transport_type = str(connection.transport_type or "tcp_socket").strip().lower()
 
     if transport_type == "tcp_socket":
-        return TcpSocketTransport(_build_tcp_config(connection, payload))
+        transport = TcpSocketTransport(_build_tcp_config(connection, payload))
+        transport.bind_runtime_control(cancellation_token=cancellation_token)
+        return transport
 
     if transport_type in _FUTURE_TRANSPORT_TYPES:
         raise TransportTypeNotSupportedError(

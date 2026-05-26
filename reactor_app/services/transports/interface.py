@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+from ..cancellation import CancellationToken
+
 
 class TransportTypeNotSupportedError(ValueError):
     """Raised by TransportFactory when the requested transport type has no implementation."""
@@ -46,6 +48,10 @@ class ITransport(Protocol):
         """Return True when the transport has an active connection."""
         ...
 
+    def bind_runtime_control(self, *, cancellation_token: CancellationToken | None = None) -> None:
+        """Attach the runtime cancellation/deadline context for subsequent I/O."""
+        ...
+
     # ------------------------------------------------------------------ #
     # I/O primitives                                                       #
     # ------------------------------------------------------------------ #
@@ -64,6 +70,10 @@ class ITransport(Protocol):
 
     def send_and_receive(self, payload: bytes, recv_size: int | None = None) -> bytes:
         """Convenience: send ``payload`` then read a single response chunk."""
+        ...
+
+    def get_remaining_timeout(self, *, phase: str = "read", default_s: float | None = None) -> float | None:
+        """Return the effective timeout for the requested I/O phase."""
         ...
 
     # ------------------------------------------------------------------ #

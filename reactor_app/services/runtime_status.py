@@ -59,6 +59,9 @@ class RuntimeStatus:
     CANCELLED = "cancelled"
     SKIPPED = "skipped"
     PREEMPTED = "preempted"
+    INTERRUPTED = "interrupted"
+    EXPIRED = "expired"
+    RECOVERING = "recovering"
 
     # Convenience sets
     TERMINAL: frozenset[str] = frozenset(
@@ -71,11 +74,14 @@ class RuntimeStatus:
             "cancelled",
             "skipped",
             "preempted",
+            "interrupted",
+            "expired",
         }
     )
-    ERROR_STATES: frozenset[str] = frozenset({"failed", "error", "timeout"})
-    ACTIVE_STATES: frozenset[str] = frozenset({"pending", "queued", "running", "sent"})
+    ERROR_STATES: frozenset[str] = frozenset({"failed", "error", "timeout", "interrupted", "expired"})
+    ACTIVE_STATES: frozenset[str] = frozenset({"pending", "queued", "running", "sent", "recovering"})
     INTERRUPTED_STATES: frozenset[str] = frozenset({"cancelled", "skipped", "preempted"})
+    RECOVERY_STATES: frozenset[str] = frozenset({"recovering"})
 
 
 class ProgramStatus:

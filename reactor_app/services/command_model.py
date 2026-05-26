@@ -92,6 +92,9 @@ class DeviceCommand:
     source: str = CommandSource.API
     requested_by: str = "unknown"
     timeout_s: float | None = None
+    queue_timeout_s: float | None = None
+    execution_timeout_s: float | None = None
+    total_deadline_at: datetime | None = None
     correlation_id: str | None = None
     command_id: str = field(default_factory=lambda: str(uuid4()))
     created_at: datetime = field(

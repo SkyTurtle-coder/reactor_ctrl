@@ -681,9 +681,9 @@ def commands_overview() -> str:
     )
     summary = {
         "total": len(commands),
-        "queued": sum(1 for item in commands if item.status == "queued"),
-        "acked": sum(1 for item in commands if item.status == "acked"),
-        "failed": sum(1 for item in commands if item.status in {"failed", "timeout"}),
+        "queued": sum(1 for item in commands if item.status in {"pending", "queued", "running", "sent", "recovering"}),
+        "acked": sum(1 for item in commands if item.status in {"acked", "completed"}),
+        "failed": sum(1 for item in commands if item.status in {"failed", "timeout", "expired", "interrupted"}),
     }
     return render_template(
         "commands.html",

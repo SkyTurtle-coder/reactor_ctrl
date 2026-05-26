@@ -13,7 +13,9 @@ from sqlalchemy import inspect as sa_inspect, text
 
 from ..extensions import db
 from ..models import ControlCommand, ControlCommandEvent, Device, DeviceManualState, Measurement, MeasurementChannel
+from .cancellation import CancellationToken, CommandExecutionInterrupted
 from .drivers import DeviceCommandRequest, DeviceCommandResult, DriverError, DriverNotFoundError, DriverValidationError, get_driver
+from .runtime_status import RuntimeStatus
 from .transports import build_transport, TransportTypeNotSupportedError
 
 
@@ -22,10 +24,103 @@ _MEASUREMENT_SOURCES = {"poller", "event", "manual", "import"}
 _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS = 5.0
 _DEVICE_COMMAND_LOCKS: dict[int, threading.RLock] = {}
 _DEVICE_COMMAND_LOCKS_GUARD = threading.Lock()
+_UNSET = object()
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _datetime_isoformat(value: datetime | None) -> str | None:
+    normalized = _as_utc_datetime(value)
+    return normalized.isoformat() if normalized is not None else None
+
+
+def _status_value(value: str | None, default: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized or default
+
+
+def _command_interrupted_details(exc: CommandExecutionInterrupted) -> dict[str, Any]:
+    details = {"runtime_status": exc.status}
+    location = str(getattr(exc, "location", "") or "").strip()
+    if location:
+        details["interrupt_location"] = location
+    reason = str(getattr(exc, "reason", "") or "").strip()
+    if reason:
+        details["interrupt_reason"] = reason
+    return details
+
+
+def _apply_command_runtime_metadata(
+    command: ControlCommand,
+    *,
+    command_source: str | object = _UNSET,
+    command_priority: int | None | object = _UNSET,
+    correlation_id: str | None | object = _UNSET,
+    worker_id: str | None | object = _UNSET,
+    started_at: datetime | None | object = _UNSET,
+    queue_timeout_s: float | None | object = _UNSET,
+    execution_timeout_s: float | None | object = _UNSET,
+    total_deadline_at: datetime | None | object = _UNSET,
+    cancel_requested_at: datetime | None | object = _UNSET,
+) -> bool:
+    changed = False
+
+    if command_source is not _UNSET:
+        next_value = str(command_source or "").strip().lower() or None
+        if command.command_source != next_value:
+            command.command_source = next_value
+            changed = True
+    if command_priority is not _UNSET:
+        next_value = None if command_priority is None else int(command_priority)
+        if command.command_priority != next_value:
+            command.command_priority = next_value
+            changed = True
+    if correlation_id is not _UNSET:
+        next_value = str(correlation_id).strip() or None if correlation_id is not None else None
+        if command.correlation_id != next_value:
+            command.correlation_id = next_value
+            changed = True
+    if worker_id is not _UNSET:
+        next_value = str(worker_id).strip() or None if worker_id is not None else None
+        if command.worker_id != next_value:
+            command.worker_id = next_value
+            changed = True
+    if started_at is not _UNSET:
+        next_value = _as_utc_datetime(started_at)
+        if command.started_at != next_value:
+            command.started_at = next_value
+            changed = True
+    if queue_timeout_s is not _UNSET:
+        next_value = None if queue_timeout_s is None else float(queue_timeout_s)
+        if command.queue_timeout_s != next_value:
+            command.queue_timeout_s = next_value
+            changed = True
+    if execution_timeout_s is not _UNSET:
+        next_value = None if execution_timeout_s is None else float(execution_timeout_s)
+        if command.execution_timeout_s != next_value:
+            command.execution_timeout_s = next_value
+            changed = True
+    if total_deadline_at is not _UNSET:
+        next_value = _as_utc_datetime(total_deadline_at)
+        if command.total_deadline_at != next_value:
+            command.total_deadline_at = next_value
+            changed = True
+    if cancel_requested_at is not _UNSET:
+        next_value = _as_utc_datetime(cancel_requested_at)
+        if command.cancel_requested_at != next_value:
+            command.cancel_requested_at = next_value
+            changed = True
+    return changed
 
 
 def _parse_optional_int(value: Any, *, field_name: str, min_value: int = 1) -> int | None:
@@ -211,6 +306,132 @@ def _commit_command_phase(command: ControlCommand, phase: str) -> None:
         ) from exc
 
 
+def create_control_command_record(
+    *,
+    device_id: int,
+    request_uuid: str,
+    requested_by: str,
+    command_name: str,
+    command_payload: dict[str, Any],
+    status: str,
+    requested_at: datetime | None = None,
+    scheduled_for: datetime | None = None,
+    command_source: str | None = None,
+    command_priority: int | None = None,
+    correlation_id: str | None = None,
+    worker_id: str | None = None,
+    started_at: datetime | None = None,
+    queue_timeout_s: float | None = None,
+    execution_timeout_s: float | None = None,
+    total_deadline_at: datetime | None = None,
+    event_payload: dict[str, Any] | None = None,
+) -> ControlCommand:
+    command = ControlCommand(
+        device_id=int(device_id),
+        request_uuid=str(request_uuid),
+        requested_by=requested_by,
+        command_name=command_name,
+        command_payload=command_payload,
+        status=_status_value(status, RuntimeStatus.PENDING),
+        requested_at=_as_utc_datetime(requested_at) or _now_utc(),
+        scheduled_for=_as_utc_datetime(scheduled_for),
+    )
+    _apply_command_runtime_metadata(
+        command,
+        command_source=command_source,
+        command_priority=command_priority,
+        correlation_id=correlation_id,
+        worker_id=worker_id,
+        started_at=started_at,
+        queue_timeout_s=queue_timeout_s,
+        execution_timeout_s=execution_timeout_s,
+        total_deadline_at=total_deadline_at,
+    )
+    db.session.add(command)
+    db.session.flush()
+    _add_command_event(command, command.status, event_payload)
+    _commit_command_phase(command, command.status)
+    return command
+
+
+def transition_control_command_record(
+    command: ControlCommand,
+    status: str,
+    *,
+    event_type: str | None = None,
+    event_payload: dict[str, Any] | None = None,
+    error_message: str | None | object = _UNSET,
+    scheduled_for: datetime | None | object = _UNSET,
+    started_at: datetime | None | object = _UNSET,
+    sent_at: datetime | None | object = _UNSET,
+    ack_at: datetime | None | object = _UNSET,
+    finished_at: datetime | None | object = _UNSET,
+    command_source: str | object = _UNSET,
+    command_priority: int | None | object = _UNSET,
+    correlation_id: str | None | object = _UNSET,
+    worker_id: str | None | object = _UNSET,
+    queue_timeout_s: float | None | object = _UNSET,
+    execution_timeout_s: float | None | object = _UNSET,
+    total_deadline_at: datetime | None | object = _UNSET,
+    cancel_requested_at: datetime | None | object = _UNSET,
+    commit: bool = True,
+) -> ControlCommand:
+    next_status = _status_value(status, str(command.status or RuntimeStatus.PENDING))
+    next_event_type = str(event_type or next_status).strip().lower() or next_status
+    changed = False
+
+    if str(command.status or "").strip().lower() != next_status:
+        command.status = next_status
+        changed = True
+
+    if scheduled_for is not _UNSET:
+        next_scheduled_for = _as_utc_datetime(scheduled_for)
+        if command.scheduled_for != next_scheduled_for:
+            command.scheduled_for = next_scheduled_for
+            changed = True
+    if sent_at is not _UNSET:
+        next_sent_at = _as_utc_datetime(sent_at)
+        if command.sent_at != next_sent_at:
+            command.sent_at = next_sent_at
+            changed = True
+    if ack_at is not _UNSET:
+        next_ack_at = _as_utc_datetime(ack_at)
+        if command.ack_at != next_ack_at:
+            command.ack_at = next_ack_at
+            changed = True
+    if finished_at is not _UNSET:
+        next_finished_at = _as_utc_datetime(finished_at)
+        if command.finished_at != next_finished_at:
+            command.finished_at = next_finished_at
+            changed = True
+    if error_message is not _UNSET:
+        next_error = str(error_message).strip() if error_message not in (None, "") else None
+        if command.error_message != next_error:
+            command.error_message = next_error
+            changed = True
+
+    if _apply_command_runtime_metadata(
+        command,
+        command_source=command_source,
+        command_priority=command_priority,
+        correlation_id=correlation_id,
+        worker_id=worker_id,
+        started_at=started_at,
+        queue_timeout_s=queue_timeout_s,
+        execution_timeout_s=execution_timeout_s,
+        total_deadline_at=total_deadline_at,
+        cancel_requested_at=cancel_requested_at,
+    ):
+        changed = True
+
+    should_add_event = bool(changed or event_payload is not None or next_event_type != next_status)
+    if should_add_event:
+        _add_command_event(command, next_event_type, event_payload)
+    if commit and should_add_event:
+        _commit_command_phase(command, next_event_type)
+    return command
+
+
 def _safe_expire(item: Any, attribute_names: list[str]) -> None:
     try:
         db.session.expire(item, attribute_names)
@@ -324,7 +545,7 @@ def _fail_command(
     binding_connection_id: int | None,
 ) -> None:
     finished_at = _now_utc()
-    command.status = status
+    command.status = _status_value(status, RuntimeStatus.FAILED)
     command.error_message = message
     command.finished_at = finished_at
 
@@ -341,17 +562,27 @@ def _fail_command(
     except Exception:
         pass
 
-    _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
-    _commit_command_phase(command, status)
+    _add_command_event(command, command.status, {"message": message, "finished_at": finished_at.isoformat()})
+    _commit_command_phase(command, command.status)
 
 
 def _fail_command_without_connection_health(command: ControlCommand, *, status: str, message: str) -> None:
     finished_at = _now_utc()
-    command.status = status
+    command.status = _status_value(status, RuntimeStatus.FAILED)
     command.error_message = message
     command.finished_at = finished_at
-    _add_command_event(command, status, {"message": message, "finished_at": finished_at.isoformat()})
-    _commit_command_phase(command, status)
+    _add_command_event(command, command.status, {"message": message, "finished_at": finished_at.isoformat()})
+    _commit_command_phase(command, command.status)
+
+
+def _raise_if_interrupted(
+    cancellation_token: CancellationToken | None,
+    *,
+    location: str,
+) -> None:
+    if cancellation_token is None:
+        return
+    cancellation_token.throw_if_interrupted(location=location)
 
 
 def _parse_measurement_datetime(value: Any) -> datetime | None:
@@ -587,6 +818,19 @@ def execute_device_command(
     payload: dict[str, Any],
     requested_by: str,
     acquire_lock: bool = True,
+    command_record: ControlCommand | None = None,
+    request_uuid: str | None = None,
+    command_source: str | None = None,
+    command_priority: int | None = None,
+    correlation_id: str | None = None,
+    worker_id: str | None = None,
+    requested_at: datetime | None = None,
+    scheduled_for: datetime | None = None,
+    started_at: datetime | None = None,
+    queue_timeout_s: float | None = None,
+    execution_timeout_s: float | None = None,
+    total_deadline_at: datetime | None = None,
+    cancellation_token: CancellationToken | None = None,
 ) -> ExecutedDeviceCommand:
     binding = device.current_binding
     if binding is None:
@@ -606,7 +850,7 @@ def execute_device_command(
     transport_obj = None
     if driver.uses_transport:
         try:
-            transport_obj = build_transport(connection, payload)
+            transport_obj = build_transport(connection, payload, cancellation_token=cancellation_token)
         except TransportTypeNotSupportedError as exc:
             raise DeviceCommandError(str(exc), status_code=400) from exc
     elif str(connection.transport_type or "tcp_socket").strip().lower() not in {"tcp_socket"}:
@@ -618,18 +862,55 @@ def execute_device_command(
     binding_device_id = int(binding.device_id) if binding.device_id is not None else None
     binding_connection_id = int(binding.connection_id) if binding.connection_id is not None else None
 
-    command = ControlCommand(
-        device_id=device.device_id,
-        request_uuid=str(uuid4()),
-        requested_by=requested_by,
-        command_name=command_name,
-        command_payload=payload,
-        status="queued",
-    )
-    db.session.add(command)
-    db.session.flush()
-    _add_command_event(command, "queued", {"requested_by": requested_by})
-    _commit_command_phase(command, "queued")
+    command = command_record
+    normalized_request_uuid = str(request_uuid or uuid4())
+    normalized_requested_at = _as_utc_datetime(requested_at)
+    normalized_scheduled_for = _as_utc_datetime(scheduled_for)
+    normalized_started_at = _as_utc_datetime(started_at) or _now_utc()
+    normalized_total_deadline_at = _as_utc_datetime(total_deadline_at)
+    runtime_event_payload = {
+        "requested_by": requested_by,
+        "command_source": str(command_source or "").strip().lower() or None,
+        "command_priority": None if command_priority is None else int(command_priority),
+        "correlation_id": str(correlation_id).strip() or None if correlation_id is not None else None,
+        "queue_timeout_s": None if queue_timeout_s is None else float(queue_timeout_s),
+        "execution_timeout_s": None if execution_timeout_s is None else float(execution_timeout_s),
+        "total_deadline_at": _datetime_isoformat(normalized_total_deadline_at),
+    }
+    if command is None:
+        command = create_control_command_record(
+            device_id=device.device_id,
+            request_uuid=normalized_request_uuid,
+            requested_by=requested_by,
+            command_name=command_name,
+            command_payload=payload,
+            status=RuntimeStatus.RUNNING,
+            requested_at=normalized_requested_at or normalized_started_at,
+            scheduled_for=normalized_scheduled_for,
+            command_source=command_source,
+            command_priority=command_priority,
+            correlation_id=correlation_id,
+            worker_id=worker_id,
+            started_at=normalized_started_at,
+            queue_timeout_s=queue_timeout_s,
+            execution_timeout_s=execution_timeout_s,
+            total_deadline_at=normalized_total_deadline_at,
+            event_payload=runtime_event_payload,
+        )
+    elif str(command.status or "").strip().lower() not in {RuntimeStatus.RUNNING, RuntimeStatus.SENT}:
+        transition_control_command_record(
+            command,
+            RuntimeStatus.RUNNING,
+            event_payload=runtime_event_payload,
+            started_at=normalized_started_at,
+            worker_id=worker_id,
+            command_source=command_source,
+            command_priority=command_priority,
+            correlation_id=correlation_id,
+            queue_timeout_s=queue_timeout_s,
+            execution_timeout_s=execution_timeout_s,
+            total_deadline_at=normalized_total_deadline_at,
+        )
 
     # For CC230 set_setpoint: inject the remembered write variant so the driver
     # tries the most-recently successful mode first instead of always starting from A.
@@ -643,43 +924,68 @@ def execute_device_command(
         if stored_mode is not None:
             effective_payload = {**payload, "cc230_write_mode": int(stored_mode)}
 
-    request = DeviceCommandRequest(command_name=command_name, payload=effective_payload)
+    request = DeviceCommandRequest(
+        command_name=command_name,
+        payload=effective_payload,
+        cancellation_token=cancellation_token,
+    )
     sent_at = _now_utc()
 
     try:
+        _raise_if_interrupted(cancellation_token, location="device_runtime.pre_lock")
         lock_context = _device_command_lock(device.device_id) if acquire_lock else nullcontext()
         with lock_context:
+            _raise_if_interrupted(cancellation_token, location="device_runtime.pre_send")
             if driver.uses_transport:
                 assert transport_obj is not None
                 with transport_obj:
-                    command.status = "sent"
-                    command.sent_at = sent_at
-                    _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
-                    _commit_command_phase(command, "sent")
+                    _raise_if_interrupted(cancellation_token, location="device_runtime.pre_driver_execute")
+                    transition_control_command_record(
+                        command,
+                        RuntimeStatus.SENT,
+                        sent_at=sent_at,
+                        error_message=None,
+                        event_payload={"sent_at": sent_at.isoformat()},
+                    )
                     result = driver.execute(transport=transport_obj, request=request)
             else:
-                command.status = "sent"
-                command.sent_at = sent_at
-                _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
-                _commit_command_phase(command, "sent")
+                _raise_if_interrupted(cancellation_token, location="device_runtime.pre_driver_execute")
+                transition_control_command_record(
+                    command,
+                    RuntimeStatus.SENT,
+                    sent_at=sent_at,
+                    error_message=None,
+                    event_payload={"sent_at": sent_at.isoformat()},
+                )
                 result = driver.execute(transport=None, request=request)
+            _raise_if_interrupted(cancellation_token, location="device_runtime.post_driver_execute")
+    except CommandExecutionInterrupted as exc:
+        _fail_command_without_connection_health(command, status=exc.status, message=str(exc))
+        raise
     except DeviceCommandError as exc:
-        _fail_command_without_connection_health(command, status="failed", message=str(exc))
-        raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=exc.details) from exc
+        _fail_command_without_connection_health(command, status=RuntimeStatus.FAILED, message=str(exc))
+        details = dict(exc.details) if isinstance(exc.details, dict) else {}
+        details.setdefault("runtime_status", command.status)
+        raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=details) from exc
     except socket.timeout as exc:
         _fail_command(
             command,
-            status="timeout",
+            status=RuntimeStatus.TIMEOUT,
             message=str(exc),
             connection_id=connection_id,
             binding_device_id=binding_device_id,
             binding_connection_id=binding_connection_id,
         )
-        raise DeviceCommandError("Timed out while waiting for a device response.", status_code=504, command=command) from exc
+        raise DeviceCommandError(
+            "Timed out while waiting for a device response.",
+            status_code=504,
+            command=command,
+            details={"runtime_status": RuntimeStatus.TIMEOUT},
+        ) from exc
     except DriverValidationError as exc:
         _fail_command(
             command,
-            status="failed",
+            status=RuntimeStatus.FAILED,
             message=str(exc),
             connection_id=connection_id,
             binding_device_id=binding_device_id,
@@ -689,7 +995,7 @@ def execute_device_command(
     except (OSError, DriverError) as exc:
         _fail_command(
             command,
-            status="failed",
+            status=RuntimeStatus.FAILED,
             message=str(exc),
             connection_id=connection_id,
             binding_device_id=binding_device_id,
@@ -698,10 +1004,6 @@ def execute_device_command(
         raise DeviceCommandError("Device command execution failed.", status_code=502, command=command) from exc
 
     finished_at = _now_utc()
-    command.status = "acked" if result.acknowledged else "sent"
-    command.ack_at = finished_at if result.acknowledged else None
-    command.finished_at = finished_at
-    command.error_message = None
 
     # See _fail_command for why these telemetry fields are written outside ORM
     # dirty tracking. The binding update is guarded by connection_id so a stale
@@ -734,6 +1036,7 @@ def execute_device_command(
         _record_active_control_sensor(device.device_id, active_control_sensor)
 
     try:
+        _raise_if_interrupted(cancellation_token, location="device_runtime.pre_measurement")
         measurement = _persist_measurement(
             device=device,
             command=command,
@@ -743,9 +1046,15 @@ def execute_device_command(
         )
         if measurement is not None:
             _commit_command_phase(command, "measurement")
-    except DeviceCommandError:
-        _commit_command_phase(command, "measurement_failed")
+        _raise_if_interrupted(cancellation_token, location="device_runtime.post_measurement")
+    except CommandExecutionInterrupted as exc:
+        _fail_command_without_connection_health(command, status=exc.status, message=str(exc))
         raise
+    except DeviceCommandError as exc:
+        _fail_command_without_connection_health(command, status=RuntimeStatus.FAILED, message=str(exc))
+        details = dict(exc.details) if isinstance(exc.details, dict) else {}
+        details.setdefault("runtime_status", command.status)
+        raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=details) from exc
 
     # For CC230 set_setpoint: persist the write mode that worked so the next call
     # can try it first.  Non-fatal: a failure here must not break the command response.
@@ -775,4 +1084,15 @@ def execute_device_command(
                         exc_info=True,
                     )
 
+    transition_control_command_record(
+        command,
+        RuntimeStatus.COMPLETED,
+        ack_at=finished_at if result.acknowledged else None,
+        finished_at=finished_at,
+        error_message=None,
+        event_payload={
+            "finished_at": finished_at.isoformat(),
+            "acknowledged": bool(result.acknowledged),
+        },
+    )
     return ExecutedDeviceCommand(command=command, result=result, measurement=measurement)

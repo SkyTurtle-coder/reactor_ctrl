@@ -227,7 +227,7 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertIn("Huber PB address mismatch: sent 0A, got 00.", message)
         self.assertNotEqual(message, "Device command execution failed.")
 
-    def test_execute_device_command_commits_queued_and_sent_before_driver_io(self):
+    def test_execute_device_command_commits_running_and_sent_before_driver_io(self):
         session = _FakeExecuteCommandSession()
         driver = _FakeDriver(session)
         connection = SimpleNamespace(
@@ -257,10 +257,10 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
 
         self.assertEqual(driver.commit_calls_at_execute, 2)
         self.assertEqual(execution.command.command_id, 5728)
-        self.assertEqual(execution.command.status, "acked")
+        self.assertEqual(execution.command.status, "completed")
         self.assertGreaterEqual(session.commit_calls, 3)
         event_types = [operation[1] for operation in session.operations if operation[0] == "add_event"]
-        self.assertEqual(event_types, ["queued", "sent", "response"])
+        self.assertEqual(event_types, ["running", "sent", "response", "completed"])
 
 
 if __name__ == "__main__":

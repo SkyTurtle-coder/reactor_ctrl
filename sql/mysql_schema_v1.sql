@@ -181,19 +181,35 @@ CREATE TABLE IF NOT EXISTS control_command (
   requested_by VARCHAR(100) NOT NULL DEFAULT 'system',
   command_name VARCHAR(100) NOT NULL,
   command_payload JSON NULL,
+  command_source VARCHAR(32) NULL,
+  command_priority INT NULL,
+  correlation_id VARCHAR(64) NULL,
+  worker_id VARCHAR(64) NULL,
   status VARCHAR(16) NOT NULL DEFAULT 'queued',
   requested_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   scheduled_for DATETIME(3) NULL,
+  started_at DATETIME(3) NULL,
   sent_at DATETIME(3) NULL,
   ack_at DATETIME(3) NULL,
   finished_at DATETIME(3) NULL,
+  queue_timeout_s DOUBLE NULL,
+  execution_timeout_s DOUBLE NULL,
+  total_deadline_at DATETIME(3) NULL,
+  cancel_requested_at DATETIME(3) NULL,
   retry_count INT UNSIGNED NOT NULL DEFAULT 0,
   error_message TEXT NULL,
   PRIMARY KEY (command_id),
   UNIQUE KEY uq_command_request_uuid (request_uuid),
   KEY idx_command_status_schedule (status, scheduled_for),
   KEY idx_command_device_time (device_id, requested_at),
-  CONSTRAINT chk_command_status CHECK (status IN ('queued', 'sent', 'acked', 'failed', 'timeout', 'cancelled')),
+  KEY ix_control_command_status_started_deadline (status, started_at, total_deadline_at),
+  CONSTRAINT chk_command_status CHECK (
+    status IN (
+      'pending', 'queued', 'running', 'sent', 'acked', 'completed',
+      'failed', 'error', 'timeout', 'cancelled', 'skipped', 'preempted',
+      'interrupted', 'expired', 'recovering', 'stop_requested', 'stopped'
+    )
+  ),
   CONSTRAINT fk_command_device
     FOREIGN KEY (device_id) REFERENCES device (device_id)
     ON UPDATE CASCADE
