@@ -62,6 +62,7 @@
     const plotWindowValueInput = document.getElementById("process-plot-window-value");
     const plotWindowUnitSelect = document.getElementById("process-plot-window-unit");
     const plotChartStack = document.getElementById("process-plot-chart-stack");
+    let plotLastPointer = null; // { clientX, clientY } — restored after chart re-render
     const plotStatus = document.getElementById("process-plot-status");
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView.v3";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
@@ -1594,6 +1595,7 @@
         };
 
         const showHover = (event) => {
+            plotLastPointer = { clientX: event.clientX, clientY: event.clientY };
             const svgRect = svg.getBoundingClientRect();
             if (svgRect.width <= 0 || svgRect.height <= 0) {
                 hideHover();
@@ -1850,6 +1852,18 @@
             fragment.appendChild(renderPlotChartCard(unitKey, group, plotWindow || state.plotWindow));
         }
         plotChartStack.appendChild(fragment);
+
+        // Restore hover tooltip if the pointer is still over a chart frame.
+        if (plotLastPointer) {
+            const { clientX, clientY } = plotLastPointer;
+            for (const frame of plotChartStack.querySelectorAll(".process-plot-chart-frame")) {
+                const rect = frame.getBoundingClientRect();
+                if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+                    frame.dispatchEvent(new PointerEvent("pointermove", { clientX, clientY, bubbles: true }));
+                    break;
+                }
+            }
+        }
     }
 
     function plotSeriesRequestKey(option) {
