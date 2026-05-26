@@ -111,10 +111,10 @@
     function validateInstanceIdInput(value) {
         const normalized = normalizeInstanceIdInput(value);
         if (!normalized) {
-            throw new Error("Element ID darf nicht leer sein.");
+            throw new Error("Element ID is required.");
         }
         if (!/^[A-Za-z0-9._-]+$/.test(normalized)) {
-            throw new Error("Element IDs duerfen nur Buchstaben, Zahlen, Punkt, Unterstrich oder Bindestrich enthalten.");
+            throw new Error("Element IDs may contain only letters, numbers, periods, underscores, or hyphens.");
         }
         return normalized;
     }
@@ -233,10 +233,10 @@
         }
         if (typeof value === "string") {
             const normalized = value.trim().toLowerCase();
-            if (["true", "1", "yes", "y", "on", "ein"].includes(normalized)) {
+            if (["true", "1", "yes", "y", "on"].includes(normalized)) {
                 return true;
             }
-            if (["false", "0", "no", "n", "off", "aus"].includes(normalized)) {
+            if (["false", "0", "no", "n", "off"].includes(normalized)) {
                 return false;
             }
         }
@@ -580,13 +580,13 @@
                 saveStateElement.textContent = "Speichert ...";
             } else if (state.isLoading) {
                 saveStateElement.classList.add("badge-info");
-                saveStateElement.textContent = "Laedt ...";
+                saveStateElement.textContent = "Loading ...";
             } else if (state.isDirty) {
                 saveStateElement.classList.add("badge-warning");
-                saveStateElement.textContent = "Ungespeichert";
+                saveStateElement.textContent = "Unsaved";
             } else {
                 saveStateElement.classList.add("badge-success");
-                saveStateElement.textContent = "Gespeichert";
+                saveStateElement.textContent = "Saved";
             }
         }
 
@@ -612,7 +612,7 @@
             return true;
         }
         return window.confirm(
-            `${actionLabel}?\n\nEs gibt ungespeicherte Aenderungen im aktuellen Build. Diese Aenderungen gehen verloren.`,
+            `${actionLabel}?\n\nThe current build has unsaved changes. These changes will be discarded.`,
         );
     }
 
@@ -647,7 +647,7 @@
         renderAll();
         scheduleDisplayTargetRefresh();
         void loadDisplayLiveValues({ quiet: true });
-        setStatus("Undo ausgefuehrt.", "muted");
+        setStatus("Undo applied.", "muted");
     }
 
     function setStatus(message, tone) {
@@ -666,8 +666,8 @@
 
     function currentDraftMessage() {
         return state.currentBuildId
-            ? `Build #${state.currentBuildId} geladen.`
-            : "Neuer Build. Ziehe Elemente aus der Library in die Fliessbildflaeche.";
+            ? `Build #${state.currentBuildId} loaded.`
+            : "New build. Drag elements from the library into the flowsheet.";
     }
 
     function applyLibraryFilter() {
@@ -953,7 +953,7 @@
         updateHistory(null);
         renderAll();
         capturePersistedSnapshot();
-        setStatus("Neuer Draft aktiv. Bestehende Builds bleiben in der Datenbank gespeichert.", "muted");
+        setStatus("New draft active. Existing builds remain stored in the database.", "muted");
     }
 
     if (buildData && typeof buildData === "object") {
@@ -1479,7 +1479,7 @@
             renderDisplayValues();
         } catch (error) {
             if (!options?.quiet) {
-                setStatus(error?.message || "Display-Werte konnten nicht geladen werden.", "error");
+                setStatus(error?.message || "Display values could not be loaded.", "error");
             }
         } finally {
             if (requestId === state.displayLiveRequestId) {
@@ -1552,7 +1552,7 @@
             const cell = document.createElement("td");
             cell.colSpan = 8;
             cell.className = "muted";
-            cell.textContent = "Noch keine Elemente im aktuellen Build.";
+            cell.textContent = "No elements in the current build.";
             row.appendChild(cell);
             communicationBody.appendChild(row);
             return;
@@ -1577,7 +1577,7 @@
                     nextValue = validateInstanceIdInput(instanceInput.value);
                 } catch (error) {
                     instanceInput.value = node.instance_id;
-                    setStatus(error.message || "Element ID ist ungueltig.", "error");
+                    setStatus(error.message || "Invalid element ID.", "error");
                     return;
                 }
                 if (hasDuplicateInstanceId(nextValue, node.id)) {
@@ -1594,7 +1594,7 @@
                 instanceInput.value = nextValue;
                 renderAll();
                 scheduleDisplayTargetRefresh();
-                setStatus("Element ID aktualisiert. Build noch nicht gespeichert.", "muted");
+                setStatus("Element ID updated. Build not saved.", "muted");
             });
             instanceCell.appendChild(instanceInput);
             row.appendChild(instanceCell);
@@ -1628,7 +1628,7 @@
                     input.value = nextValue;
                     syncDirtyState();
                     scheduleDisplayTargetRefresh();
-                    setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
+                    setStatus("Communication mapping updated. Build not saved.", "muted");
                 });
                 cell.appendChild(input);
                 row.appendChild(cell);
@@ -1641,14 +1641,14 @@
 
             const emptyOption = document.createElement("option");
             emptyOption.value = "";
-            emptyOption.textContent = displayNode ? "not used" : "Protokoll auswaehlen";
+            emptyOption.textContent = displayNode ? "not used" : "Select protocol";
             emptyOption.selected = !currentProtocol;
             protocolSelect.appendChild(emptyOption);
 
             if (supportedProtocols.length === 0) {
                 const unavailableOption = document.createElement("option");
                 unavailableOption.value = "";
-                unavailableOption.textContent = "Keine Protokolle geladen";
+                unavailableOption.textContent = "No protocols loaded";
                 unavailableOption.disabled = true;
                 unavailableOption.selected = !currentProtocol;
                 protocolSelect.appendChild(unavailableOption);
@@ -1679,7 +1679,7 @@
                 node.communication.protocol = nextValue;
                 syncDirtyState();
                 scheduleDisplayTargetRefresh();
-                setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
+                setStatus("Communication mapping updated. Build not saved.", "muted");
             });
             protocolCell.appendChild(protocolSelect);
             row.appendChild(protocolCell);
@@ -1699,7 +1699,7 @@
                 node.communication.notes = nextValue;
                 notesInput.value = nextValue;
                 syncDirtyState();
-                setStatus("Communication Mapping aktualisiert. Build noch nicht gespeichert.", "muted");
+                setStatus("Communication mapping updated. Build not saved.", "muted");
             });
             notesCell.appendChild(notesInput);
             row.appendChild(notesCell);
@@ -1759,7 +1759,7 @@
                     });
                     renderAll();
                     void loadDisplayLiveValues({ quiet: true });
-                    setStatus("Display-Wert aktualisiert. Build noch nicht gespeichert.", "muted");
+                    setStatus("Display value updated. Build not saved.", "muted");
                 });
                 displayValueCell.appendChild(displaySelect);
 
@@ -1781,7 +1781,7 @@
                     });
                     labelInput.value = nextLabel;
                     renderAll();
-                    setStatus("Display-Label aktualisiert. Build noch nicht gespeichert.", "muted");
+                    setStatus("Display label updated. Build not saved.", "muted");
                 });
                 displayLabelCell.appendChild(labelInput);
             }
@@ -1805,7 +1805,7 @@
         if (actuatorNodes.length === 0) {
             const empty = document.createElement("p");
             empty.className = "empty-state";
-            empty.textContent = "Noch keine Aktoren im aktuellen Build.";
+            empty.textContent = "No actuators in the current build.";
             controlBody.appendChild(empty);
             return;
         }
@@ -1826,7 +1826,7 @@
             heading.textContent = node.instance_id || node.label;
             const subtitle = document.createElement("p");
             subtitle.className = "muted";
-            subtitle.textContent = `${node.symbol_id} | ${node.communication.device_server_code || "ohne Moxa-Zuordnung"}`;
+            subtitle.textContent = `${node.symbol_id} | ${node.communication.device_server_code || "No Moxa mapping"}`;
             title.appendChild(heading);
             title.appendChild(subtitle);
 
@@ -1853,7 +1853,7 @@
                     config: normalizeProfileConfig(nextProfile, {}),
                 };
                 renderAll();
-                setStatus(`Aktorprofil fuer ${node.instance_id} aktualisiert. Build noch nicht gespeichert.`, "muted");
+                setStatus(`Actuator profile for ${node.instance_id} updated. Build not saved.`, "muted");
             });
             profileLabel.appendChild(profileText);
             profileLabel.appendChild(profileSelect);
@@ -1880,7 +1880,7 @@
                         node.control.profile_id = profile.id;
                         node.control.config[field.key] = checkbox.checked;
                         syncDirtyState();
-                        setStatus(`Aktorwert ${field.label} fuer ${node.instance_id} aktualisiert.`, "muted");
+                        setStatus(`Actuator value ${field.label} for ${node.instance_id} updated.`, "muted");
                     });
                     toggle.appendChild(checkbox);
                     toggle.appendChild(copy);
@@ -1923,7 +1923,7 @@
                     node.control.config[field.key] = nextValue;
                     input.value = String(nextValue);
                     syncDirtyState();
-                    setStatus(`Aktorwert ${field.label} fuer ${node.instance_id} aktualisiert.`, "muted");
+                    setStatus(`Actuator value ${field.label} for ${node.instance_id} updated.`, "muted");
                 });
                 fieldLabel.appendChild(fieldText);
                 fieldLabel.appendChild(input);
@@ -1976,7 +1976,7 @@
                 state.selectedEdgeId = edge.id;
                 state.selectedNodeId = null;
                 renderAll();
-                setStatus("Verbindung ausgewaehlt. Segmente oder Ecken ziehen, R = Auto-Routing, Del = Loeschen.", "muted");
+                setStatus("Connection selected. Drag segments or corners; R = auto-route, Del = delete.", "muted");
             });
             edgeLayer.appendChild(path);
 
@@ -2122,7 +2122,7 @@
         state.anchorMove = null;
         renderAll();
         if (didMove) {
-            setStatus("Anchor versetzt. Verbundene Leitungen wurden aktualisiert.", "success");
+            setStatus("Anchor moved. Connected lines updated.", "success");
         }
     }
 
@@ -2195,7 +2195,7 @@
         state.edgeSegmentMove = null;
         renderAll();
         if (didMove) {
-            setStatus("Leitungsverlauf aktualisiert. Build noch nicht gespeichert.", "success");
+            setStatus("Line route updated. Build not saved.", "success");
         }
     }
 
@@ -2277,7 +2277,7 @@
         state.cornerMove = null;
         renderAll();
         if (didMove) {
-            setStatus("Ecke verschoben. Build noch nicht gespeichert.", "muted");
+            setStatus("Corner moved. Build not saved.", "muted");
         }
     }
 
@@ -2427,7 +2427,7 @@
             state.selectedNodeId = nodeId;
             state.selectedEdgeId = null;
             renderAll();
-            setStatus("An dieser Position existiert bereits ein Anchor.", "muted");
+            setStatus("An anchor already exists at this position.", "muted");
             return;
         }
 
@@ -2477,9 +2477,9 @@
                 if (state.mode === "connect") {
                     selectNode(node.id);
                     if (node.anchors.length === 0) {
-                        setStatus("Dieses Element hat noch keine Anchorpunkte. Nutze zuerst das Anchor Tool.", "error");
+                        setStatus("This element has no anchors. Use the anchor tool first.", "error");
                     } else {
-                        setStatus("Klicke einen sichtbaren Anchorpunkt, um eine Verbindung zu starten oder zu beenden.", "muted");
+                        setStatus("Click a visible anchor to start or end a connection.", "muted");
                     }
                     return;
                 }
@@ -2597,7 +2597,7 @@
                         if (edgeExists(nextEdge)) {
                             state.pendingAnchor = null;
                             renderAll();
-                            setStatus("Zwischen diesen Anchors existiert bereits eine Verbindung.", "error");
+                            setStatus("A connection already exists between these anchors.", "error");
                             return;
                         }
 
@@ -2607,7 +2607,7 @@
                         state.selectedEdgeId = nextEdge.id;
                         state.selectedNodeId = null;
                         renderAll();
-                        setStatus("Verbindung erstellt und auf Anchorpunkte gesnappt.", "success");
+                        setStatus("Connection created and snapped to anchors.", "success");
                     });
                     anchorLayer.appendChild(anchorButton);
                 }
@@ -2689,7 +2689,7 @@
         state.dragMove = null;
         renderAll();
         if (didMove) {
-            setStatus("Element verschoben. Build noch nicht gespeichert.", "muted");
+            setStatus("Element moved. Build not saved.", "muted");
         }
     }
 
@@ -2706,7 +2706,7 @@
         renderAll();
         scheduleDisplayTargetRefresh();
         void loadDisplayLiveValues({ quiet: true });
-        setStatus("Element entfernt. Build noch nicht gespeichert.", "muted");
+        setStatus("Element removed. Build not saved.", "muted");
     }
 
     function removeEdge(edgeId) {
@@ -2714,7 +2714,7 @@
         state.edges = state.edges.filter((edge) => edge.id !== edgeId);
         state.selectedEdgeId = null;
         renderAll();
-        setStatus("Verbindung entfernt. Build noch nicht gespeichert.", "muted");
+        setStatus("Connection removed. Build not saved.", "muted");
     }
 
     function setMode(mode) {
@@ -2737,11 +2737,11 @@
         renderAll();
 
         if (state.mode === "anchor") {
-            setStatus("Anchor Tool aktiv. Klicke fuer neue Anchors oder bewege bestehende Anchors frei innerhalb der Figur.", "muted");
+            setStatus("Anchor tool active. Click to add anchors or move existing anchors within the symbol.", "muted");
             return;
         }
         if (state.mode === "connect") {
-            setStatus("Connection Tool aktiv. Verbindungen an Anchors erstellen und Leitungssegmente direkt verschieben.", "muted");
+            setStatus("Connection tool active. Create anchor-based connections and move line segments directly.", "muted");
             return;
         }
         setStatus(currentDraftMessage(), "muted");
@@ -2778,12 +2778,12 @@
     function openInstanceModal(symbolId, x, y) {
         const symbol = libraryById.get(symbolId);
         if (!symbol) {
-            setStatus(`Symbol ${symbolId} ist nicht in der Library registriert.`, "error");
+            setStatus(`Symbol ${symbolId} is not registered in the library.`, "error");
             return;
         }
         state.modalReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         state.pendingPlacement = { symbolId, x, y };
-        instanceModalCopy.textContent = `Vergib eine eindeutige ID für ${symbol.label}. Diese ID wird im Canvas angezeigt und für die Kommunikationszuordnung verwendet.`;
+        instanceModalCopy.textContent = `Assign a unique ID to ${symbol.label}. The ID is shown on the canvas and used for communication mapping.`;
         instanceIdInput.value = suggestionForSymbol(symbolId);
         instanceModal.classList.remove("is-hidden");
         window.setTimeout(() => {
@@ -2802,7 +2802,7 @@
         try {
             instanceId = validateInstanceIdInput(instanceIdInput.value);
         } catch (error) {
-            setStatus(error.message || "Element ID ist ungueltig.", "error");
+            setStatus(error.message || "Invalid element ID.", "error");
             instanceIdInput.focus();
             instanceIdInput.select();
             return;
@@ -2822,14 +2822,14 @@
     function addNodeFromSymbol(symbolId, x, y, instanceId) {
         const symbol = libraryById.get(symbolId);
         if (!symbol) {
-            setStatus(`Symbol ${symbolId} ist nicht in der Library registriert.`, "error");
+            setStatus(`Symbol ${symbolId} is not registered in the library.`, "error");
             return;
         }
         let safeInstanceId;
         try {
             safeInstanceId = validateInstanceIdInput(instanceId);
         } catch (error) {
-            setStatus(error.message || "Element ID ist ungueltig.", "error");
+            setStatus(error.message || "Invalid element ID.", "error");
             return;
         }
         if (hasDuplicateInstanceId(safeInstanceId, null)) {
@@ -2870,13 +2870,13 @@
         const buildUser = userInput.value.trim();
 
         if (!buildName) {
-            throw new Error("Build Name darf nicht leer sein.");
+            throw new Error("Build name is required.");
         }
         if (!buildDate) {
-            throw new Error("Date muss gesetzt sein.");
+            throw new Error("Date is required.");
         }
         if (!buildUser) {
-            throw new Error("User darf nicht leer sein.");
+            throw new Error("User is required.");
         }
 
         const payload = {
@@ -2979,7 +2979,7 @@
                     continue;
                 }
                 if (error?.name === "AbortError") {
-                    throw new Error("Request Timeout. Bitte Verbindung und Serverstatus pruefen.");
+                    throw new Error("Request timeout. Check the connection and server status.");
                 }
                 throw new Error(error?.message || "Request fehlgeschlagen.");
             } finally {
@@ -2995,7 +2995,7 @@
             return;
         }
         if (metaData.apiAuthRequired && !metaData.builderWriteToken) {
-            setStatus("Der Server liefert keinen Builder-Token. Speichern ist derzeit nicht verfuegbar.", "error");
+            setStatus("The server did not provide a builder token. Saving is unavailable.", "error");
             return;
         }
 
@@ -3004,7 +3004,7 @@
         try {
             payload = buildPayload(isCreate);
         } catch (error) {
-            setStatus(error.message || "Build-Daten sind ungueltig.", "error");
+            setStatus(error.message || "Invalid build data.", "error");
             return;
         }
 
@@ -3020,7 +3020,7 @@
 
         state.isSaving = true;
         syncUiState();
-        setStatus("Build wird gespeichert ...", "muted");
+        setStatus("Saving build ...", "muted");
 
         try {
             const savedBuild = await fetchJson(url, {
@@ -3030,9 +3030,9 @@
             });
 
             applyBuildRecord(savedBuild, { clearUndo: false });
-            setStatus("Build gespeichert. SQL-Stand und Builder sind synchron.", "success");
+            setStatus("Build saved. SQL state and builder are synchronized.", "success");
         } catch (error) {
-            setStatus(error.message || "Speichern fehlgeschlagen.", "error");
+            setStatus(error.message || "Save failed.", "error");
         } finally {
             state.isSaving = false;
             syncUiState();
@@ -3050,16 +3050,16 @@
 
         state.isLoading = true;
         syncUiState();
-        setStatus("Build wird geladen ...", "muted");
+        setStatus("Loading build ...", "muted");
         try {
             const build = await fetchJson(`/api/reactor-builds/${buildId}`, {
                 method: "GET",
             });
             applyBuildRecord(build, { clearUndo: true });
-            setStatus(`Build #${buildId} geladen.`, "success");
+            setStatus(`Build #${buildId} loaded.`, "success");
         } catch (error) {
             setBuildSelection(state.currentBuildId);
-            setStatus(error.message || "Build konnte nicht geladen werden.", "error");
+            setStatus(error.message || "Build could not be loaded.", "error");
         } finally {
             state.isLoading = false;
             syncUiState();
@@ -3101,7 +3101,7 @@
             removeEdge(state.selectedEdgeId);
             return;
         }
-        setStatus("Kein Element oder keine Verbindung ausgewaehlt.", "error");
+        setStatus("No element or connection selected.", "error");
     });
 
     selectToolButton.addEventListener("click", () => {
@@ -3136,7 +3136,7 @@
 
     if (newBuildButton) {
         newBuildButton.addEventListener("click", () => {
-            if (!confirmDiscardDirtyChanges("Neuen Draft starten")) {
+            if (!confirmDiscardDirtyChanges("Start new draft")) {
                 return;
             }
             resetDraft();
@@ -3146,7 +3146,7 @@
     if (buildSelect) {
         buildSelect.addEventListener("change", () => {
             const nextBuildId = parseBuildId(buildSelect.value);
-            if (!confirmDiscardDirtyChanges(nextBuildId ? `Build #${nextBuildId} laden` : "Zum Draft wechseln")) {
+            if (!confirmDiscardDirtyChanges(nextBuildId ? `Load build #${nextBuildId}` : "Switch to draft")) {
                 setBuildSelection(state.currentBuildId);
                 return;
             }

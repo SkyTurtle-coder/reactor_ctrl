@@ -8,7 +8,7 @@ from .ika_eurostar import IkaEurostarDriver
 
 _DRIVER_TYPES = (HuberUnistatDriver, HuberCC230Driver, IkaEurostarDriver)
 
-# Erlaubte Protokolle fuer die UI-Auswahlliste.
+# Protocols available in the UI selection list.
 _PROTOCOL_LABELS = {
     "huber_cc230": "Huber/Polystat CC230",
     "huber_unistat_430": "Huber Unistat 430",

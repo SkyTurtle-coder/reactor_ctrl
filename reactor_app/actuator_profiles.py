@@ -20,7 +20,7 @@ ACTUATOR_PROFILES: dict[str, dict[str, Any]] = {
             },
             {
                 "key": "speed",
-                "label": "Drehzahl",
+                "label": "Speed",
                 "type": "number",
                 "mode": "int",
                 "unit": "rpm",
@@ -77,12 +77,12 @@ ACTUATOR_PROFILES: dict[str, dict[str, Any]] = {
     },
     "pump_rpm": {
         "id": "pump_rpm",
-        "label": "Pumpe",
+        "label": "Pump",
         "allowed_symbols": {"pump"},
         "fields": [
             {
                 "key": "speed",
-                "label": "Drehzahl",
+                "label": "Speed",
                 "type": "number",
                 "mode": "int",
                 "unit": "rpm",
@@ -153,9 +153,9 @@ def _coerce_bool(value: Any, *, field_name: str) -> bool:
         return bool(value)
     if isinstance(value, str):
         normalized = value.strip().lower()
-        if normalized in {"true", "1", "yes", "y", "on", "ein"}:
+        if normalized in {"true", "1", "yes", "y", "on"}:
             return True
-        if normalized in {"false", "0", "no", "n", "off", "aus"}:
+        if normalized in {"false", "0", "no", "n", "off"}:
             return False
     raise ValueError(f"Field '{field_name}' must be a boolean.")
 

@@ -61,14 +61,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-confirm-dialog-icon", html)
 
         forbidden_strings = (
-            "Status lesen",
-            "Aktor anwenden",
-            "Direktbefehl",
-            "Kein Befehl gesendet",
-            "LIVE-WERTE",
-            "Geraetestatus",
-            "Gerätestatus",
-            "Protokollhinweis",
+            "Read status",
+            "Apply actuator",
+            "Direct command",
+            "No command sent",
+            "LIVE VALUES",
+            "Device status",
+            "Protocol note",
             "Actual Value Plot",
             "Select sensor and actuator values from the loaded flowsheet to plot their recent measurements.",
             "Checkboxes are derived from the mapped sensors and actuators on this flowsheet.",
@@ -103,14 +102,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         source = script_path.read_text(encoding="utf-8")
 
         forbidden_strings = (
-            "Status lesen",
-            "Aktor anwenden",
-            "Direktbefehl",
-            "Kein Befehl gesendet",
-            "LIVE-WERTE",
-            "Geraetestatus",
-            "Gerätestatus",
-            "Protokollhinweis",
+            "Read status",
+            "Apply actuator",
+            "Direct command",
+            "No command sent",
+            "LIVE VALUES",
+            "Device status",
+            "Protocol note",
         )
         for text in forbidden_strings:
             self.assertNotIn(text, source)

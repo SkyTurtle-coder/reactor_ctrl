@@ -36,8 +36,8 @@
         { value: "off", label: "OFF" },
     ];
     const CONTROL_SENSOR_OPTIONS = [
-        { value: "internal", label: "Interner Sensor" },
-        { value: "external", label: "Externer Sensor" },
+        { value: "internal", label: "Internal sensor" },
+        { value: "external", label: "External sensor" },
     ];
 
     // ── Utilities ────────────────────────────────────────────────────────────
@@ -472,7 +472,7 @@
             return `<span class="recipe-device-na">—</span>`;
         }
         const value = controlSensorValue(ref);
-        const title = "Der Bezugspunkt bestimmt, auf welchen Sensor der Thermostat regelt. Extern nur verwenden, wenn ein externer Fühler angeschlossen und plausibel ist.";
+        const title = "The reference sensor defines thermostat control. Select external only when the probe is connected and plausible.";
         const options = CONTROL_SENSOR_OPTIONS.map((o) => `<option value="${escapeHtml(o.value)}"${o.value === value ? " selected" : ""}>${escapeHtml(o.label)}</option>`).join("");
         return `<select data-param="${CONTROL_SENSOR_FIELD}" data-row="${rowIndex}" data-actor="${escapeHtml(actorId)}" class="recipe-control-sensor-select" title="${escapeHtml(title)}"${disabled ? " disabled" : ""}>${options}</select>`;
     }
@@ -648,7 +648,7 @@
             html += `<th class="recipe-device-col-name">Device</th>`;
             html += `<th class="recipe-device-col-param">Parameter</th>`;
             html += `<th class="recipe-device-col-action">Action</th>`;
-            html += `<th class="recipe-device-col-sensor">Regelung über</th>`;
+            html += `<th class="recipe-device-col-sensor">Reference Sensor</th>`;
             html += `<th class="recipe-device-col-setpoint">Setpoint</th>`;
             html += `<th class="recipe-device-col-unit">Unit</th>`;
             html += `<th class="recipe-device-col-order">Order</th>`;
@@ -665,7 +665,7 @@
             html += makeActorPicker(step, index, !sortedRefs.length, disabled);
             html += duplicatePriorityWarningHtml(step);
             if (sortedRefs.some((ref) => controlSensorSupportedForActor(actorIdForRef(ref)))) {
-                html += `<div class="recipe-control-sensor-hint">Der Bezugspunkt bestimmt, auf welchen Sensor der Thermostat regelt. Extern nur verwenden, wenn ein externer Fühler angeschlossen und plausibel ist.</div>`;
+                html += `<div class="recipe-control-sensor-hint">The reference sensor defines thermostat control. Select external only when the probe is connected and plausible.</div>`;
             }
             html += `</div>`; // end device-section
 

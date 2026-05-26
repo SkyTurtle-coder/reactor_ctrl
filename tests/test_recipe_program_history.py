@@ -583,7 +583,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 command_id=390180,
                 command_name="set_setpoint",
                 status="failed",
-                error_message="Keine Antwort vom Huber Unistat 430.",
+                error_message="No response from Huber Unistat 430.",
             )
 
             def fail_command(*args, **kwargs):
@@ -609,7 +609,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             self.assertIn("HUBER-01", state.last_error)
             self.assertIn("set_setpoint", state.last_error)
             self.assertIn("Huber Unistat 430", state.last_error)
-            self.assertIn("Keine Antwort", state.last_error)
+            self.assertIn("No response", state.last_error)
             self.assertEqual(events[-1].event_type, "error")
 
     def test_can_start_different_recipe_after_error(self):

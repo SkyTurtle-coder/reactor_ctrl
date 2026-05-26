@@ -294,7 +294,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
             command_id=390180,
             command_name="set_setpoint",
             status="failed",
-            error_message="Keine Antwort vom Huber Unistat 430.",
+            error_message="No response from Huber Unistat 430.",
         )
         fake_session = _FakeSession(device)
 
@@ -324,7 +324,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertIn("set_setpoint", message)
         self.assertIn("Huber Unistat", message)
         self.assertIn("390180", message)
-        self.assertIn("Keine Antwort", message)
+        self.assertIn("No response", message)
         self.assertEqual(fake_session.commit_calls, 0)
 
     def test_huber_current_target_respects_stop_before_start_command(self):
