@@ -13,7 +13,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from flask import has_app_context
 
@@ -42,30 +42,37 @@ logger = logging.getLogger(__name__)
 _RUNTIME_SCHEDULER_EXTENSION_KEY = "runtime_command_scheduler"
 _DEFAULT_RUNTIME_WORKER_COUNT = 2
 _DEFAULT_TIMEOUT_POLICY: dict[int, dict[str, float]] = {
+    # EMERGENCY_STOP and SAFETY commands must never expire waiting in the queue
+    # while a lower-priority command finishes.  Give them a long enough total
+    # budget to outlast any running recipe or manual command.
     int(CommandPriority.EMERGENCY_STOP): {
-        "queue_timeout_s": 10.0,
-        "execution_timeout_s": 6.0,
-        "total_timeout_s": 15.0,
+        "queue_timeout_s": 30.0,   # was 10 — must outlast any running recipe cmd
+        "execution_timeout_s": 15.0,  # was 6
+        "total_timeout_s": 60.0,   # was 15
     },
     int(CommandPriority.SAFETY): {
-        "queue_timeout_s": 10.0,
-        "execution_timeout_s": 6.0,
-        "total_timeout_s": 15.0,
+        "queue_timeout_s": 30.0,   # was 10
+        "execution_timeout_s": 15.0,  # was 6
+        "total_timeout_s": 60.0,   # was 15
     },
+    # RECIPE commands run multi-step sequences (enable_remote → select_sensor →
+    # set_setpoint → readback verify → start).  The old 5 s queue / 12 s total
+    # was too tight: a prior recipe command occupying the device for ~6 s would
+    # push the next one past the queue deadline, triggering an immediate ERROR.
     int(CommandPriority.RECIPE): {
-        "queue_timeout_s": 5.0,
-        "execution_timeout_s": 6.0,
-        "total_timeout_s": 12.0,
+        "queue_timeout_s": 15.0,   # was 5
+        "execution_timeout_s": 12.0,  # was 6 — Huber sequences take ~3-8 s
+        "total_timeout_s": 30.0,   # was 12
     },
     int(CommandPriority.MANUAL): {
-        "queue_timeout_s": 5.0,
-        "execution_timeout_s": 6.0,
-        "total_timeout_s": 12.0,
+        "queue_timeout_s": 15.0,   # was 5
+        "execution_timeout_s": 12.0,  # was 6
+        "total_timeout_s": 30.0,   # was 12
     },
     int(CommandPriority.POLLING): {
-        "queue_timeout_s": 1.0,
-        "execution_timeout_s": 3.0,
-        "total_timeout_s": 4.0,
+        "queue_timeout_s": 2.0,    # was 1
+        "execution_timeout_s": 5.0,   # was 3
+        "total_timeout_s": 8.0,    # was 4
     },
 }
 _RECOVERY_MANUAL_MAX_AGE_SECONDS = 15.0

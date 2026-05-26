@@ -37,6 +37,14 @@ _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
+
+# Per-recipe transient-error retry tracking.
+# Key: RecipeProgramState.recipe_program_state_id (always 1 in practice).
+# Value: consecutive transient device errors on the current recipe execution.
+# Reset to 0 on any successful reconciler cycle.
+_transient_error_counts: dict[int, int] = {}
+_MAX_TRANSIENT_ERRORS = 3  # retries before a transient device error becomes fatal
+_RETRYABLE_RUNTIME_STATUSES: frozenset[str] = frozenset({"timeout", "expired"})
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
 _STATUS_FIELD = "is_on"
 _CONTROL_SENSOR_FIELD = "control_sensor"
@@ -108,6 +116,42 @@ def _is_mysql_record_changed_error(exc: OperationalError) -> bool:
 
 def _is_transient_mysql_error(exc: OperationalError) -> bool:
     return _mysql_error_code(exc) in _TRANSIENT_MYSQL_ERROR_CODES
+
+
+def _device_error_runtime_status(exc: "DeviceCommandError") -> str | None:
+    """Return the runtime_status embedded in a DeviceCommandError, or None."""
+    details = getattr(exc, "details", None)
+    if not isinstance(details, dict):
+        return None
+    return str(details.get("runtime_status") or "").strip().lower() or None
+
+
+def _is_transient_device_error(exc: "DeviceCommandError") -> bool:
+    """Return True if the DeviceCommandError is likely transient and safe to retry.
+
+    Transient errors:
+    - Queue/execution timeout (runtime_status timeout or expired, or HTTP 504)
+    - Device-busy without a non-retryable runtime_status (HTTP 409)
+    - Socket-level connection/timeout errors embedded in the message
+
+    Non-transient errors (not retried):
+    - Validation errors (400), server-side errors (500)
+    - Cancelled / preempted / skipped (programme-level interrupts)
+    - Driver-level hardware errors
+    """
+    runtime_status = _device_error_runtime_status(exc)
+    if runtime_status in _RETRYABLE_RUNTIME_STATUSES:
+        return True
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 504:
+        return True
+    if status_code == 409 and runtime_status in (None, ""):
+        # device-busy without an explicit status is a lock-contention timeout
+        return True
+    msg = str(exc).lower()
+    if "timeout" in msg or "timed out" in msg or "connection" in msg:
+        return True
+    return False
 
 
 def _is_duplicate_key_error(exc: IntegrityError) -> bool:
@@ -1510,7 +1554,9 @@ def _apply_safe_stop_to_binding(
                     source=CommandSource.SYSTEM,
                 )
             except Exception as exc:
-                errors.append(f"{actor}: {command_name} failed: {exc}")
+                error_msg = f"{actor}: {command_name} failed: {exc}"
+                errors.append(error_msg)
+                app.logger.error("Recipe safe-state command failed: %s", error_msg)
         return safe_target, errors
 
     if _is_ika_motor_binding(binding):
@@ -1526,7 +1572,9 @@ def _apply_safe_stop_to_binding(
                 requested_by=requested_by,
             )
         except Exception as exc:
-            errors.append(f"{actor}: queue safe stirrer state failed: {exc}")
+            error_msg = f"{actor}: queue safe stirrer state failed: {exc}"
+            errors.append(error_msg)
+            app.logger.error("Recipe safe-state command failed: %s", error_msg)
 
         for command_text in (f"OUT_SP_4 {safe_rpm}", "STOP_4"):
             try:
@@ -1543,7 +1591,9 @@ def _apply_safe_stop_to_binding(
                     source=CommandSource.SYSTEM,
                 )
             except Exception as exc:
-                errors.append(f"{actor}: {command_text} failed: {exc}")
+                error_msg = f"{actor}: {command_text} failed: {exc}"
+                errors.append(error_msg)
+                app.logger.error("Recipe safe-state command failed: %s", error_msg)
         return safe_target, errors
 
     safe_target.update({"is_on": False})
@@ -1557,11 +1607,17 @@ def _apply_safe_stop_to_binding(
         )
         safe_target["rpm"] = 0
     except Exception as exc:
-        errors.append(f"{actor}: queue safe state failed: {exc}")
+        error_msg = f"{actor}: queue safe state failed: {exc}"
+        errors.append(error_msg)
+        app.logger.error("Recipe safe-state command failed: %s", error_msg)
     return safe_target, errors
 
 
 def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
+    app.logger.info(
+        "Recipe stop requested by '%s': cancelling pending commands and applying safe-state.",
+        requested_by,
+    )
     state = _ensure_program_state()
     run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
     _publish_program_stop_request(state)
@@ -1604,6 +1660,13 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
 
     now = _now_utc()
     error_message = "; ".join(safe_errors) if safe_errors else None
+    if error_message:
+        app.logger.critical(
+            "Recipe safe-state had %d failure(s) during stop (requested_by=%s): %s",
+            len(safe_errors),
+            requested_by,
+            error_message,
+        )
     state.status = "error" if error_message else "stopped"
     state.requested_by = requested_by
     state.stop_requested = False
@@ -1925,6 +1988,9 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
                     evaluation=evaluation,
                     payload={"applied_targets": _applied_targets_payload(state.last_applied_targets_json)},
                 )
+        # Successful cycle — clear any accumulated transient-error counter so the
+        # next step starts with a clean retry budget.
+        _transient_error_counts.pop(_PROGRAM_STATE_ID, None)
         _release_program_lease(state)
         db.session.commit()
     except Exception as exc:
@@ -1957,6 +2023,48 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
             )
             return
 
+        # Transient device command errors (socket timeout, queue timeout, busy
+        # device) are retried up to _MAX_TRANSIENT_ERRORS consecutive times
+        # before the recipe is marked as error.  Each successful cycle resets
+        # the counter so transient failures on different steps don't accumulate.
+        if isinstance(exc, RecipeProgramDeviceCommandError):
+            cause = getattr(exc, "__cause__", None)
+            if isinstance(cause, DeviceCommandError) and _is_transient_device_error(cause):
+                retry_count = _transient_error_counts.get(_PROGRAM_STATE_ID, 0) + 1
+                _transient_error_counts[_PROGRAM_STATE_ID] = retry_count
+                if retry_count <= _MAX_TRANSIENT_ERRORS:
+                    try:
+                        db.session.execute(
+                            text(
+                                "UPDATE recipe_program_state "
+                                "SET lease_owner = NULL, lease_expires_at = NULL "
+                                "WHERE recipe_program_state_id = :sid"
+                            ),
+                            {"sid": _PROGRAM_STATE_ID},
+                        )
+                        db.session.commit()
+                    except Exception:
+                        try:
+                            db.session.rollback()
+                        except Exception:
+                            pass
+                    app.logger.warning(
+                        "Recipe program: transient device error (attempt %d/%d); "
+                        "lease released, will retry on next cycle. Error: %s",
+                        retry_count,
+                        _MAX_TRANSIENT_ERRORS,
+                        exc,
+                    )
+                    return
+                app.logger.error(
+                    "Recipe program: transient device error exceeded retry limit "
+                    "(%d/%d attempts); failing recipe. Error: %s",
+                    retry_count,
+                    _MAX_TRANSIENT_ERRORS,
+                    exc,
+                )
+
+        _transient_error_counts.pop(_PROGRAM_STATE_ID, None)
         state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
         if state is None:
             return
