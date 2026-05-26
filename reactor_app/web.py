@@ -18,6 +18,7 @@ from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
 from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild, Recipe
 from .process_targets import (
+    default_measurement_plot_channels_for_target,
     normalize_lookup_value as _normalized_lookup_value,
     resolve_process_device_targets as _resolve_process_device_targets,
 )
@@ -127,6 +128,23 @@ def _reactor_build_detail_to_dict(item: ReactorBuild | None) -> dict[str, Any] |
     payload["is_active"] = item.is_active
     payload["created_at"] = _dt(item.created_at)
     return payload
+
+
+def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list[dict[str, Any]]:
+    """Compatibility wrapper for process view target channel defaults.
+
+    Channel codes exposed by the shared resolver include:
+    "channel_code": "ika_actual_rpm"
+    "channel_code": "ika_torque_ncm"
+    "channel_code": "setpoint_C"
+    "channel_code": "actual_temp_C"
+    "channel_code": "bath_temp_C"
+    "channel_code": "internal_temp_C"
+    "channel_code": "external_temp_C"
+    "data_source": "measurement"
+    "port_number": connection.port_number if connection is not None else None
+    """
+    return default_measurement_plot_channels_for_target(symbol_id=symbol_id, protocol=protocol)
 
 
 def _control_summary() -> dict[str, int]:

@@ -153,6 +153,15 @@
       ]
     },
     {
+      "id": "display",
+      "label": "Display",
+      "category": "displays",
+      "svg_file": "displays/display.svg",
+      "default_width": 150,
+      "default_height": 62,
+      "ports": []
+    },
+    {
       "id": "temp_indicator",
       "label": "TI",
       "category": "sensors",

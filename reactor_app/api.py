@@ -1330,6 +1330,7 @@ def api_index():
                 "devices": "/api/devices",
                 "device_protocols": "/api/device-protocols",
                 "reactor_builds": "/api/reactor-builds",
+                "reactor_build_display_targets": "/api/reactor-builds/display-targets",
                 "device_servers": "/api/device-servers",
                 "device_connections": "/api/device-connections",
                 "device_binding_example": "/api/devices/<device_id>/binding",
@@ -1368,6 +1369,26 @@ def create_reactor_build():
     if not ok:
         return error_response
     return jsonify(_reactor_build_to_dict(item, include_definition=True)), 201
+
+
+@api_bp.post("/reactor-builds/display-targets")
+def resolve_reactor_build_display_targets():
+    try:
+        payload = _load_json_payload()
+        definition = _validate_reactor_build_definition(payload.get("definition_json"))
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    try:
+        targets = resolve_process_device_targets_for_definition(
+            definition,
+            categories={"actuators", "sensors"},
+        )
+    except SQLAlchemyError:
+        db.session.rollback()
+        return _json_error("Display value targets could not be resolved.", 500)
+
+    return jsonify({"targets": targets})
 
 
 @api_bp.get("/reactor-builds/<int:reactor_build_id>")

@@ -2154,6 +2154,59 @@ h2 {
     pointer-events: none;
 }
 
+.builder-node-display .builder-node-graphic {
+    padding: 0;
+}
+
+.builder-display-box {
+    display: grid;
+    align-content: center;
+    gap: 0.15rem;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    padding: 0.45rem 0.65rem;
+    border: 2px solid #111111;
+    border-radius: 2px;
+    background: #ffffff;
+    color: #111111;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+    text-align: center;
+}
+
+.builder-display-label,
+.builder-display-value {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.builder-display-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #2f3a45;
+}
+
+.builder-display-value {
+    font-size: 1rem;
+    font-weight: 800;
+    color: #111111;
+}
+
+.builder-display-value[data-display-tone="placeholder"],
+.builder-display-value[data-display-tone="no-data"],
+.builder-display-value[data-display-tone="unavailable"] {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #57616d;
+}
+
+.builder-display-value[data-display-tone="unavailable"] {
+    color: #9a3412;
+}
+
 .builder-node-anchor-layer {
     position: absolute;
     inset: 0;
