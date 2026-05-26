@@ -475,6 +475,9 @@ class HuberUnistatDriver(DeviceDriver):
             metadata.update({"addr": "0A", "value_hex": value_hex, "request_hex": request_bytes.hex()})
             return self._result(value, value_hex, response_bytes, metadata)
 
+        if command_name in {"read_live_telemetry", "get_live_telemetry"}:
+            return self._metadata_only_result(self._read_live_telemetry(client), metadata)
+
         if command_name == "clear_error":
             value_hex, request_bytes, response_bytes = client.write_var("05", "0001")
             metadata.update({"addr": "05", "value_hex": value_hex, "request_hex": request_bytes.hex()})
@@ -495,6 +498,42 @@ class HuberUnistatDriver(DeviceDriver):
             response_hex="",
             metadata=metadata,
         )
+
+    def _optional_named_read(
+        self,
+        client: _TransportHuberClient,
+        *,
+        addr: str,
+        decoder: str,
+        interrupt_location: str,
+    ) -> Any:
+        client._throw_if_interrupted(location=interrupt_location)
+        try:
+            value_hex, _, _ = client.read_var(addr)
+        except (DriverError, OSError):
+            return None
+        return self._decode_named_value(decoder, value_hex)
+
+    def _read_live_telemetry(self, client: _TransportHuberClient) -> dict[str, Any]:
+        setpoint = self._optional_named_read(
+            client,
+            addr="00",
+            decoder="temperature_c",
+            interrupt_location="driver.huber_unistat.live_telemetry_setpoint",
+        )
+        actual_temp = self._optional_named_read(
+            client,
+            addr="01",
+            decoder="temperature_c",
+            interrupt_location="driver.huber_unistat.live_telemetry_actual",
+        )
+        telemetry = {
+            "setpoint_C": None if setpoint is None else float(setpoint),
+            "actual_temp_C": None if actual_temp is None else float(actual_temp),
+        }
+        if telemetry["setpoint_C"] is None and telemetry["actual_temp_C"] is None:
+            raise DriverError("Huber returned no valid data for setpoint or actual temperature.")
+        return telemetry
 
     def _read_start_preflight(self, client: _TransportHuberClient) -> dict[str, Any]:
         client._throw_if_interrupted(location="driver.huber_unistat.start_preflight")

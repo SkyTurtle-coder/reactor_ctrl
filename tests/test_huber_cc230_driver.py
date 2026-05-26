@@ -157,6 +157,36 @@ class HuberCC230DriverTests(unittest.TestCase):
         with self.assertRaises((socket.timeout, OSError, DriverError)):
             self.execute("get_setpoint", responses=[socket.timeout])
 
+    def test_read_live_telemetry_batches_temperature_reads_into_one_driver_command(self):
+        result, transport = self.execute(
+            "read_live_telemetry",
+            responses=[
+                b"TEMP +02450\r\n",
+                b"TI +02440\r\n",
+                b"BATH +02430\r\n",
+                b"TE +02420\r\n",
+                b"SP +02500\r\n",
+            ],
+        )
+
+        self.assertEqual(
+            result.metadata["value"],
+            {
+                "setpoint_C": 25.0,
+                "actual_temp_C": 24.5,
+                "bath_temp_C": 24.3,
+                "internal_temp_C": 24.4,
+                "external_temp_C": 24.2,
+                "status": None,
+                "error": None,
+                "warning": None,
+            },
+        )
+        self.assertEqual(
+            transport.sent,
+            [b"TEMP?\r\n", b"TI?\r\n", b"BATH?\r\n", b"TE?\r\n", b"SP?\r\n"],
+        )
+
     # ------------------------------------------------------------------ #
     # write_setpoint: readback verified                                   #
     # ------------------------------------------------------------------ #

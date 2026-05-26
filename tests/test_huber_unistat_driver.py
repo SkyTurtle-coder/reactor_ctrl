@@ -66,6 +66,22 @@ class HuberUnistatDriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], 25.0)
         self.assertEqual(result.metadata["value_hex"], "09C4")
 
+    def test_read_live_telemetry_reads_setpoint_and_actual_temperature(self):
+        transport = _FakeTransport([b"{S0009C4\r\n", b"{S010960\r\n"])
+        result = HuberUnistatDriver().execute(
+            transport=transport,
+            request=DeviceCommandRequest(command_name="read_live_telemetry", payload={}),
+        )
+
+        self.assertEqual(
+            result.metadata["value"],
+            {
+                "setpoint_C": 25.0,
+                "actual_temp_C": 24.0,
+            },
+        )
+        self.assertEqual(transport.sent, [b"{M00****\r\n", b"{M01****\r\n"])
+
     def test_set_setpoint_checks_safety_range_and_writes_pb_00(self):
         transport = _FakeTransport([b"{S0009C4\r\n"])
         result = HuberUnistatDriver().execute(

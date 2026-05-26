@@ -40,6 +40,7 @@ _DB_RETRY_ATTEMPTS = 3
 _DB_RETRY_BACKOFF_S = 0.05
 _SESSION_TRANSIENT_DB_ERROR_FLAG = "reactor_ctrl_last_transient_db_error"
 _PERSISTENCE_ERROR_KIND = "persistence"
+_HUBER_PROTOCOL_NAMES: frozenset[str] = frozenset({"huber_unistat_430", "huber_pilot_one", "huber_cc230"})
 
 _T = TypeVar("_T")
 
@@ -1445,6 +1446,168 @@ def _measurement_value_type(parser_name: str) -> str:
     return "float"
 
 
+def _upsert_measurement_channel(
+    *,
+    device: Device,
+    channel_code: str,
+    display_name: str,
+    unit: str,
+    value_type: str,
+) -> MeasurementChannel:
+    channel = MeasurementChannel.query.filter_by(device_id=device.device_id, channel_code=channel_code).one_or_none()
+    if channel is None:
+        channel = MeasurementChannel(
+            device_id=device.device_id,
+            channel_code=channel_code,
+            display_name=display_name,
+            unit=unit,
+            value_type=value_type,
+            is_active=True,
+        )
+        db.session.add(channel)
+        db.session.flush()
+    else:
+        channel.display_name = display_name
+        channel.unit = unit
+        channel.value_type = value_type
+        channel.is_active = True
+    return channel
+
+
+def _create_measurement_record(
+    *,
+    device: Device,
+    command: ControlCommand,
+    channel: MeasurementChannel,
+    measured_at: datetime,
+    numeric_value: float | None,
+    text_value: str | None,
+    unit: str | None,
+    quality_score: float | None,
+    source: str,
+    value_type: str,
+    raw_payload: dict[str, Any],
+) -> Measurement:
+    measurement = Measurement(
+        device_id=device.device_id,
+        channel_id=channel.channel_id,
+        channel_code=channel.channel_code,
+        measured_at=measured_at,
+        numeric_value=numeric_value,
+        text_value=text_value,
+        unit=unit or None,
+        quality_score=quality_score,
+        raw_payload=raw_payload,
+        source=source,
+    )
+    db.session.add(measurement)
+    db.session.flush()
+
+    _add_command_event(
+        command,
+        "measurement_saved",
+        {
+            "measurement_id": measurement.measurement_id,
+            "channel_code": measurement.channel_code,
+            "value_type": value_type,
+            "numeric_value": measurement.numeric_value,
+            "text_value": measurement.text_value,
+            "unit": measurement.unit,
+            "measured_at": measured_at.isoformat(),
+        },
+    )
+    return measurement
+
+
+def _result_measurement_spec(
+    *,
+    device: Device,
+    command_name: str,
+    payload: dict[str, Any],
+    result: DeviceCommandResult,
+) -> dict[str, Any] | None:
+    normalized_protocol = str(getattr(device, "protocol", "") or "").strip().lower()
+    normalized_command = str(command_name or "").strip().lower()
+    if normalized_protocol not in _HUBER_PROTOCOL_NAMES:
+        return None
+    if normalized_command not in {"set_setpoint", "set_temperature", "write_setpoint"}:
+        return None
+
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    raw_value = metadata.get("verified_setpoint")
+    if raw_value in (None, ""):
+        raw_value = metadata.get("value")
+    if raw_value in (None, ""):
+        raw_value = payload.get("temp_c", payload.get("temperature_c"))
+    try:
+        numeric_value = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+
+    measurement_field = "verified_setpoint" if metadata.get("verified_setpoint") not in (None, "") else "value"
+    return {
+        "channel_code": "setpoint_C",
+        "display_name": "Setpoint",
+        "unit": "degC",
+        "value_type": "float",
+        "numeric_value": numeric_value,
+        "text_value": None,
+        "source": "event",
+        "raw_payload": {
+            "command_id": command.command_id,
+            "command_name": command.command_name,
+            "request_payload": payload,
+            "response_text": result.response_text,
+            "response_hex": result.response_hex,
+            "driver_metadata": metadata,
+            "measurement": {
+                "origin": "driver_result",
+                "field": measurement_field,
+            },
+        },
+    }
+
+
+def _persist_result_measurement(
+    *,
+    device: Device,
+    command: ControlCommand,
+    command_name: str,
+    payload: dict[str, Any],
+    result: DeviceCommandResult,
+    finished_at: datetime,
+) -> Measurement | None:
+    spec = _result_measurement_spec(
+        device=device,
+        command_name=command_name,
+        payload=payload,
+        result=result,
+    )
+    if spec is None:
+        return None
+
+    channel = _upsert_measurement_channel(
+        device=device,
+        channel_code=str(spec["channel_code"]),
+        display_name=str(spec["display_name"]),
+        unit=str(spec["unit"]),
+        value_type=str(spec["value_type"]),
+    )
+    return _create_measurement_record(
+        device=device,
+        command=command,
+        channel=channel,
+        measured_at=finished_at,
+        numeric_value=float(spec["numeric_value"]) if spec["numeric_value"] is not None else None,
+        text_value=None if spec["text_value"] is None else str(spec["text_value"]),
+        unit=str(spec["unit"]),
+        quality_score=None,
+        source=str(spec["source"]),
+        value_type=str(spec["value_type"]),
+        raw_payload=dict(spec["raw_payload"]),
+    )
+
+
 def _persist_measurement(
     *,
     device: Device,
@@ -1517,33 +1680,24 @@ def _persist_measurement(
         measured_at = _parse_measurement_datetime(measurement_config.get("measured_at")) or finished_at
         quality_score = _parse_measurement_quality_score(measurement_config.get("quality_score"))
 
-        channel = MeasurementChannel.query.filter_by(device_id=device.device_id, channel_code=channel_code).one_or_none()
-        if channel is None:
-            channel = MeasurementChannel(
-                device_id=device.device_id,
-                channel_code=channel_code,
-                display_name=display_name,
-                unit=unit,
-                value_type=value_type,
-                is_active=True,
-            )
-            db.session.add(channel)
-            db.session.flush()
-        else:
-            channel.display_name = display_name
-            channel.unit = unit
-            channel.value_type = value_type
-            channel.is_active = True
-
-        measurement = Measurement(
-            device_id=device.device_id,
-            channel_id=channel.channel_id,
-            channel_code=channel.channel_code,
+        channel = _upsert_measurement_channel(
+            device=device,
+            channel_code=channel_code,
+            display_name=display_name,
+            unit=unit,
+            value_type=value_type,
+        )
+        measurement = _create_measurement_record(
+            device=device,
+            command=command,
+            channel=channel,
             measured_at=measured_at,
             numeric_value=numeric_value,
             text_value=text_value,
             unit=unit or None,
             quality_score=quality_score,
+            source=source,
+            value_type=value_type,
             raw_payload={
                 "command_id": command.command_id,
                 "command_name": command.command_name,
@@ -1556,23 +1710,6 @@ def _persist_measurement(
                     "key": key_text,
                     "raw_value": raw_value,
                 },
-            },
-            source=source,
-        )
-        db.session.add(measurement)
-        db.session.flush()
-
-        _add_command_event(
-            command,
-            "measurement_saved",
-            {
-                "measurement_id": measurement.measurement_id,
-                "channel_code": measurement.channel_code,
-                "value_type": value_type,
-                "numeric_value": measurement.numeric_value,
-                "text_value": measurement.text_value,
-                "unit": measurement.unit,
-                "measured_at": measured_at.isoformat(),
             },
         )
         return measurement
@@ -1846,13 +1983,25 @@ def execute_device_command(
     measurement: Measurement | None = None
     try:
         _raise_if_interrupted(cancellation_token, location="device_runtime.pre_measurement")
-        measurement = _persist_measurement(
+        persisted_measurement = _persist_result_measurement(
+            device=device,
+            command=command,
+            command_name=command_name,
+            payload=payload,
+            result=result,
+            finished_at=finished_at,
+        )
+        if persisted_measurement is not None:
+            measurement = persisted_measurement
+        configured_measurement = _persist_measurement(
             device=device,
             command=command,
             payload=payload,
             result=result,
             finished_at=finished_at,
         )
+        if configured_measurement is not None:
+            measurement = configured_measurement if measurement is None else measurement
         if measurement is not None:
             # _persist_measurement already flushed; commit via add-and-commit so
             # the "measurement_saved" event and commit are retried atomically.
@@ -1902,6 +2051,26 @@ def execute_device_command(
             details = dict(exc.details) if isinstance(exc.details, dict) else {}
             details.setdefault("runtime_status", command.status)
             raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=details) from exc
+    except Exception as exc:
+        if is_transient_db_error(exc):
+            logger.warning(
+                "Post-execution DB persistence failed for measurement phase "
+                "(command_id=%s) during measurement flush/upsert; device comms succeeded, continuing.",
+                getattr(command, "command_id", None),
+                exc_info=True,
+            )
+            rollback_session_safely(db.session)
+            measurement = None
+            result = _with_command_outcome_metadata(
+                result,
+                device_success=True,
+                persistence_success=False,
+                persistence_retryable=True,
+                runtime_status=str(getattr(command, "status", "") or RuntimeStatus.SENT),
+                persistence_error_phase="measurement",
+            )
+        else:
+            raise
 
     # For CC230 set_setpoint: persist the write mode that worked so the next call
     # can try it first.  Non-fatal: a failure here must not break the command response.

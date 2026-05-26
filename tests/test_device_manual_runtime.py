@@ -446,6 +446,67 @@ class ReadIkaStatusAllNoneTests(unittest.TestCase):
         self.assertIsNone(result["torque_ncm"])
 
 
+class ReadHuberStatusTests(unittest.TestCase):
+    def test_cc230_live_status_uses_one_batched_driver_command(self):
+        device = Device(
+            device_id=4,
+            asset_serial="HC-4",
+            display_name="CC230",
+            device_type="actuator",
+            protocol="huber_cc230",
+        )
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {
+                "setpoint_C": 25.0,
+                "actual_temp_C": 24.8,
+                "bath_temp_C": 24.7,
+                "internal_temp_C": 24.9,
+                "external_temp_C": None,
+                "status": None,
+                "error": None,
+                "warning": None,
+            }
+
+        with patch.object(device_manual_runtime, "_run_logged_driver_command", fake_run):
+            telemetry = device_manual_runtime._read_huber_status(device)
+
+        self.assertEqual(telemetry["setpoint_C"], 25.0)
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[1], "read_live_telemetry")
+        self.assertEqual(args[2], {"response_timeout_ms": device_manual_runtime._CC230_POLL_RESPONSE_TIMEOUT_MS})
+        self.assertEqual(kwargs["priority"], device_manual_runtime.CommandPriority.POLLING)
+        self.assertEqual(kwargs["source"], device_manual_runtime.CommandSource.POLLER)
+
+    def test_unistat_live_status_uses_one_batched_driver_command(self):
+        device = Device(
+            device_id=5,
+            asset_serial="HC-5",
+            display_name="Unistat",
+            device_type="actuator",
+            protocol="huber_unistat_430",
+        )
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"setpoint_C": 22.5, "actual_temp_C": 22.1}
+
+        with patch.object(device_manual_runtime, "_run_logged_driver_command", fake_run):
+            telemetry = device_manual_runtime._read_huber_status(device)
+
+        self.assertEqual(telemetry, {"setpoint_C": 22.5, "actual_temp_C": 22.1})
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[1], "read_live_telemetry")
+        self.assertEqual(args[2], {})
+        self.assertEqual(kwargs["priority"], device_manual_runtime.CommandPriority.POLLING)
+        self.assertEqual(kwargs["source"], device_manual_runtime.CommandSource.POLLER)
+
+
 class ApplyDesiredIkaStateTests(unittest.TestCase):
     """_apply_desired_ika_state must verify setpoint acceptance after START."""
 

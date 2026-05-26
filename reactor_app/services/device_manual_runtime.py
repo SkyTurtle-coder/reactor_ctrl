@@ -218,7 +218,7 @@ def _manual_watch_ttl(app: Flask) -> timedelta:
 
 
 def _manual_poll_interval(app: Flask) -> timedelta:
-    milliseconds = max(1000, int(app.config.get("DEVICE_MANUAL_RECONCILER_POLL_MS", 2500)))
+    milliseconds = max(1000, int(app.config.get("DEVICE_MANUAL_RECONCILER_POLL_MS", 1000)))
     return timedelta(milliseconds=milliseconds)
 
 
@@ -926,76 +926,23 @@ def _read_ika_status(device: Device) -> dict[str, float | None]:
 
 def _read_huber_status(device: Device) -> dict[str, Any]:
     if _is_cc230_device(device):
-        # Use a short per-command timeout for background polling so the device lock
-        # is never held longer than _CC230_POLL_RESPONSE_TIMEOUT_MS. This prevents
-        # user-triggered commands (start, set_setpoint) from being blocked when the
-        # CC230 ignores a query (SETPOINT? is known to be unreliable on some units).
-        poll = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
+        # Keep CC230 live polling bounded to one scheduled command per cycle.
+        # The driver still performs short fallback reads internally, but we avoid
+        # five separate queue/lock/DB round-trips for a single telemetry refresh.
+        poll_payload = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
+    else:
+        poll_payload = {}
 
-        def optional_value(command_name: str) -> Any:
-            try:
-                return _run_logged_driver_command(
-                    device,
-                    command_name,
-                    poll,
-                    priority=CommandPriority.POLLING,
-                    source=CommandSource.POLLER,
-                )
-            except Exception:
-                return None
-
-        # SETPOINT? and some optional temperature commands can time out or return
-        # stale text on old CC230 units. A failed optional read must not prevent
-        # fresh Process Trends values from being stored.
-        setpoint = optional_value("get_setpoint")
-        process_temp = optional_value("get_process_temp")
-        internal_temp = optional_value("get_internal_temp")
-        bath_temp = optional_value("get_bath_temp")
-        external_temp = optional_value("get_external_temp")
-
-        actual_temp = process_temp
-        if actual_temp is None:
-            actual_temp = internal_temp if internal_temp is not None else bath_temp
-        if actual_temp is None:
-            actual_temp = external_temp
-
-        telemetry: dict[str, Any] = {
-            "setpoint_C": None if setpoint is None else float(setpoint),
-            "actual_temp_C": None if actual_temp is None else float(actual_temp),
-            "bath_temp_C": None if bath_temp is None else float(bath_temp),
-            "internal_temp_C": None if internal_temp is None else float(internal_temp),
-            "external_temp_C": None if external_temp is None else float(external_temp),
-        }
-        telemetry["status"] = None
-        telemetry["error"] = None
-        telemetry["warning"] = None
-        if not any(
-            telemetry.get(key) is not None
-            for key in ("setpoint_C", "actual_temp_C", "bath_temp_C", "internal_temp_C", "external_temp_C")
-        ):
-            raise RuntimeError("CC230 returned no valid numeric temperature data.")
-        return telemetry
-
-    setpoint = _run_logged_driver_command(
+    telemetry = _run_logged_driver_command(
         device,
-        "get_setpoint",
+        "read_live_telemetry",
+        poll_payload,
         priority=CommandPriority.POLLING,
         source=CommandSource.POLLER,
     )
-    actual = _run_logged_driver_command(
-        device,
-        "get_internal_temp",
-        priority=CommandPriority.POLLING,
-        source=CommandSource.POLLER,
-    )
-    setpoint_c = None if setpoint is None else float(setpoint)
-    actual_temp_c = None if actual is None else float(actual)
-    if setpoint_c is None and actual_temp_c is None:
-        raise RuntimeError("Huber returned no valid data for setpoint or actual temperature.")
-    return {
-        "setpoint_C": setpoint_c,
-        "actual_temp_C": actual_temp_c,
-    }
+    if not isinstance(telemetry, dict):
+        raise RuntimeError("Huber live telemetry did not return a structured payload.")
+    return telemetry
 
 
 def _manual_state_next_poll_at(app: Flask, *, watch_active: bool, bg_interval: timedelta, measured_at: datetime) -> datetime:

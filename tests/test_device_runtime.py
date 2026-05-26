@@ -113,6 +113,18 @@ class _FakeDriver:
         )
 
 
+class _FakeHuberSetpointDriver:
+    uses_transport = False
+
+    def execute(self, *, transport, request):
+        return DeviceCommandResult(
+            acknowledged=True,
+            response_text="OK",
+            response_hex="4f4b",
+            metadata={"value": 25.0, "verified_setpoint": 24.95},
+        )
+
+
 class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
     def test_success_telemetry_updates_connection_timestamp_and_guard_binding_by_connection(self):
         session = _FakeSession()
@@ -261,6 +273,47 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertGreaterEqual(session.commit_calls, 3)
         event_types = [operation[1] for operation in session.operations if operation[0] == "add_event"]
         self.assertEqual(event_types, ["running", "sent", "response", "completed"])
+
+    def test_execute_device_command_uses_immediate_result_measurement_for_huber_setpoint(self):
+        session = _FakeExecuteCommandSession()
+        connection = SimpleNamespace(
+            connection_id=4,
+            is_enabled=True,
+            transport_type="tcp_socket",
+            cc230_setpoint_write_mode=None,
+        )
+        binding = SimpleNamespace(
+            device_id=8,
+            connection_id=4,
+            connection=connection,
+        )
+        device = SimpleNamespace(
+            device_id=8,
+            protocol="huber_cc230",
+            current_binding=binding,
+        )
+        measurement = SimpleNamespace(measurement_id=17, channel_code="setpoint_C")
+        captured = {}
+
+        def fake_persist_result_measurement(**kwargs):
+            captured.update(kwargs)
+            return measurement
+
+        with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+            with patch.object(device_runtime, "get_driver", return_value=_FakeHuberSetpointDriver()):
+                with patch.object(device_runtime, "_persist_result_measurement", side_effect=fake_persist_result_measurement):
+                    with patch.object(device_runtime, "_persist_measurement", return_value=None):
+                        execution = device_runtime.execute_device_command(
+                            device,
+                            command_name="set_setpoint",
+                            payload={"temp_c": 25.0},
+                            requested_by="test",
+                        )
+
+        self.assertIs(execution.measurement, measurement)
+        self.assertEqual(captured["command_name"], "set_setpoint")
+        self.assertEqual(captured["finished_at"].tzinfo, timezone.utc)
+        self.assertEqual(captured["result"].metadata["verified_setpoint"], 24.95)
 
 
 # ---------------------------------------------------------------------------
