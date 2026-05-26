@@ -715,5 +715,121 @@ class ProcessManualStateAppliedVersionTests(unittest.TestCase):
         self.assertEqual(state.queue_status, "idle")
 
 
+# ---------------------------------------------------------------------------
+# Device-busy polling: must reschedule, never fail recipe
+# ---------------------------------------------------------------------------
+
+class PollingBusyReschedulesTests(unittest.TestCase):
+    """When the manual reconciler's poll fails with device-busy it must
+    reschedule the poll (status='queued') and must NOT call
+    _fail_active_recipe_program_for_device.
+    """
+
+    def _make_app(self):
+        app = Flask(__name__)
+        app.config["RECIPE_PROGRAM_RECONCILER_LOOP_MS"] = 1000
+        app.config["DEVICE_MANUAL_POLL_INTERVAL_MS"] = 1000
+        app.config["DEVICE_MANUAL_BACKGROUND_POLL_INTERVAL_MS"] = 30000
+        return app
+
+    def _make_huber_state_and_device(self):
+        now = datetime.now(timezone.utc)
+        state = DeviceManualState(
+            device_id=3,
+            queue_status="running",
+            desired_version=0,
+            applied_version=0,
+            lease_owner="worker-1",
+        )
+        state.watch_expires_at = now + timedelta(seconds=30)
+        state.next_poll_at = now - timedelta(seconds=1)
+        state.last_reported_at = None
+        device = Device(
+            device_id=3,
+            asset_serial="CC230-3",
+            display_name="CC230",
+            device_type="actuator",
+            protocol="huber_cc230",
+        )
+        return state, device
+
+    def test_device_busy_reschedules_as_queued(self):
+        """When read_live_telemetry raises device-busy, state becomes 'queued'."""
+        from reactor_app.services.device_runtime import DeviceCommandError
+        app = self._make_app()
+        state, device = self._make_huber_state_and_device()
+        fake_session = _FakeSessionForProcess(state=state, device=device)
+        busy_exc = DeviceCommandError(
+            "Device 3 is busy executing another command.", status_code=409
+        )
+
+        def raise_busy(_dev):
+            raise busy_exc
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "_read_huber_status", raise_busy):
+                with patch.object(device_manual_runtime, "_active_recipe_program_device_ids", return_value=None):
+                    with patch.object(device_manual_runtime, "_persist_huber_telemetry_as_measurements_best_effort", return_value=None):
+                        device_manual_runtime._process_manual_state(app, device_id=3, worker_id="worker-1")
+
+        self.assertEqual(state.queue_status, "queued",
+                         "Device-busy must reschedule poll (queued), not fail")
+        self.assertIsNone(state.lease_owner)
+
+    def test_device_busy_does_not_call_fail_recipe(self):
+        """_fail_active_recipe_program_for_device must NOT be called on device-busy."""
+        from reactor_app.services.device_runtime import DeviceCommandError
+        app = self._make_app()
+        state, device = self._make_huber_state_and_device()
+        fake_session = _FakeSessionForProcess(state=state, device=device)
+        busy_exc = DeviceCommandError(
+            "Device 3 is busy executing another command.", status_code=409
+        )
+
+        def raise_busy(_dev):
+            raise busy_exc
+
+        fail_recipe_calls = []
+
+        def fake_fail_recipe(_app, _dev, _exc):
+            fail_recipe_calls.append(1)
+            return "error message"
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "_read_huber_status", raise_busy):
+                with patch.object(device_manual_runtime, "_active_recipe_program_device_ids", return_value=None):
+                    with patch.object(device_manual_runtime, "_fail_active_recipe_program_for_device", fake_fail_recipe):
+                        with patch.object(device_manual_runtime, "_persist_huber_telemetry_as_measurements_best_effort", return_value=None):
+                            device_manual_runtime._process_manual_state(app, device_id=3, worker_id="worker-1")
+
+        self.assertEqual(fail_recipe_calls, [],
+                         "_fail_active_recipe_program_for_device must NOT be called on device-busy")
+
+    def test_real_device_error_still_calls_fail_recipe(self):
+        """A genuine device failure (e.g. driver error) must still fail the recipe."""
+        from reactor_app.services.device_runtime import DeviceCommandError
+        app = self._make_app()
+        state, device = self._make_huber_state_and_device()
+        program_state = RecipeProgramState(
+            recipe_program_state_id=1,
+            status="running",
+        )
+        fake_session = _FakeSessionForProcess(state=state, device=device, program_state=program_state)
+        real_error = DeviceCommandError("Serial port disconnected.", status_code=502)
+
+        def raise_error(_dev):
+            raise real_error
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "_read_huber_status", raise_error):
+                with patch.object(device_manual_runtime, "_active_recipe_program_device_ids", return_value=None):
+                    with patch.object(device_manual_runtime, "_active_recipe_binding_for_device", return_value=(program_state, {"actor": "HC_01"})):
+                        with patch.object(device_manual_runtime, "_persist_huber_telemetry_as_measurements_best_effort", return_value=None):
+                            device_manual_runtime._process_manual_state(app, device_id=3, worker_id="worker-1")
+
+        self.assertEqual(state.queue_status, "error",
+                         "Real device error must set state to error")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,7 @@ from ..models import (
 )
 from .command_dispatcher import dispatch_device_command, is_runtime_interrupted_error
 from .command_model import CommandPriority, CommandSource, DeviceCommand
-from .device_runtime import DeviceCommandError, describe_device_command_error
+from .device_runtime import DeviceCommandError, describe_device_command_error, is_device_busy_error
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
@@ -1535,6 +1535,20 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                 )
             app.logger.warning(
                 "Manual reconciler hit a transient database conflict for device %s; rescheduled without failing the recipe.",
+                device_id,
+            )
+            return
+        # Device-busy during polling: a recipe or manual command holds the device
+        # lock.  Never propagate this as a recipe failure — reschedule the poll.
+        if isinstance(exc, DeviceCommandError) and is_device_busy_error(exc):
+            _commit_manual_state_release(
+                device_id,
+                status="queued",
+                next_poll_at=_now_utc() + timedelta(seconds=1),
+            )
+            app.logger.info(
+                "Manual reconciler: device %s is busy (another command active); "
+                "poll skipped, rescheduled in 1 s.",
                 device_id,
             )
             return

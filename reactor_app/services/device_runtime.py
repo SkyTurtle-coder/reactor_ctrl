@@ -25,6 +25,17 @@ from .transports import build_transport, TransportTypeNotSupportedError
 _MEASUREMENT_PARSERS = {"text", "float", "int", "bool"}
 _MEASUREMENT_SOURCES = {"poller", "event", "manual", "import"}
 _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS = 5.0
+# Per-priority device command lock-acquisition timeout.
+# POLLING drops in 2 s so it never blocks recipe/manual commands for long.
+# RECIPE/MANUAL wait up to 20 s to survive a concurrent polling cycle (≤10 s).
+# SAFETY/EMERGENCY wait up to 30 s and must not be blocked by anything.
+_DEVICE_COMMAND_LOCK_TIMEOUT_BY_PRIORITY: dict[int, float] = {
+    0: 30.0,   # EMERGENCY_STOP
+    1: 30.0,   # SAFETY
+    3: 20.0,   # RECIPE
+    5: 20.0,   # MANUAL
+    9: 2.0,    # POLLING — drops quickly; manual reconciler reschedules automatically
+}
 _DEVICE_COMMAND_LOCKS: dict[int, threading.RLock] = {}
 _DEVICE_COMMAND_LOCKS_GUARD = threading.Lock()
 _UNSET = object()
@@ -57,6 +68,20 @@ def is_transient_db_error(exc: Exception) -> bool:
         return int(args[0]) in _TRANSIENT_DB_ERROR_CODES
     except (TypeError, ValueError):
         return False
+
+
+def is_device_busy_error(exc: Exception) -> bool:
+    """Return True if *exc* is a 409 DeviceCommandError for a locked device.
+
+    Distinguishes scheduling contention (retryable) from real 409 conflicts
+    such as "has no current binding" or "connection disabled".
+    """
+    if not isinstance(exc, DeviceCommandError):
+        return False
+    if getattr(exc, "status_code", None) != 409:
+        return False
+    msg = str(exc).lower()
+    return "busy" in msg or "executing another command" in msg
 
 
 def _run_db_with_retry(
@@ -1853,7 +1878,11 @@ def execute_device_command(
 
     try:
         _raise_if_interrupted(cancellation_token, location="device_runtime.pre_lock")
-        lock_context = _device_command_lock(device.device_id) if acquire_lock else nullcontext()
+        priority_lock_timeout = _DEVICE_COMMAND_LOCK_TIMEOUT_BY_PRIORITY.get(
+            int(command_priority) if command_priority is not None else -1,
+            _DEVICE_COMMAND_LOCK_TIMEOUT_SECONDS,
+        )
+        lock_context = _device_command_lock(device.device_id, timeout_s=priority_lock_timeout) if acquire_lock else nullcontext()
         with lock_context:
             _raise_if_interrupted(cancellation_token, location="device_runtime.pre_send")
             if driver.uses_transport:

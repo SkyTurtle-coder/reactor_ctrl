@@ -29,7 +29,7 @@ from ..models import (
 from .command_dispatcher import cancel_runtime_commands, dispatch_device_command, is_runtime_interrupted_error
 from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_manual_runtime import queue_manual_state_update
-from .device_runtime import DeviceCommandError, device_command_sequence_lock
+from .device_runtime import DeviceCommandError, device_command_sequence_lock, is_device_busy_error
 from .runtime_status import RuntimeStatus
 
 
@@ -44,7 +44,8 @@ _TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
 # Value: consecutive transient device errors on the current recipe execution.
 # Reset to 0 on any successful reconciler cycle.
 _transient_error_counts: dict[int, int] = {}
-_MAX_TRANSIENT_ERRORS = 3  # retries before a transient device error becomes fatal
+_MAX_TRANSIENT_ERRORS = 3      # retries before a generic transient error becomes fatal
+_MAX_DEVICE_BUSY_ERRORS = 8    # retries for device lock contention (scheduling artifact, not hardware)
 _RETRYABLE_RUNTIME_STATUSES: frozenset[str] = frozenset({"timeout", "expired"})
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
 _STATUS_FIELD = "is_on"
@@ -1476,7 +1477,7 @@ def _execute_recipe_device_command_sequence(
     worker_state: RecipeProgramState | None = None,
     worker_id: str | None = None,
 ) -> bool:
-    with device_command_sequence_lock(device.device_id):
+    with device_command_sequence_lock(device.device_id, timeout_s=20.0):
         expected_setpoint_c: float | None = None
         for command_name, payload in commands:
             if worker_state is not None and not _program_claim_allows_target_application(worker_state, worker_id):
@@ -2069,9 +2070,11 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
         if isinstance(exc, RecipeProgramDeviceCommandError):
             cause = getattr(exc, "__cause__", None)
             if isinstance(cause, DeviceCommandError) and _is_transient_device_error(cause):
+                busy = is_device_busy_error(cause)
+                max_retries = _MAX_DEVICE_BUSY_ERRORS if busy else _MAX_TRANSIENT_ERRORS
                 retry_count = _transient_error_counts.get(_PROGRAM_STATE_ID, 0) + 1
                 _transient_error_counts[_PROGRAM_STATE_ID] = retry_count
-                if retry_count <= _MAX_TRANSIENT_ERRORS:
+                if retry_count <= max_retries:
                     try:
                         db.session.execute(
                             text(
@@ -2087,11 +2090,13 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
                             db.session.rollback()
                         except Exception:
                             pass
+                    kind = "device busy" if busy else "transient device error"
                     app.logger.warning(
-                        "Recipe program: transient device error (attempt %d/%d); "
+                        "Recipe program: %s (attempt %d/%d); "
                         "lease released, will retry on next cycle. Error: %s",
+                        kind,
                         retry_count,
-                        _MAX_TRANSIENT_ERRORS,
+                        max_retries,
                         exc,
                     )
                     return
@@ -2099,7 +2104,7 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
                     "Recipe program: transient device error exceeded retry limit "
                     "(%d/%d attempts); failing recipe. Error: %s",
                     retry_count,
-                    _MAX_TRANSIENT_ERRORS,
+                    max_retries,
                     exc,
                 )
 

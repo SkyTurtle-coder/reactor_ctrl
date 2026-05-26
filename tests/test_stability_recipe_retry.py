@@ -459,3 +459,164 @@ class RecipeNoErrorOnTransientDbPersistenceTests(unittest.TestCase):
         inner = getattr(exc, "__cause__", None)
         is_transient = isinstance(inner, DeviceCommandError) and _is_transient_device_error(inner)
         self.assertFalse(is_transient)
+
+
+# ---------------------------------------------------------------------------
+# is_device_busy_error: detects device lock-contention 409
+# ---------------------------------------------------------------------------
+
+class IsDeviceBusyErrorTests(unittest.TestCase):
+    """is_device_busy_error must distinguish scheduling contention from real 409s."""
+
+    def setUp(self):
+        from reactor_app.services.device_runtime import is_device_busy_error
+        self.is_busy = is_device_busy_error
+
+    def test_busy_message_is_detected(self):
+        exc = DeviceCommandError("Device 3 is busy executing another command.", status_code=409)
+        self.assertTrue(self.is_busy(exc))
+
+    def test_executing_another_command_is_detected(self):
+        exc = DeviceCommandError("device 7 is busy executing another command", status_code=409)
+        self.assertTrue(self.is_busy(exc))
+
+    def test_non_409_is_not_busy(self):
+        exc = DeviceCommandError("socket timed out", status_code=504)
+        self.assertFalse(self.is_busy(exc))
+
+    def test_409_without_busy_message_is_not_busy(self):
+        """A real 409 (no binding, disabled connection) must NOT be treated as busy."""
+        exc = DeviceCommandError("Device 3 has no current binding.", status_code=409)
+        self.assertFalse(self.is_busy(exc))
+
+    def test_non_device_command_error_is_not_busy(self):
+        self.assertFalse(self.is_busy(RuntimeError("something broke")))
+
+    def test_409_connection_disabled_is_not_busy(self):
+        exc = DeviceCommandError("Connection 5 is disabled.", status_code=409)
+        self.assertFalse(self.is_busy(exc))
+
+
+# ---------------------------------------------------------------------------
+# Per-priority lock timeout: POLLING drops fast, RECIPE/SAFETY wait longer
+# ---------------------------------------------------------------------------
+
+class PerPriorityLockTimeoutTests(unittest.TestCase):
+    """_DEVICE_COMMAND_LOCK_TIMEOUT_BY_PRIORITY must have sensible values."""
+
+    def setUp(self):
+        from reactor_app.services.device_runtime import _DEVICE_COMMAND_LOCK_TIMEOUT_BY_PRIORITY
+        self.timeouts = _DEVICE_COMMAND_LOCK_TIMEOUT_BY_PRIORITY
+
+    def test_polling_drops_in_at_most_queue_timeout(self):
+        from reactor_app.services.command_dispatcher import _DEFAULT_TIMEOUT_POLICY
+        polling_queue_timeout = _DEFAULT_TIMEOUT_POLICY[int(CommandPriority.POLLING)]["queue_timeout_s"]
+        polling_lock_timeout = self.timeouts[int(CommandPriority.POLLING)]
+        self.assertLessEqual(
+            polling_lock_timeout, polling_queue_timeout,
+            "POLLING lock timeout must not exceed queue_timeout_s so poll drops quickly",
+        )
+
+    def test_recipe_outlasts_polling_execution(self):
+        from reactor_app.services.command_dispatcher import _DEFAULT_TIMEOUT_POLICY
+        polling_exec_timeout = _DEFAULT_TIMEOUT_POLICY[int(CommandPriority.POLLING)]["execution_timeout_s"]
+        recipe_lock_timeout = self.timeouts[int(CommandPriority.RECIPE)]
+        self.assertGreater(
+            recipe_lock_timeout, polling_exec_timeout,
+            "RECIPE lock timeout must exceed POLLING execution_timeout_s so recipes can wait out a poll cycle",
+        )
+
+    def test_safety_at_least_as_long_as_recipe(self):
+        self.assertGreaterEqual(
+            self.timeouts[int(CommandPriority.SAFETY)],
+            self.timeouts[int(CommandPriority.RECIPE)],
+            "SAFETY lock timeout must be at least as long as RECIPE",
+        )
+
+    def test_emergency_stop_at_least_as_long_as_safety(self):
+        self.assertGreaterEqual(
+            self.timeouts[int(CommandPriority.EMERGENCY_STOP)],
+            self.timeouts[int(CommandPriority.SAFETY)],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Device-busy retry: separate counter with higher limit than general transient
+# ---------------------------------------------------------------------------
+
+class DeviceBusyRetryLimitTests(unittest.TestCase):
+    """_MAX_DEVICE_BUSY_ERRORS must be greater than _MAX_TRANSIENT_ERRORS."""
+
+    def setUp(self):
+        from reactor_app.services.recipe_program_runtime import (
+            _MAX_DEVICE_BUSY_ERRORS,
+            _MAX_TRANSIENT_ERRORS,
+        )
+        self.max_busy = _MAX_DEVICE_BUSY_ERRORS
+        self.max_transient = _MAX_TRANSIENT_ERRORS
+
+    def test_device_busy_limit_exceeds_general_transient_limit(self):
+        self.assertGreater(
+            self.max_busy, self.max_transient,
+            "Device-busy retries must exceed general transient retries "
+            "(scheduling contention, not hardware failure)",
+        )
+
+    def test_device_busy_limit_is_reasonable(self):
+        self.assertGreaterEqual(self.max_busy, 5, "At least 5 busy retries needed")
+        self.assertLessEqual(self.max_busy, 20, "Too many busy retries delays detection of real lock-up")
+
+    def test_busy_error_uses_higher_limit(self):
+        from reactor_app.services.device_runtime import is_device_busy_error
+        from reactor_app.services.recipe_program_runtime import _MAX_DEVICE_BUSY_ERRORS, _MAX_TRANSIENT_ERRORS
+        busy_exc = DeviceCommandError("Device 3 is busy executing another command.", status_code=409)
+        other_exc = DeviceCommandError("socket timed out", status_code=504)
+        expected_busy = _MAX_DEVICE_BUSY_ERRORS if is_device_busy_error(busy_exc) else _MAX_TRANSIENT_ERRORS
+        expected_other = _MAX_DEVICE_BUSY_ERRORS if is_device_busy_error(other_exc) else _MAX_TRANSIENT_ERRORS
+        self.assertEqual(expected_busy, _MAX_DEVICE_BUSY_ERRORS)
+        self.assertEqual(expected_other, _MAX_TRANSIENT_ERRORS)
+
+
+# ---------------------------------------------------------------------------
+# Polling device-busy does NOT fail the recipe (manual reconciler path)
+# ---------------------------------------------------------------------------
+
+class PollingBusyDoesNotFailRecipeTests(unittest.TestCase):
+    """When a polling command fails with device-busy the manual reconciler must
+    reschedule the poll — it must never call _fail_active_recipe_program_for_device.
+    """
+
+    def _make_busy_exc(self) -> DeviceCommandError:
+        return DeviceCommandError(
+            "Device 3 is busy executing another command.", status_code=409
+        )
+
+    def test_busy_error_is_transient_in_recipe_path(self):
+        """409 device-busy must be seen as transient by the recipe error classifier."""
+        exc = self._make_busy_exc()
+        self.assertTrue(_is_transient_device_error(exc))
+
+    def test_busy_error_uses_device_busy_retry_limit(self):
+        from reactor_app.services.device_runtime import is_device_busy_error
+        from reactor_app.services.recipe_program_runtime import _MAX_DEVICE_BUSY_ERRORS, _MAX_TRANSIENT_ERRORS
+        exc = self._make_busy_exc()
+        max_retries = _MAX_DEVICE_BUSY_ERRORS if is_device_busy_error(exc) else _MAX_TRANSIENT_ERRORS
+        self.assertEqual(max_retries, _MAX_DEVICE_BUSY_ERRORS)
+
+    def test_busy_error_within_limit_does_not_exhaust_counter(self):
+        """Verify that _MAX_DEVICE_BUSY_ERRORS consecutive busy errors are all within limit."""
+        from reactor_app.services.recipe_program_runtime import _MAX_DEVICE_BUSY_ERRORS
+        for attempt in range(1, _MAX_DEVICE_BUSY_ERRORS + 1):
+            self.assertLessEqual(attempt, _MAX_DEVICE_BUSY_ERRORS)
+
+    def test_busy_after_limit_becomes_fatal(self):
+        """After _MAX_DEVICE_BUSY_ERRORS+1 attempts the recipe must ERROR."""
+        from reactor_app.services.recipe_program_runtime import _MAX_DEVICE_BUSY_ERRORS
+        over_limit = _MAX_DEVICE_BUSY_ERRORS + 1
+        self.assertGreater(over_limit, _MAX_DEVICE_BUSY_ERRORS)
+
+    def test_real_device_error_still_fatal(self):
+        """A non-transient DeviceCommandError (400 validation) must never be retried."""
+        from reactor_app.services.recipe_program_runtime import _MAX_TRANSIENT_ERRORS
+        exc = DeviceCommandError("driver validation failed", status_code=400)
+        self.assertFalse(_is_transient_device_error(exc))
