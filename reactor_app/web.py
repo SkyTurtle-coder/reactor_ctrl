@@ -17,6 +17,10 @@ from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOP
 from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
 from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild, Recipe
+from .process_targets import (
+    normalize_lookup_value as _normalized_lookup_value,
+    resolve_process_device_targets as _resolve_process_device_targets,
+)
 from .services.activity_log import load_activity_logs, severity_badge_class, summarize_activity_logs
 from .services.drivers import list_supported_protocol_options, list_supported_protocols, protocol_label
 
@@ -123,288 +127,6 @@ def _reactor_build_detail_to_dict(item: ReactorBuild | None) -> dict[str, Any] |
     payload["is_active"] = item.is_active
     payload["created_at"] = _dt(item.created_at)
     return payload
-
-
-def _normalized_lookup_value(value: Any) -> str:
-    return str(value or "").strip().lower()
-
-
-def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: str) -> list[dict[str, Any]]:
-    normalized_symbol_id = _normalized_lookup_value(symbol_id)
-    normalized_protocol = _normalized_lookup_value(protocol)
-    if normalized_symbol_id == "motor" and normalized_protocol == "ika_eurostar_60":
-        return [
-            {
-                "channel_id": None,
-                "channel_code": "ika_actual_rpm",
-                "display_name": "Actual RPM",
-                "unit": "rpm",
-                "value_type": "float",
-                "data_source": "measurement",
-            },
-            {
-                "channel_id": None,
-                "channel_code": "ika_setpoint_rpm",
-                "display_name": "Setpoint RPM",
-                "unit": "rpm",
-                "value_type": "float",
-                "data_source": "measurement",
-            },
-            {
-                "channel_id": None,
-                "channel_code": "ika_torque_ncm",
-                "display_name": "Torque",
-                "unit": "Ncm",
-                "value_type": "float",
-                "data_source": "measurement",
-            },
-        ]
-    if normalized_symbol_id == "hc_system" and normalized_protocol in {
-        "huber_unistat_430",
-        "huber_pilot_one",
-        "huber_cc230",
-    }:
-        channels = [
-            {
-                "channel_id": None,
-                "channel_code": "setpoint_C",
-                "display_name": "Setpoint",
-                "unit": "degC",
-                "value_type": "float",
-                "data_source": "measurement",
-            },
-            {
-                "channel_id": None,
-                "channel_code": "actual_temp_C",
-                "display_name": "Actual Temperature",
-                "unit": "degC",
-                "value_type": "float",
-                "data_source": "measurement",
-            },
-        ]
-        if normalized_protocol == "huber_cc230":
-            channels.extend(
-                [
-                    {
-                        "channel_id": None,
-                        "channel_code": "bath_temp_C",
-                        "display_name": "Bath Temperature",
-                        "unit": "degC",
-                        "value_type": "float",
-                        "data_source": "measurement",
-                    },
-                    {
-                        "channel_id": None,
-                        "channel_code": "internal_temp_C",
-                        "display_name": "Internal Temperature",
-                        "unit": "degC",
-                        "value_type": "float",
-                        "data_source": "measurement",
-                    },
-                    {
-                        "channel_id": None,
-                        "channel_code": "external_temp_C",
-                        "display_name": "External Temperature",
-                        "unit": "degC",
-                        "value_type": "float",
-                        "data_source": "measurement",
-                    },
-                ]
-            )
-        return channels
-    return []
-
-
-def _resolve_process_device_targets(
-    item: ReactorBuild | None,
-    *,
-    categories: set[str] | None = None,
-) -> dict[str, dict[str, Any]]:
-    definition = item.definition_json if item is not None and isinstance(item.definition_json, dict) else {}
-    raw_nodes = definition.get("nodes", []) if isinstance(definition, dict) else []
-    if not isinstance(raw_nodes, list):
-        return {}
-
-    allowed_categories = {str(value).strip().lower() for value in (categories or set()) if str(value).strip()}
-    matching_nodes = [
-        node
-        for node in raw_nodes
-        if isinstance(node, dict)
-        and (
-            not allowed_categories
-            or _normalized_lookup_value(node.get("category")) in allowed_categories
-        )
-    ]
-    if not matching_nodes:
-        return {}
-
-    devices = (
-        Device.query.options(
-            joinedload(Device.current_binding)
-            .joinedload(DeviceBindingCurrent.connection)
-            .joinedload(DeviceConnection.device_server),
-            selectinload(Device.channels),
-        )
-        .order_by(Device.display_name.asc(), Device.device_id.asc())
-        .all()
-    )
-
-    exact_lookup: dict[tuple[str, str, str], Device] = {}
-    connection_lookup: dict[tuple[str, str], Device] = {}
-    ambiguous_connection_keys: set[tuple[str, str]] = set()
-
-    for device in devices:
-        binding = device.current_binding
-        connection = binding.connection if binding is not None else None
-        server = connection.device_server if connection is not None else None
-        if binding is None or connection is None or server is None:
-            continue
-
-        server_code = _normalized_lookup_value(server.server_code)
-        protocol = _normalized_lookup_value(device.protocol)
-        connection_labels = {
-            _normalized_lookup_value(connection.connection_label),
-            _normalized_lookup_value(f"Port {connection.port_number}"),
-        }
-
-        for connection_label in connection_labels:
-            if not server_code or not connection_label:
-                continue
-            if protocol:
-                exact_lookup[(server_code, connection_label, protocol)] = device
-
-            connection_key = (server_code, connection_label)
-            if connection_key in ambiguous_connection_keys:
-                continue
-            existing = connection_lookup.get(connection_key)
-            if existing is None:
-                connection_lookup[connection_key] = device
-            elif existing.device_id == device.device_id:
-                connection_lookup[connection_key] = device
-            else:
-                connection_lookup.pop(connection_key, None)
-                ambiguous_connection_keys.add(connection_key)
-
-    targets: dict[str, dict[str, Any]] = {}
-    for node in matching_nodes:
-        node_id = str(node.get("id") or "").strip()
-        if not node_id:
-            continue
-
-        communication = node.get("communication") if isinstance(node.get("communication"), dict) else {}
-        server_code = str(communication.get("device_server_code") or "").strip()
-        connection_label = str(communication.get("connection_label") or "").strip()
-        protocol = str(communication.get("protocol") or "").strip()
-        note = str(communication.get("notes") or "").strip()
-
-        target = {
-            "node_id": node_id,
-            "instance_id": str(node.get("instance_id") or "").strip(),
-            "label": str(node.get("label") or node.get("symbol_id") or "Element").strip(),
-            "symbol_id": str(node.get("symbol_id") or "").strip(),
-            "category": str(node.get("category") or "").strip(),
-            "server_code": server_code,
-            "connection_label": connection_label,
-            "protocol": protocol,
-            "notes": note,
-            "is_resolved": False,
-            "resolution_note": "",
-            "device_id": None,
-            "device_display_name": "",
-            "asset_serial": "",
-            "device_type": "",
-            "is_online": False,
-            "quality_state": "",
-            "last_seen_at": None,
-            "port_number": None,
-            "channels": [],
-        }
-
-        normalized_server = _normalized_lookup_value(server_code)
-        normalized_connection = _normalized_lookup_value(connection_label)
-        normalized_protocol = _normalized_lookup_value(protocol)
-
-        device = None
-        if normalized_server and normalized_connection and normalized_protocol:
-            device = exact_lookup.get((normalized_server, normalized_connection, normalized_protocol))
-
-        if device is None and normalized_server and normalized_connection:
-            device = connection_lookup.get((normalized_server, normalized_connection))
-            if device is not None and normalized_protocol:
-                target["resolution_note"] = "Resolved by server and connection mapping."
-
-        if device is None:
-            if not normalized_server or not normalized_connection:
-                target["resolution_note"] = "The communication mapping for this flowsheet element is still incomplete."
-            else:
-                target["resolution_note"] = "No bound device was found for this mapping."
-            targets[node_id] = target
-            continue
-
-        binding = device.current_binding
-        connection = binding.connection if binding is not None else None
-        server = connection.device_server if connection is not None else None
-        channels = sorted(
-            (
-                channel
-                for channel in device.channels
-                if bool(channel.is_active) and str(channel.value_type or "").strip().lower() != "text"
-            ),
-            key=lambda channel: (
-                str(channel.display_name or channel.channel_code or "").strip().lower(),
-                str(channel.channel_code or "").strip().lower(),
-            ),
-        )
-        resolved_protocol = device.protocol
-        resolved_symbol_id = str(node.get("symbol_id") or "").strip()
-        channel_payload = [
-            {
-                "channel_id": channel.channel_id,
-                "channel_code": channel.channel_code,
-                "display_name": channel.display_name,
-                "unit": channel.unit,
-                "value_type": channel.value_type,
-                "data_source": "measurement",
-            }
-            for channel in channels
-        ]
-        known_channel_codes = {str(item.get("channel_code") or "").strip().lower() for item in channel_payload}
-        for expected_channel in _default_measurement_plot_channels_for_target(
-            symbol_id=resolved_symbol_id,
-            protocol=resolved_protocol,
-        ):
-            expected_code = str(expected_channel.get("channel_code") or "").strip().lower()
-            if expected_code and expected_code not in known_channel_codes:
-                channel_payload.append(expected_channel)
-                known_channel_codes.add(expected_code)
-        target.update(
-            {
-                "server_code": server.server_code if server is not None else server_code,
-                "connection_label": (
-                    (connection.connection_label or f"Port {connection.port_number}")
-                    if connection is not None
-                    else connection_label
-                ),
-                "port_number": connection.port_number if connection is not None else None,
-                "protocol": resolved_protocol,
-                "is_resolved": True,
-                "device_id": device.device_id,
-                "device_display_name": device.display_name,
-                "asset_serial": device.asset_serial,
-                "device_type": device.device_type,
-                "is_online": bool(binding.is_online) if binding is not None else False,
-                "quality_state": binding.quality_state if binding is not None and binding.quality_state else "",
-                "last_seen_at": _dt(binding.last_seen_at if binding is not None else None),
-                "channels": channel_payload,
-            }
-        )
-        targets[node_id] = target
-
-    return targets
-
-
-def _resolve_process_manual_targets(item: ReactorBuild | None) -> dict[str, dict[str, Any]]:
-    return _resolve_process_device_targets(item, categories={"actuators"})
 
 
 def _control_summary() -> dict[str, int]:
@@ -760,6 +482,7 @@ def reactor_builder_view() -> str:
     current_build = None
     builder_notice = None
     builder_storage_available = True
+    display_targets: dict[str, dict[str, Any]] = {}
     try:
         saved_builds = (
             ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
@@ -773,6 +496,17 @@ def reactor_builder_view() -> str:
             "but saving and loading are currently restricted."
         )
         current_app.logger.exception("Reactor Builder database fallback activated: %s", exc)
+
+    if current_build is not None and builder_storage_available:
+        try:
+            display_targets = _resolve_process_device_targets(current_build, categories={"actuators", "sensors"})
+        except Exception as exc:
+            db.session.rollback()
+            builder_notice = _append_notice(
+                builder_notice,
+                "Display value targets could not be loaded. The flowsheet editor remains available.",
+            )
+            current_app.logger.exception("Reactor Builder display target fallback activated: %s", exc)
 
     builder_name = (
         current_build.build_name
@@ -813,6 +547,7 @@ def reactor_builder_view() -> str:
         library_symbol_total=len(symbol_library),
         symbol_categories=group_flowsheet_library(symbol_library),
         actuator_profiles=list_actuator_profiles(),
+        display_targets=display_targets,
         saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
         summary=_control_summary(),
         **_base_context(),

@@ -27,6 +27,7 @@ from .models import (
     Recipe,
     RecipeProgramState,
 )
+from .process_targets import resolve_process_device_targets_for_definition
 from .services import (
     DeviceCommandError,
     TcpSocketConfig,
@@ -882,6 +883,32 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
             ),
         }
 
+        display_value = node.get("display", {})
+        if display_value in (None, ""):
+            display_value = {}
+        if not isinstance(display_value, dict):
+            raise ValueError(f"Field 'definition_json.nodes[{index}].display' must be an object.")
+        display_payload = None
+        if symbol_id == "display":
+            display_payload = {
+                "source_node_id": _clean_string(
+                    display_value.get("source_node_id"),
+                    field_name=f"definition_json.nodes[{index}].display.source_node_id",
+                ),
+                "channel_code": _clean_string(
+                    display_value.get("channel_code"),
+                    field_name=f"definition_json.nodes[{index}].display.channel_code",
+                ),
+                "label": _clean_string(
+                    display_value.get("label"),
+                    field_name=f"definition_json.nodes[{index}].display.label",
+                ),
+                "unit": _clean_string(
+                    display_value.get("unit"),
+                    field_name=f"definition_json.nodes[{index}].display.unit",
+                ),
+            }
+
         try:
             control_payload = normalize_control_definition(symbol_id, node.get("control"))
         except ValueError as exc:
@@ -969,6 +996,7 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 "height": round(height_value, 2),
                 "communication": communication_payload,
                 "control": control_payload,
+                "display": display_payload,
                 "anchors": normalized_anchors,
             }
         )

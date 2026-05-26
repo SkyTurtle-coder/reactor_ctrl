@@ -207,11 +207,13 @@
                                     <th>Port / Connection</th>
                                     <th>Protocol</th>
                                     <th>Notes</th>
+                                    <th>Display Value</th>
+                                    <th>Display Label</th>
                                 </tr>
                             </thead>
                             <tbody id="builder-communication-body">
                                 <tr>
-                                    <td colspan="6" class="muted">No elements in the current build.</td>
+                                    <td colspan="8" class="muted">No elements in the current build.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -261,6 +263,7 @@
 <script id="builder-library-data" type="application/json">{{ symbol_categories | tojson }}</script>
 <script id="builder-build-data" type="application/json">{{ current_build | tojson }}</script>
 <script id="builder-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>
+<script id="builder-display-targets" type="application/json">{{ display_targets | tojson }}</script>
 <script id="builder-supported-protocols" type="application/json">{{ supported_protocol_options | tojson }}</script>
 <script id="builder-meta-data" type="application/json">{{ {"currentBuildId": current_build_id, "apiAuthRequired": api_auth_required, "builderWriteToken": builder_write_token} | tojson }}</script>
 {% endblock %}
