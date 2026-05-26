@@ -992,8 +992,15 @@ pre {
     gap: 0.22rem;
 }
 
-.process-plot-range-field {
-    min-width: min(100%, 14.5rem);
+.process-plot-window-control {
+    display: grid;
+    grid-template-columns: minmax(6.5rem, 8rem) minmax(5.5rem, 7rem);
+    gap: 0.55rem;
+    align-items: end;
+}
+
+.process-plot-window-value-field input {
+    text-align: right;
 }
 
 .process-plot-chart-stack {
@@ -1430,12 +1437,20 @@ h2 {
 }
 
 .process-node.is-manual-ready {
-    filter: drop-shadow(0 0 0.6rem rgba(253, 231, 14, 0.6));
+    filter: drop-shadow(0 0 0.85rem rgba(253, 231, 14, 0.7));
+}
+
+.process-node.is-manual-ready .builder-node-body {
+    border-radius: 12px;
+    background: rgba(253, 231, 14, 0.2);
+    box-shadow:
+        0 0 0 3px rgba(253, 231, 14, 0.55),
+        0 0 1.15rem rgba(253, 231, 14, 0.45);
 }
 
 .process-node.is-manual-ready:hover,
 .process-node.is-manual-ready:focus-visible {
-    filter: drop-shadow(0 0 0.85rem rgba(253, 231, 14, 0.8));
+    filter: drop-shadow(0 0 1rem rgba(253, 231, 14, 0.88));
     outline: none;
 }
 
@@ -1450,7 +1465,23 @@ h2 {
 }
 
 .process-node.is-program-active {
-    filter: drop-shadow(0 0 0.8rem rgba(16, 185, 129, 0.45));
+    filter: drop-shadow(0 0 1rem rgba(16, 185, 129, 0.72));
+}
+
+.process-node.is-program-active .builder-node-body {
+    border-radius: 12px;
+    background: rgba(16, 185, 129, 0.24);
+    box-shadow:
+        0 0 0 3px rgba(16, 185, 129, 0.68),
+        0 0 1.25rem rgba(16, 185, 129, 0.5);
+}
+
+.process-node.is-selected .builder-node-body {
+    border-radius: 12px;
+    background: rgba(253, 231, 14, 0.3);
+    box-shadow:
+        0 0 0 4px rgba(253, 231, 14, 0.78),
+        0 0 1.35rem rgba(253, 231, 14, 0.58);
 }
 
 .process-manual-body {
@@ -2173,11 +2204,11 @@ h2 {
     height: 100%;
     box-sizing: border-box;
     padding: 0.45rem 0.65rem;
-    border: 2px solid #111111;
+    border: 2px solid currentColor;
     border-radius: 2px;
-    background: #ffffff;
-    color: #111111;
-    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+    background: transparent;
+    color: var(--text);
+    box-shadow: none;
     text-align: center;
 }
 
@@ -2193,13 +2224,13 @@ h2 {
     font-size: 0.68rem;
     font-weight: 700;
     text-transform: uppercase;
-    color: #2f3a45;
+    color: var(--muted);
 }
 
 .builder-display-value {
     font-size: 1rem;
     font-weight: 800;
-    color: #111111;
+    color: var(--text);
 }
 
 .builder-display-value[data-display-tone="placeholder"],
@@ -3124,8 +3155,8 @@ html[data-theme="dark"] textarea {
         justify-self: start;
     }
 
-    .process-plot-range-field {
-        min-width: 0;
+    .process-plot-window-control {
+        grid-template-columns: minmax(0, 1fr) minmax(4.8rem, 0.7fr);
     }
 
 }

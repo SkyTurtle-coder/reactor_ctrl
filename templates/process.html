@@ -202,15 +202,21 @@
                     <div class="process-plot-chart-toolbar-copy">
                         <span class="section-label">Time Horizon</span>
                     </div>
-                    <label class="process-select-field process-plot-range-field">
-                        <span>Window</span>
-                        <select id="process-plot-range-select">
-                            <option value="30m">Last 30 min</option>
-                            <option value="1h" selected>Last hour</option>
-                            <option value="5h">Last 5 hours</option>
-                            <option value="all">All (max 30 days)</option>
-                        </select>
-                    </label>
+                    <div class="process-plot-window-control" aria-label="Trend window">
+                        <label class="process-select-field process-plot-window-value-field">
+                            <span>Window</span>
+                            <input id="process-plot-window-value" type="number" inputmode="numeric" pattern="[0-9]*" min="1" step="1" value="1">
+                        </label>
+                        <label class="process-select-field process-plot-window-unit-field">
+                            <span>Unit</span>
+                            <select id="process-plot-window-unit">
+                                <option value="sec">sec</option>
+                                <option value="min">min</option>
+                                <option value="h" selected>h</option>
+                                <option value="d">d</option>
+                            </select>
+                        </label>
+                    </div>
                 </div>
                 <div class="process-plot-chart-stack" id="process-plot-chart-stack"></div>
                 <p class="process-manual-status muted process-plot-status" id="process-plot-status">

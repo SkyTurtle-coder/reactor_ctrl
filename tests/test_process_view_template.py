@@ -49,7 +49,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-plot-panel", html)
         self.assertIn("process-plot-selection", html)
         self.assertIn("process-plot-chart-stack", html)
-        self.assertIn("process-plot-range-select", html)
+        self.assertIn("process-plot-window-value", html)
+        self.assertIn("process-plot-window-unit", html)
         self.assertIn("process-plot-targets", html)
         self.assertIn("process-source-build-btn", html)
         self.assertIn("process-source-recipe-btn", html)
@@ -197,8 +198,9 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function loadPlotMeasurements(options)", source)
         self.assertIn("const PROCESS_PLOT_REFRESH_MS = 1000;", source)
         self.assertIn("const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;", source)
-        self.assertIn('document.getElementById("process-plot-range-select")', source)
-        self.assertIn('params.set("since_minutes", String(rangeOption.sinceMinutes));', source)
+        self.assertIn('document.getElementById("process-plot-window-value")', source)
+        self.assertIn('document.getElementById("process-plot-window-unit")', source)
+        self.assertIn('params.set("since_seconds", String(rangeOption.sinceSeconds));', source)
         self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
         self.assertIn('params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));', source)
         self.assertIn('params.append("series", seriesKey);', source)
@@ -208,7 +210,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-plot-tooltip", source)
         self.assertIn("data-plot-crosshair", source)
         self.assertIn("state.plotBackoffUntil = Date.now() + PROCESS_PLOT_ERROR_BACKOFF_MS;", source)
-        self.assertIn("selectedPlotRangeId", source)
+        self.assertIn("plotWindowValue", source)
+        self.assertIn("plotWindowUnit", source)
         self.assertIn("plotPanelOpen", source)
         self.assertIn("plotWindow", source)
         self.assertIn("hasPersistedPlotSeriesSelection", source)
@@ -224,6 +227,14 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('const unitKey = asString(series.unit, "");', source)
         self.assertIn("fragment.appendChild(renderPlotChartCard(unitKey, group, plotWindow || state.plotWindow));", source)
         self.assertIn("Selected series with the same unit are rendered together.", source)
+
+    def test_process_view_styles_keep_displays_transparent_and_highlight_actors(self):
+        stylesheet = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
+
+        self.assertIn(".builder-display-box", stylesheet)
+        self.assertIn("background: transparent;", stylesheet)
+        self.assertIn(".process-node.is-program-active .builder-node-body", stylesheet)
+        self.assertIn(".process-node.is-selected .builder-node-body", stylesheet)
 
     def test_process_view_script_uses_measurement_only_plot_loading(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"

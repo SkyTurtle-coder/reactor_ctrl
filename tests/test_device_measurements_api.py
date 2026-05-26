@@ -289,6 +289,38 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
         self.assertEqual(payload["series"][1]["channel_code"], "temp")
         self.assertEqual([item["numeric_value"] for item in payload["series"][1]["items"]], [25.5])
 
+    def test_live_plot_series_endpoint_accepts_seconds_window(self):
+        window_end = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+        self._insert_measurement_at(
+            measured_at=window_end - timedelta(seconds=20),
+            value=101.0,
+            channel_code="rpm",
+            device_id=self.device_id,
+        )
+        self._insert_measurement_at(
+            measured_at=window_end - timedelta(seconds=70),
+            value=99.0,
+            channel_code="rpm",
+            device_id=self.device_id,
+        )
+
+        response = self.client.get(
+            "/api/plot-series/live",
+            query_string=[
+                ("series", f"{self.device_id}:rpm"),
+                ("since_seconds", "30"),
+                ("max_points", "120"),
+                ("window_end", window_end.isoformat()),
+                ("cache_seconds", "0"),
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        self.assertEqual(payload["since_seconds"], 30)
+        self.assertEqual(payload["window_start"], (window_end - timedelta(seconds=30)).isoformat())
+        self.assertEqual([item["numeric_value"] for item in payload["series"][0]["items"]], [101.0])
+
     def test_live_plot_series_endpoint_rejects_missing_series(self):
         response = self.client.get("/api/plot-series/live?since_minutes=5&max_points=20")
         self.assertEqual(response.status_code, 400)

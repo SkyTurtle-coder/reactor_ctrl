@@ -59,7 +59,8 @@
     const plotSelection = document.getElementById("process-plot-selection");
     const plotSelectionCount = document.getElementById("process-plot-selection-count");
     const plotSelectionEmpty = document.getElementById("process-plot-selection-empty");
-    const plotRangeSelect = document.getElementById("process-plot-range-select");
+    const plotWindowValueInput = document.getElementById("process-plot-window-value");
+    const plotWindowUnitSelect = document.getElementById("process-plot-window-unit");
     const plotChartStack = document.getElementById("process-plot-chart-stack");
     const plotStatus = document.getElementById("process-plot-status");
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView.v3";
@@ -73,14 +74,21 @@
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const PROCESS_DISPLAY_REFRESH_MS = 1500;
     const PROCESS_DISPLAY_ERROR_BACKOFF_MS = 15000;
-    const DEFAULT_PROCESS_PLOT_RANGE_ID = "1h";
-    const PROCESS_PLOT_RANGE_OPTIONS = Object.freeze([
-        { id: "30m", label: "Last 30 min", sinceMinutes: 30, maxPoints: 180 },
-        { id: "1h", label: "Last hour", sinceMinutes: 60, maxPoints: 240 },
-        { id: "5h", label: "Last 5 hours", sinceMinutes: 300, maxPoints: 600 },
-        { id: "all", label: "All (max 30 days)", sinceMinutes: PROCESS_PLOT_MAX_LOOKBACK_MINUTES, maxPoints: 960 },
-    ]);
-    const PROCESS_PLOT_RANGE_OPTION_MAP = new Map(PROCESS_PLOT_RANGE_OPTIONS.map((option) => [option.id, option]));
+    const PROCESS_PLOT_MAX_LOOKBACK_SECONDS = PROCESS_PLOT_MAX_LOOKBACK_MINUTES * 60;
+    const DEFAULT_PROCESS_PLOT_WINDOW_VALUE = 1;
+    const DEFAULT_PROCESS_PLOT_WINDOW_UNIT = "h";
+    const PROCESS_PLOT_WINDOW_UNITS = Object.freeze({
+        sec: { label: "sec", seconds: 1 },
+        min: { label: "min", seconds: 60 },
+        h: { label: "h", seconds: 60 * 60 },
+        d: { label: "d", seconds: 24 * 60 * 60 },
+    });
+    const LEGACY_PROCESS_PLOT_RANGE_OPTIONS = Object.freeze({
+        "30m": { value: 30, unit: "min" },
+        "1h": { value: 1, unit: "h" },
+        "5h": { value: 5, unit: "h" },
+        all: { value: 30, unit: "d" },
+    });
     const PROCESS_PLOT_COLORS = [
         "#0f766e",
         "#dc2626",
@@ -133,13 +141,64 @@
         return Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : null;
     }
 
-    function normalizePlotRangeId(value) {
-        const candidate = asString(value, DEFAULT_PROCESS_PLOT_RANGE_ID);
-        return PROCESS_PLOT_RANGE_OPTION_MAP.has(candidate) ? candidate : DEFAULT_PROCESS_PLOT_RANGE_ID;
+    function normalizePlotWindowUnit(value) {
+        const candidate = asString(value, DEFAULT_PROCESS_PLOT_WINDOW_UNIT).toLowerCase();
+        return Object.prototype.hasOwnProperty.call(PROCESS_PLOT_WINDOW_UNITS, candidate)
+            ? candidate
+            : DEFAULT_PROCESS_PLOT_WINDOW_UNIT;
     }
 
-    function plotRangeOptionForId(value) {
-        return PROCESS_PLOT_RANGE_OPTION_MAP.get(normalizePlotRangeId(value)) || PROCESS_PLOT_RANGE_OPTIONS[1];
+    function maxPlotWindowValue(unit) {
+        const normalizedUnit = normalizePlotWindowUnit(unit);
+        const secondsPerUnit = PROCESS_PLOT_WINDOW_UNITS[normalizedUnit].seconds;
+        return Math.max(1, Math.floor(PROCESS_PLOT_MAX_LOOKBACK_SECONDS / secondsPerUnit));
+    }
+
+    function normalizePlotWindowValue(value, unit) {
+        const fallback = DEFAULT_PROCESS_PLOT_WINDOW_VALUE;
+        const normalizedUnit = normalizePlotWindowUnit(unit);
+        const numeric = Math.round(asNumber(value, fallback));
+        return clamp(Number.isFinite(numeric) ? numeric : fallback, 1, maxPlotWindowValue(normalizedUnit));
+    }
+
+    function legacyPlotWindowConfig(rangeId) {
+        return LEGACY_PROCESS_PLOT_RANGE_OPTIONS[asString(rangeId, "")] || null;
+    }
+
+    function normalizePlotWindowConfig(value, unit) {
+        const normalizedUnit = normalizePlotWindowUnit(unit);
+        return {
+            value: normalizePlotWindowValue(value, normalizedUnit),
+            unit: normalizedUnit,
+        };
+    }
+
+    function formatPlotWindowLabel(value, unit) {
+        const normalizedUnit = normalizePlotWindowUnit(unit);
+        const normalizedValue = normalizePlotWindowValue(value, normalizedUnit);
+        return `last ${normalizedValue} ${PROCESS_PLOT_WINDOW_UNITS[normalizedUnit].label}`;
+    }
+
+    function maxPlotPointsForWindow(windowSeconds) {
+        if (windowSeconds <= 60 * 60) {
+            return 240;
+        }
+        if (windowSeconds <= 5 * 60 * 60) {
+            return 600;
+        }
+        return 960;
+    }
+
+    function plotWindowOption(value, unit) {
+        const config = normalizePlotWindowConfig(value, unit);
+        const sinceSeconds = config.value * PROCESS_PLOT_WINDOW_UNITS[config.unit].seconds;
+        return {
+            ...config,
+            label: formatPlotWindowLabel(config.value, config.unit),
+            sinceSeconds,
+            sinceMinutes: Math.max(1, Math.ceil(sinceSeconds / 60)),
+            maxPoints: maxPlotPointsForWindow(sinceSeconds),
+        };
     }
 
     function boundedIntegerInputValue(inputElement, fallback) {
@@ -1390,7 +1449,8 @@
         const firstPayload = payloadList.find((payload) => payload?.window_start && payload?.window_end);
         const requestedWindowEndMs = Date.parse(asString(requestedWindowEndIso, ""));
         const fallbackEndMs = Number.isFinite(requestedWindowEndMs) ? requestedWindowEndMs : Date.now();
-        const fallbackStartMs = fallbackEndMs - (Number(rangeOption?.sinceMinutes) || 60) * 60000;
+        const fallbackDurationMs = (Number(rangeOption?.sinceSeconds) || 60 * 60) * 1000;
+        const fallbackStartMs = fallbackEndMs - fallbackDurationMs;
         const startMs = Date.parse(asString(firstPayload?.window_start, ""));
         const endMs = Date.parse(asString(firstPayload?.window_end, ""));
         const normalizedStartMs = Number.isFinite(startMs) ? startMs : fallbackStartMs;
@@ -1432,8 +1492,8 @@
         };
     }
 
-    function selectedPlotRangeOption() {
-        return plotRangeOptionForId(state?.selectedPlotRangeId);
+    function selectedPlotWindowOption() {
+        return plotWindowOption(state?.plotWindowValue, state?.plotWindowUnit);
     }
 
     function plotColor(index) {
@@ -1984,7 +2044,7 @@
         const requestId = state.plotRequestId + 1;
         state.plotRequestId = requestId;
         state.isPlotBusy = true;
-        const rangeOption = selectedPlotRangeOption();
+        const rangeOption = selectedPlotWindowOption();
         const requestedWindowEndIso = new Date().toISOString();
         if (!settings.quiet) {
             setPlotStatus(`Loading trend data for ${rangeOption.label.toLowerCase()}...`, "muted");
@@ -2001,7 +2061,7 @@
                 seenSeriesKeys.add(seriesKey);
                 params.append("series", seriesKey);
             }
-            params.set("since_minutes", String(rangeOption.sinceMinutes));
+            params.set("since_seconds", String(rangeOption.sinceSeconds));
             params.set("max_points", String(rangeOption.maxPoints));
             params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));
             const payload = await fetchJson(
@@ -2550,7 +2610,8 @@
                     manualMode: state.manualMode,
                     selectedNodeId: state.selectedNodeId || null,
                     selectedPlotSeriesIds: Array.isArray(state.selectedPlotSeriesIds) ? state.selectedPlotSeriesIds : [],
-                    selectedPlotRangeId: normalizePlotRangeId(state.selectedPlotRangeId),
+                    plotWindowValue: normalizePlotWindowValue(state.plotWindowValue, state.plotWindowUnit),
+                    plotWindowUnit: normalizePlotWindowUnit(state.plotWindowUnit),
                     plotPanelOpen: Boolean(plotPanel?.open),
                 }),
             );
@@ -3325,9 +3386,15 @@
     const restoredPlotSeriesIds = hasPersistedPlotSeriesSelection
         ? Array.from(new Set(persistedPlotSeriesIds))
         : liveDefaultPlotSeriesIds;
-    const restoredPlotRangeId = canRestorePersistedState
-        ? normalizePlotRangeId(persistedViewState?.selectedPlotRangeId)
-        : DEFAULT_PROCESS_PLOT_RANGE_ID;
+    const legacyPlotWindow = canRestorePersistedState
+        ? legacyPlotWindowConfig(persistedViewState?.selectedPlotRangeId)
+        : null;
+    const restoredPlotWindow = canRestorePersistedState
+        ? normalizePlotWindowConfig(
+              persistedViewState?.plotWindowValue ?? legacyPlotWindow?.value ?? DEFAULT_PROCESS_PLOT_WINDOW_VALUE,
+              persistedViewState?.plotWindowUnit ?? legacyPlotWindow?.unit ?? DEFAULT_PROCESS_PLOT_WINDOW_UNIT,
+          )
+        : normalizePlotWindowConfig(DEFAULT_PROCESS_PLOT_WINDOW_VALUE, DEFAULT_PROCESS_PLOT_WINDOW_UNIT);
     const restoredPlotPanelOpen = Boolean(canRestorePersistedState && persistedViewState?.plotPanelOpen);
 
     const state = {
@@ -3340,7 +3407,8 @@
         manualMode: Boolean(initialSelectionMode !== "recipe" && canRestorePersistedState && persistedViewState?.manualMode),
         selectedNodeId: restoredSelectedNodeId,
         selectedPlotSeriesIds: restoredPlotSeriesIds,
-        selectedPlotRangeId: restoredPlotRangeId,
+        plotWindowValue: restoredPlotWindow.value,
+        plotWindowUnit: restoredPlotWindow.unit,
         plotPanelOpen: restoredPlotPanelOpen,
         plotSeriesData: [],
         plotWindow: null,
@@ -3387,20 +3455,50 @@
         }
     });
 
-    if (plotRangeSelect) {
-        plotRangeSelect.value = normalizePlotRangeId(state.selectedPlotRangeId);
-        plotRangeSelect.addEventListener("change", () => {
-            state.selectedPlotRangeId = normalizePlotRangeId(plotRangeSelect.value);
-            plotRangeSelect.value = state.selectedPlotRangeId;
-            persistViewState();
-            if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
-                void loadPlotMeasurements();
-                return;
+    function syncPlotWindowControls() {
+        const config = normalizePlotWindowConfig(state.plotWindowValue, state.plotWindowUnit);
+        state.plotWindowValue = config.value;
+        state.plotWindowUnit = config.unit;
+        if (plotWindowValueInput) {
+            plotWindowValueInput.min = "1";
+            plotWindowValueInput.max = String(maxPlotWindowValue(config.unit));
+            plotWindowValueInput.step = "1";
+            plotWindowValueInput.value = String(config.value);
+        }
+        if (plotWindowUnitSelect) {
+            plotWindowUnitSelect.value = config.unit;
+        }
+    }
+
+    function applyPlotWindowControlChange() {
+        const unit = normalizePlotWindowUnit(plotWindowUnitSelect?.value || state.plotWindowUnit);
+        state.plotWindowUnit = unit;
+        state.plotWindowValue = normalizePlotWindowValue(plotWindowValueInput?.value, unit);
+        syncPlotWindowControls();
+        persistViewState();
+        if (plotPanel?.open && state.selectedPlotSeriesIds.length > 0) {
+            void loadPlotMeasurements();
+            return;
+        }
+        state.plotSeriesData = [];
+        state.plotWindow = null;
+        renderPlotCharts([]);
+    }
+
+    syncPlotWindowControls();
+
+    if (plotWindowValueInput) {
+        plotWindowValueInput.addEventListener("change", applyPlotWindowControlChange);
+        plotWindowValueInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                event.preventDefault();
+                applyPlotWindowControlChange();
             }
-            state.plotSeriesData = [];
-            state.plotWindow = null;
-            renderPlotCharts([]);
         });
+    }
+
+    if (plotWindowUnitSelect) {
+        plotWindowUnitSelect.addEventListener("change", applyPlotWindowControlChange);
     }
 
     window.addEventListener("reactor:themechange", () => {

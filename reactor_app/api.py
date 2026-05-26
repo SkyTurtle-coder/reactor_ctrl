@@ -1664,6 +1664,17 @@ def list_device_plot_series(device_id: int):
 @api_bp.get("/plot-series/live")
 def list_live_plot_series():
     try:
+        since_seconds_raw = request.args.get("since_seconds")
+        since_seconds = (
+            _parse_int(
+                since_seconds_raw,
+                field_name="since_seconds",
+                min_value=1,
+                max_value=30 * 24 * 60 * 60,
+            )
+            if since_seconds_raw not in (None, "")
+            else None
+        )
         since_minutes = _parse_int(
             request.args.get("since_minutes", 60),
             field_name="since_minutes",
@@ -1711,6 +1722,7 @@ def list_live_plot_series():
     plot_payload = load_batched_device_plot_series_window(
         series_specs=series_specs,
         since_minutes=since_minutes,
+        since_seconds=since_seconds,
         max_points=max_points,
         window_end=window_end,
         cache_seconds=cache_seconds,
@@ -1718,6 +1730,7 @@ def list_live_plot_series():
     return jsonify(
         {
             "since_minutes": since_minutes,
+            "since_seconds": since_seconds or since_minutes * 60,
             "max_points": max_points,
             "bucket_seconds": plot_payload["bucket_seconds"],
             "window_start": plot_payload["window_start"],

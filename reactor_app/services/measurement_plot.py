@@ -29,8 +29,14 @@ def _as_utc_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def _bucket_seconds(*, since_minutes: int, max_points: int) -> int:
-    return max(1, math.ceil((since_minutes * 60) / max(1, max_points)))
+def _window_seconds(*, since_minutes: int | None = None, since_seconds: int | None = None) -> int:
+    if since_seconds is not None:
+        return max(1, int(since_seconds))
+    return max(1, int(since_minutes or 1)) * 60
+
+
+def _bucket_seconds(*, since_minutes: int | None = None, since_seconds: int | None = None, max_points: int) -> int:
+    return max(1, math.ceil(_window_seconds(since_minutes=since_minutes, since_seconds=since_seconds) / max(1, max_points)))
 
 
 def _db_dialect_name() -> str:
@@ -455,9 +461,16 @@ def _normalize_series_specs(series_specs: list[dict[str, Any] | tuple[Any, Any]]
     return normalized_specs
 
 
-def _plot_window(*, since_minutes: int, window_end: datetime | None) -> tuple[datetime, datetime]:
+def _plot_window(
+    *,
+    since_minutes: int | None = None,
+    since_seconds: int | None = None,
+    window_end: datetime | None,
+) -> tuple[datetime, datetime]:
     normalized_window_end = _as_utc_datetime(window_end) or _now_utc()
-    normalized_window_start = normalized_window_end - timedelta(minutes=max(1, since_minutes))
+    normalized_window_start = normalized_window_end - timedelta(
+        seconds=_window_seconds(since_minutes=since_minutes, since_seconds=since_seconds)
+    )
     return normalized_window_start, normalized_window_end
 
 
@@ -491,22 +504,31 @@ def load_device_plot_series_window(
     device_id: int,
     channel_codes: list[str],
     since_minutes: int,
+    since_seconds: int | None = None,
     max_points: int,
     window_end: datetime | None = None,
 ) -> dict[str, Any]:
     normalized_codes = _normalize_channel_codes(channel_codes)
 
     if not normalized_codes:
-        start, end = _plot_window(since_minutes=since_minutes, window_end=window_end)
+        start, end = _plot_window(since_minutes=since_minutes, since_seconds=since_seconds, window_end=window_end)
         return {
             "window_start": start.isoformat(),
             "window_end": end.isoformat(),
-            "bucket_seconds": _bucket_seconds(since_minutes=since_minutes, max_points=max_points),
+            "bucket_seconds": _bucket_seconds(
+                since_minutes=since_minutes,
+                since_seconds=since_seconds,
+                max_points=max_points,
+            ),
             "series": [],
         }
 
-    window_start, normalized_window_end = _plot_window(since_minutes=since_minutes, window_end=window_end)
-    bucket_seconds = _bucket_seconds(since_minutes=since_minutes, max_points=max_points)
+    window_start, normalized_window_end = _plot_window(
+        since_minutes=since_minutes,
+        since_seconds=since_seconds,
+        window_end=window_end,
+    )
+    bucket_seconds = _bucket_seconds(since_minutes=since_minutes, since_seconds=since_seconds, max_points=max_points)
     dialect_name = _db_dialect_name()
 
     try:
@@ -572,14 +594,20 @@ def load_batched_device_plot_series_window(
     *,
     series_specs: list[dict[str, Any] | tuple[Any, Any]],
     since_minutes: int,
+    since_seconds: int | None = None,
     max_points: int,
     window_end: datetime | None = None,
     cache_seconds: float = 0,
 ) -> dict[str, Any]:
     normalized_specs = _normalize_series_specs(series_specs)
     effective_window_end = _cache_aligned_window_end(cache_seconds=cache_seconds, window_end=window_end)
-    window_start, normalized_window_end = _plot_window(since_minutes=since_minutes, window_end=effective_window_end)
-    bucket_seconds = _bucket_seconds(since_minutes=since_minutes, max_points=max_points)
+    window_seconds = _window_seconds(since_minutes=since_minutes, since_seconds=since_seconds)
+    window_start, normalized_window_end = _plot_window(
+        since_minutes=since_minutes,
+        since_seconds=since_seconds,
+        window_end=effective_window_end,
+    )
+    bucket_seconds = _bucket_seconds(since_minutes=since_minutes, since_seconds=since_seconds, max_points=max_points)
 
     if not normalized_specs:
         return {
@@ -595,7 +623,7 @@ def load_batched_device_plot_series_window(
         cache_key = (
             "batched_plot",
             tuple(normalized_specs),
-            int(max(1, since_minutes)),
+            int(window_seconds),
             int(max(1, max_points)),
             normalized_window_end.isoformat(),
         )
