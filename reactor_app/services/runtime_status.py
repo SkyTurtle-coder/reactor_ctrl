@@ -30,7 +30,7 @@ class RuntimeStatus:
 
     Lifecycle overview::
 
-        QUEUED → SENT → ACKED           (happy path)
+        QUEUED → SENT → COMPLETED       (happy path)
                       ↘ FAILED / TIMEOUT (error paths)
         IDLE ↔ QUEUED → RUNNING → IDLE  (manual reconciler cycle)
     """
@@ -45,6 +45,8 @@ class RuntimeStatus:
     SENT = "sent"
 
     # Completed successfully
+    # ACKED is a legacy success state from older runtime phases. New code should
+    # finalize commands as COMPLETED. Recovery must not treat ACKED as active.
     ACKED = "acked"
     COMPLETED = "completed"
 
@@ -66,6 +68,7 @@ class RuntimeStatus:
     # Convenience sets
     TERMINAL: frozenset[str] = frozenset(
         {
+            "acked",
             "completed",
             "stopped",
             "failed",
@@ -78,8 +81,10 @@ class RuntimeStatus:
             "expired",
         }
     )
+    SUCCESS_STATES: frozenset[str] = frozenset({"acked", "completed"})
     ERROR_STATES: frozenset[str] = frozenset({"failed", "error", "timeout", "interrupted", "expired"})
     ACTIVE_STATES: frozenset[str] = frozenset({"pending", "queued", "running", "sent", "recovering"})
+    RECOVERABLE_STATES: frozenset[str] = frozenset({"pending", "queued", "running", "sent", "recovering"})
     INTERRUPTED_STATES: frozenset[str] = frozenset({"cancelled", "skipped", "preempted"})
     RECOVERY_STATES: frozenset[str] = frozenset({"recovering"})
 

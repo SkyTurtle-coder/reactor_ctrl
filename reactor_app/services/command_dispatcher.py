@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from itertools import count
 import logging
 import os
 import threading
@@ -84,6 +85,7 @@ _DEFAULT_TIMEOUT_POLICY: dict[int, dict[str, float]] = {
 }
 _RECOVERY_MANUAL_MAX_AGE_SECONDS = 15.0
 _RECOVERY_SAFETY_MAX_AGE_SECONDS = 30.0
+_RECOVERY_PASS_SEQUENCE = count(1)
 
 _KNOWN_SOURCES = frozenset(
     {
@@ -286,15 +288,44 @@ def _recovery_max_age_s(app: Any, row: ControlCommand) -> float:
 def _recover_runtime_commands(app: Any, scheduler: RuntimeCommandScheduler) -> None:
     with app.app_context():
         try:
-            active_statuses = tuple(sorted(RuntimeStatus.ACTIVE_STATES | {RuntimeStatus.ACKED}))
+            recovery_pass_id = next(_RECOVERY_PASS_SEQUENCE)
+            recoverable_statuses = tuple(sorted(RuntimeStatus.RECOVERABLE_STATES))
+            logger.info(
+                "Runtime recovery pass started pid=%s thread_id=%s scheduler_id=%s recovery_pass_id=%s statuses=%s",
+                os.getpid(),
+                threading.get_ident(),
+                hex(id(scheduler)),
+                recovery_pass_id,
+                ",".join(recoverable_statuses),
+            )
             rows = (
-                ControlCommand.query.filter(ControlCommand.status.in_(active_statuses))
+                ControlCommand.query.filter(ControlCommand.status.in_(recoverable_statuses))
                 .order_by(ControlCommand.requested_at.asc(), ControlCommand.command_id.asc())
                 .all()
             )
             now = _now_utc()
+            scanned = 0
+            status_counts: dict[str, int] = {}
             for row in rows:
-                _recover_runtime_command_row(app, scheduler, row, now=now)
+                status = str(row.status or "").strip().lower() or RuntimeStatus.PENDING
+                scanned += 1
+                status_counts[status] = status_counts.get(status, 0) + 1
+                _recover_runtime_command_row(
+                    app,
+                    scheduler,
+                    row,
+                    now=now,
+                    recovery_pass_id=recovery_pass_id,
+                )
+            logger.info(
+                "Runtime recovery pass finished pid=%s thread_id=%s scheduler_id=%s recovery_pass_id=%s scanned=%s status_counts=%s",
+                os.getpid(),
+                threading.get_ident(),
+                hex(id(scheduler)),
+                recovery_pass_id,
+                scanned,
+                status_counts,
+            )
         except Exception:
             logger.debug("Runtime recovery skipped because the command tables are not yet available.", exc_info=True)
         finally:
@@ -310,6 +341,7 @@ def _recover_runtime_command_row(
     row: ControlCommand,
     *,
     now: datetime,
+    recovery_pass_id: int | None = None,
 ) -> None:
     status = str(row.status or "").strip().lower()
     source = _command_source_from_row(row)
@@ -321,17 +353,31 @@ def _recover_runtime_command_row(
     execution_timeout_s = getattr(row, "execution_timeout_s", None)
     age_s = max(0.0, (now - requested_at).total_seconds())
 
-    transition_control_command_record(
-        row,
-        RuntimeStatus.RECOVERING,
-        event_payload={
-            "previous_status": status,
-            "worker_id": row.worker_id,
-            "recovered_at": now.isoformat(),
-        },
-    )
+    if status not in RuntimeStatus.RECOVERABLE_STATES:
+        logger.debug(
+            "Skipping runtime recovery for non-recoverable command pid=%s thread_id=%s scheduler_id=%s recovery_pass_id=%s command_id=%s status=%s",
+            os.getpid(),
+            threading.get_ident(),
+            hex(id(scheduler)),
+            recovery_pass_id,
+            getattr(row, "command_id", None),
+            status,
+        )
+        return
 
-    if status in {RuntimeStatus.RUNNING, RuntimeStatus.SENT, RuntimeStatus.QUEUED}:
+    if status != RuntimeStatus.RECOVERING:
+        transition_control_command_record(
+            row,
+            RuntimeStatus.RECOVERING,
+            event_payload={
+                "previous_status": status,
+                "worker_id": row.worker_id,
+                "recovered_at": now.isoformat(),
+                "recovery_pass_id": recovery_pass_id,
+            },
+        )
+
+    if status in {RuntimeStatus.RUNNING, RuntimeStatus.SENT}:
         execution_deadline_exceeded = False
         if started_at is not None and execution_timeout_s not in (None, ""):
             execution_deadline_exceeded = started_at + timedelta(seconds=float(execution_timeout_s)) <= now
@@ -345,22 +391,10 @@ def _recover_runtime_command_row(
                 "recovered_at": now.isoformat(),
                 "previous_status": status,
                 "worker_id": row.worker_id,
+                "recovery_pass_id": recovery_pass_id,
             },
             finished_at=now,
             error_message="Worker process was not available during runtime recovery.",
-        )
-        return
-
-    if status == RuntimeStatus.ACKED:
-        transition_control_command_record(
-            row,
-            RuntimeStatus.COMPLETED,
-            event_payload={
-                "message": "Recovered acknowledged command was finalized as completed.",
-                "recovered_at": now.isoformat(),
-            },
-            finished_at=_as_utc_datetime(row.finished_at) or now,
-            error_message=None,
         )
         return
 
@@ -371,6 +405,7 @@ def _recover_runtime_command_row(
             event_payload={
                 "message": "Recovered polling command was skipped after restart.",
                 "recovered_at": now.isoformat(),
+                "recovery_pass_id": recovery_pass_id,
             },
             finished_at=now,
         )
@@ -383,6 +418,7 @@ def _recover_runtime_command_row(
             event_payload={
                 "message": "Recovered command exceeded its total deadline before it could be replayed.",
                 "recovered_at": now.isoformat(),
+                "recovery_pass_id": recovery_pass_id,
             },
             finished_at=now,
             error_message="Recovered command exceeded its total deadline.",
@@ -396,6 +432,7 @@ def _recover_runtime_command_row(
             event_payload={
                 "message": "Recovered command exceeded its queue timeout before it could be replayed.",
                 "recovered_at": now.isoformat(),
+                "recovery_pass_id": recovery_pass_id,
             },
             finished_at=now,
             error_message="Recovered command exceeded its queue timeout.",
@@ -409,6 +446,7 @@ def _recover_runtime_command_row(
             event_payload={
                 "message": "Recovered recipe command was discarded so the recipe runtime can recompute state.",
                 "recovered_at": now.isoformat(),
+                "recovery_pass_id": recovery_pass_id,
             },
             finished_at=now,
         )
@@ -422,6 +460,7 @@ def _recover_runtime_command_row(
                 "message": "Recovered command was cancelled because it became stale during restart.",
                 "recovered_at": now.isoformat(),
                 "age_seconds": round(age_s, 3),
+                "recovery_pass_id": recovery_pass_id,
             },
             finished_at=now,
         )
@@ -444,6 +483,13 @@ def get_runtime_command_scheduler(app: Any | None, *, start: bool = True) -> Run
 
     scheduler = app_obj.extensions.get(_RUNTIME_SCHEDULER_EXTENSION_KEY)
     if isinstance(scheduler, RuntimeCommandScheduler):
+        logger.debug(
+            "Runtime scheduler reused pid=%s thread_id=%s scheduler_id=%s running=%s",
+            os.getpid(),
+            threading.get_ident(),
+            hex(id(scheduler)),
+            scheduler.is_running(),
+        )
         if start and not scheduler.is_running():
             scheduler.start()
         return scheduler

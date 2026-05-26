@@ -14,6 +14,7 @@ from reactor_app.extensions import db
 from reactor_app.models import ControlCommand, ControlCommandEvent
 from reactor_app.services.command_dispatcher import (
     dispatch_device_command,
+    get_runtime_command_scheduler,
     start_runtime_command_scheduler,
     stop_runtime_command_scheduler,
 )
@@ -283,6 +284,87 @@ class Phase5RuntimePersistenceTests(unittest.TestCase):
         self.assertEqual(row.status, RuntimeStatus.INTERRUPTED)
         self.assertEqual(self._event_types("recovery-running-1"), ["running", "recovering", "interrupted"])
 
+    def test_recovery_ignores_acked_command(self):
+        stop_runtime_command_scheduler(self.app, cancel_pending=True, timeout_s=1.0)
+        with self.app.app_context():
+            create_control_command_record(
+                device_id=1,
+                request_uuid="recovery-acked-1",
+                requested_by="phase5_test",
+                command_name="set_state",
+                command_payload={},
+                status=RuntimeStatus.ACKED,
+                requested_at=_now_utc() - timedelta(seconds=3),
+                scheduled_for=_now_utc() - timedelta(seconds=3),
+                command_source=CommandSource.API,
+                command_priority=int(CommandPriority.MANUAL),
+                event_payload={"requested_by": "phase5_test"},
+            )
+
+        start_runtime_command_scheduler(self.app)
+        time.sleep(0.2)
+
+        row = self._command_row("recovery-acked-1")
+        self.assertEqual(row.status, RuntimeStatus.ACKED)
+        self.assertEqual(self._event_types("recovery-acked-1"), [RuntimeStatus.ACKED])
+
+    def test_recovery_ignores_completed_command(self):
+        stop_runtime_command_scheduler(self.app, cancel_pending=True, timeout_s=1.0)
+        with self.app.app_context():
+            create_control_command_record(
+                device_id=1,
+                request_uuid="recovery-completed-1",
+                requested_by="phase5_test",
+                command_name="set_state",
+                command_payload={},
+                status=RuntimeStatus.COMPLETED,
+                requested_at=_now_utc() - timedelta(seconds=3),
+                scheduled_for=_now_utc() - timedelta(seconds=3),
+                command_source=CommandSource.API,
+                command_priority=int(CommandPriority.MANUAL),
+                event_payload={"requested_by": "phase5_test"},
+            )
+
+        start_runtime_command_scheduler(self.app)
+        time.sleep(0.2)
+
+        row = self._command_row("recovery-completed-1")
+        self.assertEqual(row.status, RuntimeStatus.COMPLETED)
+        self.assertEqual(self._event_types("recovery-completed-1"), [RuntimeStatus.COMPLETED])
+
+    def test_recovery_bulk_acked_commands_do_not_generate_events(self):
+        stop_runtime_command_scheduler(self.app, cancel_pending=True, timeout_s=1.0)
+        with self.app.app_context():
+            for index in range(25):
+                create_control_command_record(
+                    device_id=1,
+                    request_uuid=f"recovery-acked-bulk-{index}",
+                    requested_by="phase5_test",
+                    command_name="set_state",
+                    command_payload={},
+                    status=RuntimeStatus.ACKED,
+                    requested_at=_now_utc() - timedelta(seconds=3),
+                    scheduled_for=_now_utc() - timedelta(seconds=3),
+                    command_source=CommandSource.API,
+                    command_priority=int(CommandPriority.MANUAL),
+                    event_payload={"requested_by": "phase5_test"},
+                )
+
+        start_runtime_command_scheduler(self.app)
+        time.sleep(0.2)
+
+        with self.app.app_context():
+            rows = ControlCommand.query.filter(ControlCommand.request_uuid.like("recovery-acked-bulk-%")).all()
+            self.assertEqual(len(rows), 25)
+            self.assertTrue(all(row.status == RuntimeStatus.ACKED for row in rows))
+            event_rows = (
+                ControlCommandEvent.query.join(ControlCommand, ControlCommand.command_id == ControlCommandEvent.command_id)
+                .filter(ControlCommand.request_uuid.like("recovery-acked-bulk-%"))
+                .all()
+            )
+            self.assertEqual(len(event_rows), 25)
+            self.assertTrue(all(event.event_type == RuntimeStatus.ACKED for event in event_rows))
+
     def test_recovery_requeues_recent_manual_command_and_scheduler_runs_normally(self):
         stop_runtime_command_scheduler(self.app, cancel_pending=True, timeout_s=1.0)
         with self.app.app_context():
@@ -313,6 +395,22 @@ class Phase5RuntimePersistenceTests(unittest.TestCase):
             self._event_types("recovery-manual-1"),
             ["pending", "recovering", "pending", "running", "completed"],
         )
+
+    def test_scheduler_reuses_existing_instance_without_second_recovery_pass(self):
+        stop_runtime_command_scheduler(self.app, cancel_pending=True, timeout_s=1.0)
+        import reactor_app.services.command_dispatcher as dispatcher_module
+
+        with patch.object(
+            dispatcher_module,
+            "_recover_runtime_commands",
+            wraps=dispatcher_module._recover_runtime_commands,
+        ) as recover_mock:
+            first = start_runtime_command_scheduler(self.app)
+            second = start_runtime_command_scheduler(self.app)
+
+        self.assertIs(first, second)
+        self.assertEqual(recover_mock.call_count, 1)
+        self.assertIs(get_runtime_command_scheduler(self.app, start=False), first)
 
 
 if __name__ == "__main__":
