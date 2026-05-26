@@ -1000,7 +1000,12 @@
                 element.classList.add("is-manual");
                 if (isTargetResolved(node.id)) {
                     element.classList.add("is-manual-ready");
-                    element.title = `${node.instance_id || node.label}: manual control available`;
+                    if (node?.control?.config?.is_on === true) {
+                        element.classList.add("is-manual-on");
+                        element.title = `${node.instance_id || node.label}: ON`;
+                    } else {
+                        element.title = `${node.instance_id || node.label}: manual control available`;
+                    }
                 } else {
                     element.classList.add("is-manual-unresolved");
                     element.title = `${node.instance_id || node.label}: no valid communication mapping`;
@@ -2160,7 +2165,11 @@
         if (fallbackActor && !actors.includes(fallbackActor)) {
             actors.unshift(fallbackActor);
         }
-        return actors;
+        const targets = Array.isArray(program?.current_targets) ? program.current_targets : [];
+        const offActors = new Set(
+            targets.filter((t) => t.is_on === false).map((t) => asString(t.actor, "")).filter(Boolean),
+        );
+        return offActors.size ? actors.filter((id) => !offActors.has(id)) : actors;
     }
 
     function formatProgramStepActors(program) {

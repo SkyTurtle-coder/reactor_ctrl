@@ -1464,6 +1464,24 @@ h2 {
     outline: none;
 }
 
+.process-node.is-manual-on {
+    filter: drop-shadow(0 0 1rem rgba(16, 185, 129, 0.72));
+}
+
+.process-node.is-manual-on .builder-node-body {
+    border-radius: 12px;
+    background: rgba(16, 185, 129, 0.24);
+    box-shadow:
+        0 0 0 3px rgba(16, 185, 129, 0.68),
+        0 0 1.25rem rgba(16, 185, 129, 0.5);
+}
+
+.process-node.is-manual-on:hover,
+.process-node.is-manual-on:focus-visible {
+    filter: drop-shadow(0 0 1.2rem rgba(16, 185, 129, 0.9));
+    outline: none;
+}
+
 .process-node.is-program-active {
     filter: drop-shadow(0 0 1rem rgba(16, 185, 129, 0.72));
 }
