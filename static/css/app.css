@@ -741,15 +741,22 @@ pre {
 
 .process-program-target-list {
     display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
     gap: 0.55rem;
+}
+
+.process-program-target-list .muted {
+    grid-column: 1 / -1;
+    margin: 0;
 }
 
 .process-program-target-chip {
     display: grid;
-    gap: 0.3rem;
-    padding: 0.85rem 0.95rem;
+    min-width: 0;
+    gap: 0.25rem;
+    padding: 0.7rem 0.85rem;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 10px;
     background: #ffffff;
 }
 
