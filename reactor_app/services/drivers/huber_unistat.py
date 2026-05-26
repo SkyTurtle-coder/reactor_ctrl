@@ -6,7 +6,8 @@ import socket
 from typing import Any
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverValidationError
-from ..transports import TcpSocketTransport
+from .capabilities import DeviceCapability
+from ..transports.interface import ITransport
 
 
 LOGGER = logging.getLogger(__name__)
@@ -283,7 +284,7 @@ class HuberUnistatTCP:
 
 
 class _TransportHuberClient:
-    def __init__(self, transport: TcpSocketTransport):
+    def __init__(self, transport: ITransport):
         self.transport = transport
 
     def request(self, addr_hex: str, value_hex: str) -> tuple[str, bytes, bytes]:
@@ -297,7 +298,7 @@ class _TransportHuberClient:
         last_mismatch: DriverError | None = None
 
         for _ in range(_MAX_STALE_PB_RESPONSES + 1):
-            response_bytes = self.transport.receive_until(b"\n", max_bytes=max(self.transport.config.recv_size, 64))
+            response_bytes = self.transport.receive_until(b"\n", max_bytes=max(self.transport.recv_size, 64))
             for response_line in _split_response_lines(response_bytes):
                 response_text = response_line.decode("ascii", errors="replace")
                 LOGGER.debug("Huber PB recv: %r", response_text)
@@ -331,7 +332,20 @@ class _TransportHuberClient:
 class HuberUnistatDriver(DeviceDriver):
     protocol_names = ("huber_unistat_430", "huber_pilot_one")
 
-    def execute(self, *, transport: TcpSocketTransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+    def get_capabilities(self) -> frozenset[str]:
+        return frozenset({
+            DeviceCapability.CAN_HEAT,
+            DeviceCapability.CAN_COOL,
+            DeviceCapability.CAN_SET_TEMPERATURE,
+            DeviceCapability.CAN_MEASURE_TEMPERATURE,
+            DeviceCapability.CAN_EMERGENCY_STOP,
+            DeviceCapability.HAS_FEEDBACK,
+            DeviceCapability.SUPPORTS_RAMP,
+            DeviceCapability.SUPPORTS_MANUAL_MODE,
+            DeviceCapability.SUPPORTS_RECIPE_MODE,
+        })
+
+    def execute(self, *, transport: ITransport, request: DeviceCommandRequest) -> DeviceCommandResult:
         command_name = str(request.command_name or "").strip().lower()
         payload = request.payload or {}
         client = _TransportHuberClient(transport)

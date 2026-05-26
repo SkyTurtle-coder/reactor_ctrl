@@ -11,7 +11,11 @@ from werkzeug.exceptions import HTTPException
 from .api import api_bp
 from .auth import auth_bp, require_login
 from .extensions import db
-from .services import start_device_manual_reconciler, start_recipe_program_reconciler
+from .services import (
+    start_device_manual_reconciler,
+    start_recipe_program_reconciler,
+    start_runtime_command_scheduler,
+)
 from .web import web_bp
 
 
@@ -89,6 +93,12 @@ _ACTIVITY_LOG_INDEX_SPECS = (
         "recipe_program_run",
         "ix_recipe_program_run_finished_started",
         "CREATE INDEX ix_recipe_program_run_finished_started ON recipe_program_run (finished_at, started_at)",
+    ),
+    (
+        "recipe_program_run",
+        "ix_recipe_program_run_open",
+        # Supports _find_open_program_run(): WHERE finished_at IS NULL ORDER BY id DESC
+        "CREATE INDEX ix_recipe_program_run_open ON recipe_program_run (finished_at, recipe_program_run_id)",
     ),
 )
 
@@ -342,6 +352,7 @@ def create_app() -> Flask:
     app.register_blueprint(api_bp)
     app.register_blueprint(web_bp)
     app.before_request(require_login)
+    start_runtime_command_scheduler(app)
     start_device_manual_reconciler(app)
     start_recipe_program_reconciler(app)
 

@@ -29,11 +29,14 @@ from .models import (
 )
 from .process_targets import resolve_process_device_targets_for_definition
 from .services import (
+    CommandPriority,
+    CommandSource,
+    DeviceCommand,
     DeviceCommandError,
     TcpSocketConfig,
     describe_device_command_error,
+    dispatch_device_command,
     ensure_manual_state_snapshot,
-    execute_device_command,
     list_supported_protocol_options,
     list_supported_protocols,
     manual_state_to_dict,
@@ -80,6 +83,13 @@ _PROCESS_MANUAL_ALLOWED_COMMANDS = {
     "start",
     "stop",
 }
+
+
+def _device_command_priority(command_name: str) -> int:
+    normalized = str(command_name or "").strip().lower()
+    if normalized == "emergency_stop":
+        return CommandPriority.EMERGENCY_STOP
+    return CommandPriority.MANUAL
 _PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS = {
     "text",
     "command_text",
@@ -709,6 +719,17 @@ def _control_command_to_dict(item: ControlCommand, *, include_events: bool = Fal
             for event in sorted(item.events, key=lambda current_event: current_event.command_event_id)
         ]
     return payload
+
+
+def _reload_control_command(item: ControlCommand | None) -> ControlCommand | None:
+    command_id = getattr(item, "command_id", None)
+    if command_id is None:
+        return item
+    try:
+        refreshed = db.session.get(ControlCommand, command_id)
+    except Exception:
+        return item
+    return refreshed or item
 
 
 def _device_manual_state_to_dict(item: DeviceManualState | None) -> dict[str, Any] | None:
@@ -1857,11 +1878,18 @@ def execute_command_for_device(device_id: int):
         return _json_error(str(exc), 400)
 
     try:
-        execution = execute_device_command(
-            device,
-            command_name=command_name,
+        _api_command = DeviceCommand(
+            device_id=device.device_id,
+            command_type=command_name,
             payload=command_payload,
+            priority=_device_command_priority(command_name),
+            source=CommandSource.API,
             requested_by=requested_by,
+        )
+        execution = dispatch_device_command(
+            device,
+            _api_command,
+            app=current_app,
         )
     except DeviceCommandError as exc:
         if exc.command is not None:
@@ -1869,12 +1897,13 @@ def execute_command_for_device(device_id: int):
             ok, error_response = _commit()
             if not ok:
                 return error_response
+            command_item = _reload_control_command(exc.command)
             return (
                 jsonify(
                     {
                         "error": message,
                         "details": exc.details,
-                        "command": _control_command_to_dict(exc.command, include_events=True),
+                        "command": _control_command_to_dict(command_item, include_events=True),
                     }
                 ),
                 exc.status_code,
@@ -1884,10 +1913,11 @@ def execute_command_for_device(device_id: int):
     ok, error_response = _commit()
     if not ok:
         return error_response
+    command_item = _reload_control_command(execution.command)
     return (
         jsonify(
             {
-                "command": _control_command_to_dict(execution.command, include_events=True),
+                "command": _control_command_to_dict(command_item, include_events=True),
                 "result": {
                     "acknowledged": execution.result.acknowledged,
                     "response_text": execution.result.response_text,

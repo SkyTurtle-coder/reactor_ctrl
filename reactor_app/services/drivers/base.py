@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..transports import TcpSocketTransport
+from ..transports.interface import ITransport
 
 
 @dataclass(frozen=True)
@@ -38,5 +38,14 @@ class DeviceDriver(ABC):
     uses_transport: bool = True
 
     @abstractmethod
-    def execute(self, *, transport: TcpSocketTransport | None, request: DeviceCommandRequest) -> DeviceCommandResult:
+    def execute(self, *, transport: ITransport | None, request: DeviceCommandRequest) -> DeviceCommandResult:
         raise NotImplementedError
+
+    def get_capabilities(self) -> frozenset[str]:
+        """Return the set of capability strings this driver supports.
+
+        Override in concrete drivers.  The default is an empty frozenset,
+        which means the runtime must fall back to protocol-name checks (the
+        old behaviour) until a driver is updated.
+        """
+        return frozenset()

@@ -14,7 +14,7 @@ from sqlalchemy import inspect as sa_inspect, text
 from ..extensions import db
 from ..models import ControlCommand, ControlCommandEvent, Device, DeviceManualState, Measurement, MeasurementChannel
 from .drivers import DeviceCommandRequest, DeviceCommandResult, DriverError, DriverNotFoundError, DriverValidationError, get_driver
-from .transports import TcpSocketConfig, TcpSocketTransport
+from .transports import build_transport, TransportTypeNotSupportedError
 
 
 _MEASUREMENT_PARSERS = {"text", "float", "int", "bool"}
@@ -313,21 +313,6 @@ def _record_active_control_sensor(device_id: int, sensor: str) -> None:
         )
 
 
-def _build_transport_config(connection, payload: dict[str, Any]) -> TcpSocketConfig:
-    read_timeout_ms = _parse_optional_int(payload.get("response_timeout_ms"), field_name="response_timeout_ms")
-    write_timeout_ms = _parse_optional_int(payload.get("write_timeout_ms"), field_name="write_timeout_ms")
-    connect_timeout_ms = _parse_optional_int(payload.get("connect_timeout_ms"), field_name="connect_timeout_ms")
-    recv_size = _parse_optional_int(payload.get("recv_size"), field_name="recv_size")
-
-    return TcpSocketConfig(
-        host=connection.tcp_host,
-        port=connection.tcp_port,
-        connect_timeout_s=(connect_timeout_ms or max(connection.read_timeout_ms, connection.write_timeout_ms, 3000)) / 1000,
-        read_timeout_s=(read_timeout_ms or connection.read_timeout_ms) / 1000,
-        write_timeout_s=(write_timeout_ms or connection.write_timeout_ms) / 1000,
-        recv_size=recv_size or 4096,
-    )
-
 
 def _fail_command(
     command: ControlCommand,
@@ -612,17 +597,23 @@ def execute_device_command(
         raise DeviceCommandError(f"Device {device.device_id} is bound to an invalid connection.", status_code=409)
     if not connection.is_enabled:
         raise DeviceCommandError(f"Connection {connection.connection_id} is disabled.", status_code=409)
-    if connection.transport_type != "tcp_socket":
-        raise DeviceCommandError(
-            f"Transport type '{connection.transport_type}' is not supported for command execution.",
-            status_code=400,
-        )
 
     try:
         driver = get_driver(device.protocol)
     except DriverNotFoundError as exc:
         raise DeviceCommandError(str(exc), status_code=400) from exc
-    transport_config = _build_transport_config(connection, payload) if driver.uses_transport else None
+
+    transport_obj = None
+    if driver.uses_transport:
+        try:
+            transport_obj = build_transport(connection, payload)
+        except TransportTypeNotSupportedError as exc:
+            raise DeviceCommandError(str(exc), status_code=400) from exc
+    elif str(connection.transport_type or "tcp_socket").strip().lower() not in {"tcp_socket"}:
+        raise DeviceCommandError(
+            f"Transport type '{connection.transport_type}' is not supported for command execution.",
+            status_code=400,
+        )
     connection_id = int(connection.connection_id)
     binding_device_id = int(binding.device_id) if binding.device_id is not None else None
     binding_connection_id = int(binding.connection_id) if binding.connection_id is not None else None
@@ -659,13 +650,13 @@ def execute_device_command(
         lock_context = _device_command_lock(device.device_id) if acquire_lock else nullcontext()
         with lock_context:
             if driver.uses_transport:
-                assert transport_config is not None
-                with TcpSocketTransport(transport_config) as transport:
+                assert transport_obj is not None
+                with transport_obj:
                     command.status = "sent"
                     command.sent_at = sent_at
                     _add_command_event(command, "sent", {"sent_at": sent_at.isoformat()})
                     _commit_command_phase(command, "sent")
-                    result = driver.execute(transport=transport, request=request)
+                    result = driver.execute(transport=transport_obj, request=request)
             else:
                 command.status = "sent"
                 command.sent_at = sent_at

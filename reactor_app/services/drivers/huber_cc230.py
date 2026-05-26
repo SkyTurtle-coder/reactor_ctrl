@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverValidationError
-from ..transports import TcpSocketTransport
+from .capabilities import DeviceCapability
+from ..transports.interface import ITransport
 
 
 LOGGER = logging.getLogger(__name__)
@@ -173,7 +174,7 @@ def _unknown_status_payload(error: Exception | None = None) -> dict[str, Any]:
 class HuberCC230Client:
     """Line-oriented RS-232 client for the older Huber/Polystat CC230."""
 
-    def __init__(self, transport: TcpSocketTransport, *, encoding: str = "ascii", max_response_bytes: int = 4096):
+    def __init__(self, transport: ITransport, *, encoding: str = "ascii", max_response_bytes: int = 4096):
         self.transport = transport
         self.encoding = encoding
         self.max_response_bytes = int(max_response_bytes)
@@ -434,12 +435,24 @@ class HuberCC230Client:
 class HuberCC230Driver(DeviceDriver):
     protocol_names = ("huber_cc230",)
 
-    def execute(self, *, transport: TcpSocketTransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+    def get_capabilities(self) -> frozenset[str]:
+        # CC230 is a legacy device; capabilities reflect what it already demonstrates.
+        # Active development on this driver is not planned.
+        return frozenset({
+            DeviceCapability.CAN_HEAT,
+            DeviceCapability.CAN_COOL,
+            DeviceCapability.CAN_SET_TEMPERATURE,
+            DeviceCapability.CAN_MEASURE_TEMPERATURE,
+            DeviceCapability.HAS_FEEDBACK,
+            DeviceCapability.SUPPORTS_MANUAL_MODE,
+        })
+
+    def execute(self, *, transport: ITransport, request: DeviceCommandRequest) -> DeviceCommandResult:
         command_name = str(request.command_name or "").strip().lower()
         payload = request.payload or {}
         client = HuberCC230Client(
             transport,
-            max_response_bytes=int(payload.get("max_response_bytes") or max(transport.config.recv_size, 4096)),
+            max_response_bytes=int(payload.get("max_response_bytes") or max(transport.recv_size, 4096)),
         )
 
         min_setpoint = _coerce_float(

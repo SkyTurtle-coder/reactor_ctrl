@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverError, DriverNotFoundError, DriverValidationError
+from .capabilities import DeviceCapability
+from .generic_text import GenericTextDriver
 from .huber_cc230 import HuberCC230Driver
 from .huber_unistat import HuberUnistatDriver, HuberUnistatTCP
 from .ika_eurostar import IkaEurostarDriver
@@ -41,12 +43,14 @@ def list_supported_protocol_options() -> list[dict[str, str]]:
 
 
 __all__ = [
+    "DeviceCapability",
     "DeviceCommandRequest",
     "DeviceCommandResult",
     "DeviceDriver",
     "DriverError",
     "DriverNotFoundError",
     "DriverValidationError",
+    "GenericTextDriver",
     "HuberCC230Driver",
     "HuberUnistatDriver",
     "HuberUnistatTCP",

@@ -420,7 +420,7 @@ class ReadIkaStatusAllNoneTests(unittest.TestCase):
         # Simulate a device that responds with empty strings to all IN_ queries.
         call_count = {"n": 0}
 
-        def fake_run(device, cmd):
+        def fake_run(device, cmd, **_kwargs):
             call_count["n"] += 1
             return ""  # empty → _parse_ika_numeric_response returns None
 
@@ -435,7 +435,7 @@ class ReadIkaStatusAllNoneTests(unittest.TestCase):
         # setpoint valid, actual/torque empty → should not raise.
         responses = iter(["300.0", "", ""])
 
-        def fake_run(device, cmd):
+        def fake_run(device, cmd, **_kwargs):
             return next(responses)
 
         with patch.object(device_manual_runtime, "_run_logged_manual_command", fake_run):
@@ -461,7 +461,7 @@ class ApplyDesiredIkaStateTests(unittest.TestCase):
         """If IN_SP_4 returns None after START, raise RuntimeError."""
         sent = []
 
-        def fake_run(device, cmd):
+        def fake_run(device, cmd, **_kwargs):
             sent.append(cmd)
             if cmd.startswith("IN_SP_4"):
                 return ""  # device not responding
@@ -480,7 +480,7 @@ class ApplyDesiredIkaStateTests(unittest.TestCase):
 
     def test_on_succeeds_when_setpoint_confirmed(self):
         """If IN_SP_4 returns a value, no exception is raised."""
-        def fake_run(device, cmd):
+        def fake_run(device, cmd, **_kwargs):
             if cmd.startswith("IN_SP_4"):
                 return "300.0"
             return None
@@ -495,7 +495,7 @@ class ApplyDesiredIkaStateTests(unittest.TestCase):
         """STOP_4 path must not read IN_SP_4."""
         sent = []
 
-        def fake_run(device, cmd):
+        def fake_run(device, cmd, **_kwargs):
             sent.append(cmd)
             return None
 

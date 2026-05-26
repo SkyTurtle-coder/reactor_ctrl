@@ -49,6 +49,13 @@ class TcpSocketTransport:
         self.config = config
         self._sock: socket.socket | None = None
 
+    @property
+    def recv_size(self) -> int:
+        return self.config.recv_size
+
+    def is_connected(self) -> bool:
+        return self._sock is not None
+
     def connect(self) -> None:
         if self._sock is not None:
             return

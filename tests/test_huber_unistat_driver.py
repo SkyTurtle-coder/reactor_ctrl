@@ -12,6 +12,10 @@ class _FakeTransport:
         self.responses = list(responses)
         self.sent = []
 
+    @property
+    def recv_size(self):
+        return self.config.recv_size
+
     def send(self, payload):
         self.sent.append(payload)
 

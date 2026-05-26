@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverValidationError
-from ..transports import TcpSocketTransport
+from .capabilities import DeviceCapability
+from ..transports.interface import ITransport
 
 _LINE_ENDINGS = {
     "none": b"",
@@ -61,7 +62,16 @@ def _default_expect_response(command_text: str) -> bool:
 class IkaEurostarDriver(DeviceDriver):
     protocol_names = ("ika_eurostar_60",)
 
-    def execute(self, *, transport: TcpSocketTransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+    def get_capabilities(self) -> frozenset[str]:
+        return frozenset({
+            DeviceCapability.CAN_STIR,
+            DeviceCapability.HAS_FEEDBACK,
+            DeviceCapability.CAN_EMERGENCY_STOP,
+            DeviceCapability.SUPPORTS_MANUAL_MODE,
+            DeviceCapability.SUPPORTS_RECIPE_MODE,
+        })
+
+    def execute(self, *, transport: ITransport, request: DeviceCommandRequest) -> DeviceCommandResult:
         payload = request.payload
         text = payload.get("text", payload.get("command_text"))
         if text is None or not str(text).strip():
@@ -85,7 +95,7 @@ class IkaEurostarDriver(DeviceDriver):
         max_response_bytes = _coerce_int(
             payload.get("max_response_bytes"),
             field_name="max_response_bytes",
-            default=max(transport.config.recv_size, 4096),
+            default=max(transport.recv_size, 4096),
         )
         strip_response = _coerce_bool(payload.get("strip_response"), field_name="strip_response", default=True)
 

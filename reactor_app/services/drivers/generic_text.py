@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .base import DeviceCommandRequest, DeviceCommandResult, DeviceDriver, DriverValidationError
-from ..transports import TcpSocketTransport
-
+from ..transports.interface import ITransport
 
 _LINE_ENDINGS = {
     "none": b"",
@@ -56,7 +55,7 @@ def _coerce_line_ending(value: Any, *, field_name: str, default: str) -> str:
 class GenericTextDriver(DeviceDriver):
     protocol_names = ("generic_text", "ascii_text", "line_text", "rs232_text")
 
-    def execute(self, *, transport: TcpSocketTransport, request: DeviceCommandRequest) -> DeviceCommandResult:
+    def execute(self, *, transport: ITransport, request: DeviceCommandRequest) -> DeviceCommandResult:
         payload = request.payload
         text = payload.get("text", payload.get("command_text"))
         if text is None or not str(text).strip():
@@ -73,7 +72,7 @@ class GenericTextDriver(DeviceDriver):
         max_response_bytes = _coerce_int(
             payload.get("max_response_bytes"),
             field_name="max_response_bytes",
-            default=max(transport.config.recv_size, 4096),
+            default=max(transport.recv_size, 4096),
         )
         strip_response = _coerce_bool(payload.get("strip_response"), field_name="strip_response", default=True)
 

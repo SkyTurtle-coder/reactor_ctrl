@@ -8,8 +8,8 @@ from typing import Any
 from uuid import uuid4
 
 from flask import Flask
-from sqlalchemy import or_
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import or_, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload
 
 from ..actuator_profiles import get_default_profile_id
@@ -25,14 +25,18 @@ from ..models import (
     RecipeProgramState,
     ReactorBuild,
 )
+from .command_dispatcher import cancel_runtime_commands, dispatch_device_command, is_runtime_interrupted_error
+from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_manual_runtime import queue_manual_state_update
-from .device_runtime import DeviceCommandError, device_command_sequence_lock, execute_device_command
+from .device_runtime import DeviceCommandError, device_command_sequence_lock
+from .runtime_status import RuntimeStatus
 
 
 _WORKER_EXTENSION_KEY = "recipe_program_reconciler_thread"
 _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
+_TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
 _NUMERIC_FIELDS = ("temp", "pressure", "rpm")
 _STATUS_FIELD = "is_on"
 _CONTROL_SENSOR_FIELD = "control_sensor"
@@ -66,6 +70,10 @@ class RecipeProgramDeviceCommandError(RuntimeError):
     pass
 
 
+class RecipeProgramCommandInterrupted(RuntimeError):
+    pass
+
+
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -96,6 +104,20 @@ def _mysql_error_code(exc: OperationalError) -> int | None:
 
 def _is_mysql_record_changed_error(exc: OperationalError) -> bool:
     return _mysql_error_code(exc) == 1020
+
+
+def _is_transient_mysql_error(exc: OperationalError) -> bool:
+    return _mysql_error_code(exc) in _TRANSIENT_MYSQL_ERROR_CODES
+
+
+def _is_duplicate_key_error(exc: IntegrityError) -> bool:
+    original = getattr(exc, "orig", None)
+    args = getattr(original, "args", ())
+    code = int(args[0]) if args else None
+    if code == 1062:
+        return True
+    message = str(original or exc)
+    return "UNIQUE constraint failed" in message or "Duplicate entry" in message
 
 
 def _normalized_lookup_value(value: Any) -> str:
@@ -1096,14 +1118,21 @@ def _ensure_program_state() -> RecipeProgramState:
     if state is not None:
         return state
 
-    state = RecipeProgramState(
-        recipe_program_state_id=_PROGRAM_STATE_ID,
-        status="idle",
-        active_step_index=0,
-        stop_requested=False,
-    )
-    db.session.add(state)
-    db.session.flush()
+    try:
+        state = RecipeProgramState(
+            recipe_program_state_id=_PROGRAM_STATE_ID,
+            status="idle",
+            active_step_index=0,
+            stop_requested=False,
+        )
+        db.session.add(state)
+        db.session.flush()
+    except IntegrityError:
+        # Another worker inserted the singleton row first — re-read and return it.
+        db.session.rollback()
+        state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
+        if state is None:
+            raise RuntimeError("RecipeProgramState singleton could not be created or found.")
     return state
 
 
@@ -1113,6 +1142,25 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
         raise ValueError("The selected recipe is not linked to a valid flowsheet.")
 
     snapshot = _program_snapshot_for_recipe(recipe, recipe_build)
+
+    # Acquire a row-level lock before checking the running status.
+    # Without this lock, two concurrent POST /api/recipe-programs/start requests
+    # can both read status="idle" and both proceed to start a recipe (TOCTOU race).
+    # SELECT ... FOR UPDATE serializes the check-and-update within the same DB
+    # transaction, making it atomic on InnoDB/MariaDB.
+    try:
+        dialect = str(getattr(getattr(db.session, "get_bind", lambda: None)(), "dialect", None) or "")
+        if "mysql" in str(dialect).lower() or "mariadb" in str(dialect).lower():
+            db.session.execute(
+                text(
+                    "SELECT recipe_program_state_id FROM recipe_program_state "
+                    "WHERE recipe_program_state_id = :sid FOR UPDATE"
+                ),
+                {"sid": _PROGRAM_STATE_ID},
+            )
+    except Exception:
+        pass
+
     state = _ensure_program_state()
     if str(state.status or "") == _LEASE_STATUS_RUNNING:
         raise ValueError("Another recipe program is already running. Stop it before starting a new one.")
@@ -1316,17 +1364,27 @@ def _execute_recipe_device_command(
     command_name: str,
     payload: dict[str, Any] | None,
     requested_by: str,
+    priority: int = CommandPriority.RECIPE,
+    source: str = CommandSource.RECIPE,
     acquire_lock: bool = True,
 ) -> Any:
     try:
-        return execute_device_command(
+        return dispatch_device_command(
             device,
-            command_name=command_name,
-            payload=_recipe_command_payload(app, payload),
-            requested_by=requested_by,
+            DeviceCommand(
+                device_id=device.device_id,
+                command_type=command_name,
+                payload=_recipe_command_payload(app, payload),
+                priority=priority,
+                source=source,
+                requested_by=requested_by,
+            ),
             acquire_lock=acquire_lock,
+            app=app,
         )
     except DeviceCommandError as exc:
+        if is_runtime_interrupted_error(exc):
+            raise RecipeProgramCommandInterrupted(str(exc)) from exc
         raise RecipeProgramDeviceCommandError(
             _device_command_failure_message(
                 exc,
@@ -1361,17 +1419,20 @@ def _execute_recipe_device_command_sequence(
                     expected_setpoint_c = round(float(payload.get("temp_c")), 2)
                 except (TypeError, ValueError):
                     expected_setpoint_c = None
-            execution = _execute_recipe_device_command(
-                app,
-                evaluation=evaluation,
-                actor=actor,
-                binding=binding,
-                device=device,
-                command_name=command_name,
-                payload=payload,
-                requested_by=requested_by,
-                acquire_lock=False,
-            )
+            try:
+                execution = _execute_recipe_device_command(
+                    app,
+                    evaluation=evaluation,
+                    actor=actor,
+                    binding=binding,
+                    device=device,
+                    command_name=command_name,
+                    payload=payload,
+                    requested_by=requested_by,
+                    acquire_lock=False,
+                )
+            except RecipeProgramCommandInterrupted:
+                return False
             if command_name in {"select_internal_sensor", "select_external_sensor"}:
                 time.sleep(_SENSOR_SELECT_SETTLE_SECONDS)
             if command_name == "get_setpoint" and expected_setpoint_c is not None:
@@ -1445,6 +1506,8 @@ def _apply_safe_stop_to_binding(
                     command_name=command_name,
                     payload=payload,
                     requested_by=requested_by,
+                    priority=CommandPriority.SAFETY,
+                    source=CommandSource.SYSTEM,
                 )
             except Exception as exc:
                 errors.append(f"{actor}: {command_name} failed: {exc}")
@@ -1476,6 +1539,8 @@ def _apply_safe_stop_to_binding(
                     command_name="manual_text",
                     payload=_manual_text_payload(command_text),
                     requested_by=requested_by,
+                    priority=CommandPriority.SAFETY,
+                    source=CommandSource.SYSTEM,
                 )
             except Exception as exc:
                 errors.append(f"{actor}: {command_text} failed: {exc}")
@@ -1502,6 +1567,19 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     _publish_program_stop_request(state)
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        device_id = binding.get("device_id")
+        if device_id in (None, ""):
+            continue
+        cancel_runtime_commands(
+            app,
+            device_id=int(device_id),
+            priority_gt=CommandPriority.SAFETY,
+            status=RuntimeStatus.PREEMPTED,
+            reason="Recipe stop requested before command execution.",
+        )
     safe_targets: dict[str, dict[str, Any]] = {}
     safe_errors: list[str] = []
 
@@ -1669,16 +1747,19 @@ def _apply_current_targets(
                 continue
 
             if explicit_status is False:
-                _execute_recipe_device_command(
-                    app,
-                    evaluation=evaluation,
-                    actor=actor,
-                    binding=binding,
-                    device=device,
-                    command_name="stop",
-                    payload={},
-                    requested_by="recipe_program",
-                )
+                try:
+                    _execute_recipe_device_command(
+                        app,
+                        evaluation=evaluation,
+                        actor=actor,
+                        binding=binding,
+                        device=device,
+                        command_name="stop",
+                        payload={},
+                        requested_by="recipe_program",
+                    )
+                except RecipeProgramCommandInterrupted:
+                    return None
                 next_applied_lookup[actor] = next_payload
                 applied_changes.append(
                     {
@@ -1848,30 +1929,65 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
+
+        # Transient InnoDB errors (1020 = record changed, 1205 = lock wait timeout,
+        # 1213 = deadlock) are not recipe failures — they are DB-level contention
+        # that will resolve on the next reconciler cycle.  Release the lease so
+        # another worker can pick up the state, but do NOT mark the recipe as error.
+        if isinstance(exc, OperationalError) and _is_transient_mysql_error(exc):
+            try:
+                db.session.execute(
+                    text(
+                        "UPDATE recipe_program_state "
+                        "SET lease_owner = NULL, lease_expires_at = NULL "
+                        "WHERE recipe_program_state_id = :sid"
+                    ),
+                    {"sid": _PROGRAM_STATE_ID},
+                )
+                db.session.commit()
+            except Exception:
+                try:
+                    db.session.rollback()
+                except Exception:
+                    pass
+            app.logger.warning(
+                "Recipe program reconciler hit a transient database conflict (MySQL %s); "
+                "lease released, will retry on next cycle.",
+                _mysql_error_code(exc),
+            )
+            return
+
         state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
         if state is None:
             return
-        run = _ensure_open_program_run(state)
+        now = _now_utc()
         state.status = "error"
         state.last_error = str(exc)
-        state.finished_at = _now_utc()
-        state.last_progress_at = _now_utc()
+        state.finished_at = now
+        state.last_progress_at = now
         _release_program_lease(state)
+        try:
+            run = _ensure_open_program_run(state)
+        except Exception:
+            run = None
         if run is not None:
             run.status = "error"
-            run.finished_at = state.finished_at
-            run.last_progress_at = state.last_progress_at
+            run.finished_at = now
+            run.last_progress_at = now
             run.last_error = state.last_error
-            _record_program_event(
-                run,
-                "error",
-                state=state,
-                evaluation=_evaluate_state_snapshot(state, now=state.last_progress_at),
-                payload={
-                    "error": state.last_error,
-                    "applied_targets": _applied_targets_payload(state.last_applied_targets_json),
-                },
-            )
+            try:
+                _record_program_event(
+                    run,
+                    "error",
+                    state=state,
+                    evaluation=_evaluate_state_snapshot(state, now=now),
+                    payload={
+                        "error": state.last_error,
+                        "applied_targets": _applied_targets_payload(state.last_applied_targets_json),
+                    },
+                )
+            except Exception:
+                pass
         db.session.commit()
         app.logger.warning("Recipe program reconciler failed: %s", exc)
 

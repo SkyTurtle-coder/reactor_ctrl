@@ -27,6 +27,10 @@ class _FakeTransport:
         self.drained = 0
         self.closed = False
 
+    @property
+    def recv_size(self):
+        return self.config.recv_size
+
     def connect(self):
         return None
 

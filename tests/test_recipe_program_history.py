@@ -192,6 +192,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                         status TEXT NOT NULL DEFAULT 'draft',
                         reactor_build_id INTEGER,
                         steps_json TEXT NOT NULL,
+                        safe_state_json TEXT,
                         created_by TEXT NOT NULL,
                         updated_by TEXT,
                         is_active INTEGER NOT NULL DEFAULT 1,
@@ -545,7 +546,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 db.session.commit()
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=stopped_at):
-                with patch.object(recipe_program_runtime, "execute_device_command"):
+                with patch.object(recipe_program_runtime, "dispatch_device_command"):
                     recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
                     db.session.commit()
 
@@ -587,7 +588,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
             )
 
             def fail_command(*args, **kwargs):
-                if kwargs.get("command_name") == "set_setpoint":
+                if args[1].command_type == "set_setpoint":
                     raise recipe_program_runtime.DeviceCommandError(
                         "Device command execution failed.",
                         status_code=502,
@@ -595,7 +596,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                     )
                 return SimpleNamespace(result=SimpleNamespace(metadata={"value": 25.0}))
 
-            with patch.object(recipe_program_runtime, "execute_device_command", side_effect=fail_command):
+            with patch.object(recipe_program_runtime, "dispatch_device_command", side_effect=fail_command):
                 with patch.object(recipe_program_runtime, "_now_utc", return_value=started_at + timedelta(seconds=10)):
                     recipe_program_runtime._process_recipe_program_state(self.app, worker_id=worker_id)
 
@@ -699,7 +700,7 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 db.session.commit()
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=stopped_at):
-                with patch.object(recipe_program_runtime, "execute_device_command"):
+                with patch.object(recipe_program_runtime, "dispatch_device_command"):
                     recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
                     db.session.commit()
 

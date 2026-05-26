@@ -34,6 +34,14 @@ class _FakeSession:
 
 
 class HuberRecipeProgramTests(unittest.TestCase):
+    @staticmethod
+    def _dispatch_command_names(dispatch_mock):
+        return [call.args[1].command_type for call in dispatch_mock.call_args_list]
+
+    @staticmethod
+    def _dispatch_command(dispatch_mock, index):
+        return dispatch_mock.call_args_list[index].args[1]
+
     def _recipe(self, steps):
         recipe = Recipe(
             recipe_id=1,
@@ -205,18 +213,18 @@ class HuberRecipeProgramTests(unittest.TestCase):
         state.last_applied_targets_json = {}
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
-            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+            with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                 changes = recipe_program_runtime._apply_current_targets(
                     app,
                     state,
                     {"Huber_01": {"temp": 21.25, "pressure": 0, "rpm": 0}},
                 )
 
-        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        command_names = self._dispatch_command_names(dispatch_command)
         self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "get_setpoint", "start"])
-        self.assertEqual(execute_command.call_args_list[2].kwargs["payload"]["temp_c"], 21.25)
-        self.assertEqual(execute_command.call_args_list[2].kwargs["payload"]["response_timeout_ms"], 1200)
-        self.assertEqual(execute_command.call_args_list[2].kwargs["payload"]["max_retries"], 1)
+        self.assertEqual(self._dispatch_command(dispatch_command, 2).payload["temp_c"], 21.25)
+        self.assertEqual(self._dispatch_command(dispatch_command, 2).payload["response_timeout_ms"], 1200)
+        self.assertEqual(self._dispatch_command(dispatch_command, 2).payload["max_retries"], 1)
         self.assertEqual(state.last_applied_targets_json["Huber_01"]["temp"], 21.25)
         self.assertTrue(state.last_applied_targets_json["Huber_01"]["is_on"])
         self.assertEqual(state.last_applied_targets_json["Huber_01"]["control_sensor"], "internal")
@@ -238,18 +246,18 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
         with patch.object(recipe_program_runtime, "_SENSOR_SELECT_SETTLE_SECONDS", 0):
             with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
-                with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                     changes = recipe_program_runtime._apply_current_targets(
                         app,
                         state,
                         {"Huber_01": {"temp": 18.5, "pressure": 0, "rpm": 0, "control_sensor": "external"}},
                     )
 
-        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        command_names = self._dispatch_command_names(dispatch_command)
         self.assertEqual(command_names, ["enable_remote", "select_external_sensor", "set_setpoint", "get_setpoint", "start"])
-        self.assertFalse(execute_command.call_args_list[0].kwargs["acquire_lock"])
-        self.assertFalse(execute_command.call_args_list[1].kwargs["acquire_lock"])
-        self.assertEqual(execute_command.call_args_list[1].kwargs["payload"]["skip_remote"], True)
+        self.assertFalse(dispatch_command.call_args_list[0].kwargs["acquire_lock"])
+        self.assertFalse(dispatch_command.call_args_list[1].kwargs["acquire_lock"])
+        self.assertEqual(self._dispatch_command(dispatch_command, 1).payload["skip_remote"], True)
         self.assertEqual(changes[0]["current"]["control_sensor"], "external")
 
     def test_huber_current_target_off_sends_stop_without_setpoint(self):
@@ -266,14 +274,14 @@ class HuberRecipeProgramTests(unittest.TestCase):
         state.last_applied_targets_json = {"Huber_01": {"temp": 21.25, "is_on": True}}
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
-            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+            with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                 changes = recipe_program_runtime._apply_current_targets(
                     app,
                     state,
                     {"Huber_01": {"is_on": False, "temp": 0, "pressure": 0, "rpm": 0}},
                 )
 
-        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        command_names = self._dispatch_command_names(dispatch_command)
         self.assertEqual(command_names, ["stop"])
         self.assertFalse(state.last_applied_targets_json["Huber_01"]["is_on"])
         self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
@@ -299,7 +307,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         fake_session = _FakeSession(device)
 
         def fail_command(*args, **kwargs):
-            if kwargs.get("command_name") == "set_setpoint":
+            if args[1].command_type == "set_setpoint":
                 raise recipe_program_runtime.DeviceCommandError(
                     "Device command execution failed.",
                     status_code=502,
@@ -309,7 +317,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
         evaluation = {"active_step_index": 1, "active_step": {"task": "Ramp"}}
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=fake_session)):
-            with patch.object(recipe_program_runtime, "execute_device_command", side_effect=fail_command):
+            with patch.object(recipe_program_runtime, "dispatch_device_command", side_effect=fail_command):
                 with self.assertRaises(recipe_program_runtime.RecipeProgramDeviceCommandError) as ctx:
                     recipe_program_runtime._apply_current_targets(
                         app,
@@ -351,7 +359,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
                     item.stop_requested = True
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=StopAfterSetpointSession(device))):
-            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+            with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                 changes = recipe_program_runtime._apply_current_targets(
                     app,
                     state,
@@ -360,7 +368,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
                 )
 
         self.assertIsNone(changes)
-        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        command_names = self._dispatch_command_names(dispatch_command)
         self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "get_setpoint"])
 
     def test_target_application_aborts_when_stop_was_requested(self):
@@ -377,7 +385,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         state.last_applied_targets_json = {}
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
-            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+            with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                 changes = recipe_program_runtime._apply_current_targets(
                     app,
                     state,
@@ -386,7 +394,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
                 )
 
         self.assertIsNone(changes)
-        execute_command.assert_not_called()
+        dispatch_command.assert_not_called()
 
     def test_huber_safe_stop_sets_twenty_degrees_before_stop(self):
         app = Flask(__name__)
@@ -399,7 +407,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
         )
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
-            with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+            with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                 safe_target, errors = recipe_program_runtime._apply_safe_stop_to_binding(
                     app,
                     self._binding(),
@@ -407,9 +415,9 @@ class HuberRecipeProgramTests(unittest.TestCase):
                 )
 
         self.assertEqual(errors, [])
-        command_names = [call.kwargs["command_name"] for call in execute_command.call_args_list]
+        command_names = self._dispatch_command_names(dispatch_command)
         self.assertEqual(command_names, ["set_setpoint", "stop"])
-        self.assertEqual(execute_command.call_args_list[0].kwargs["payload"]["temp_c"], 20.0)
+        self.assertEqual(self._dispatch_command(dispatch_command, 0).payload["temp_c"], 20.0)
         self.assertEqual(safe_target["temp"], 20.0)
         self.assertFalse(safe_target["is_on"])
 
@@ -424,11 +432,11 @@ class HuberRecipeProgramTests(unittest.TestCase):
         )
 
         def raise_on_stop(*args, **kwargs):
-            if kwargs.get("command_name") == "stop":
+            if args[1].command_type == "stop":
                 raise RuntimeError("Connection lost")
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
-            with patch.object(recipe_program_runtime, "execute_device_command", side_effect=raise_on_stop):
+            with patch.object(recipe_program_runtime, "dispatch_device_command", side_effect=raise_on_stop):
                 safe_target, errors = recipe_program_runtime._apply_safe_stop_to_binding(
                     app,
                     self._binding(),
@@ -461,7 +469,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
             with patch.object(recipe_program_runtime, "queue_manual_state_update") as queue_update:
-                with patch.object(recipe_program_runtime, "execute_device_command") as execute_command:
+                with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
                     safe_target, errors = recipe_program_runtime._apply_safe_stop_to_binding(
                         app,
                         binding,
@@ -472,7 +480,10 @@ class HuberRecipeProgramTests(unittest.TestCase):
         queue_update.assert_called_once()
         self.assertFalse(queue_update.call_args.kwargs["desired_is_on"])
         self.assertEqual(queue_update.call_args.kwargs["desired_speed"], 0)
-        self.assertEqual([call.kwargs["payload"]["text"] for call in execute_command.call_args_list], ["OUT_SP_4 0", "STOP_4"])
+        self.assertEqual(
+            [self._dispatch_command(dispatch_command, index).payload["text"] for index in range(len(dispatch_command.call_args_list))],
+            ["OUT_SP_4 0", "STOP_4"],
+        )
         self.assertEqual(safe_target["rpm"], 0)
         self.assertFalse(safe_target["is_on"])
 

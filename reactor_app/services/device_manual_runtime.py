@@ -22,7 +22,9 @@ from ..models import (
     MeasurementChannel,
     RecipeProgramState,
 )
-from .device_runtime import DeviceCommandError, describe_device_command_error, execute_device_command
+from .command_dispatcher import dispatch_device_command, is_runtime_interrupted_error
+from .command_model import CommandPriority, CommandSource, DeviceCommand
+from .device_runtime import DeviceCommandError, describe_device_command_error
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
@@ -608,14 +610,21 @@ def _ensure_manual_state(device: Device) -> DeviceManualState:
     if state is not None:
         return state
 
-    state = DeviceManualState(
-        device_id=device.device_id,
-        queue_status="idle",
-        desired_version=0,
-        applied_version=0,
-    )
-    db.session.add(state)
-    db.session.flush()
+    try:
+        state = DeviceManualState(
+            device_id=device.device_id,
+            queue_status="idle",
+            desired_version=0,
+            applied_version=0,
+        )
+        db.session.add(state)
+        db.session.flush()
+    except IntegrityError:
+        # Another worker inserted the row first — re-read and return it.
+        db.session.rollback()
+        state = db.session.get(DeviceManualState, device.device_id)
+        if state is None:
+            raise RuntimeError(f"DeviceManualState for device {device.device_id} could not be created or found.")
     return state
 
 
@@ -623,15 +632,19 @@ def _ensure_manual_state_row(device_id: int) -> None:
     state = db.session.get(DeviceManualState, device_id)
     if state is not None:
         return
-    db.session.add(
-        DeviceManualState(
-            device_id=device_id,
-            queue_status="idle",
-            desired_version=0,
-            applied_version=0,
+    try:
+        db.session.add(
+            DeviceManualState(
+                device_id=device_id,
+                queue_status="idle",
+                desired_version=0,
+                applied_version=0,
+            )
         )
-    )
-    db.session.flush()
+        db.session.flush()
+    except IntegrityError:
+        # Another Gunicorn worker or reconciler inserted the row first — safe to ignore.
+        db.session.rollback()
 
 
 def _telemetry_to_snapshot(state: DeviceManualState) -> dict[str, Any]:
@@ -796,13 +809,24 @@ def wait_for_manual_state_refresh(
         time.sleep(0.05)
 
 
-def _run_logged_manual_command(device: Device, command_text: str) -> str | None:
+def _run_logged_manual_command(
+    device: Device,
+    command_text: str,
+    *,
+    priority: int,
+    source: str,
+) -> str | None:
     try:
-        execution = execute_device_command(
+        execution = dispatch_device_command(
             device,
-            command_name="manual_text",
-            payload=_manual_command_payload(command_text),
-            requested_by="manual_reconciler",
+            DeviceCommand(
+                device_id=device.device_id,
+                command_type="manual_text",
+                payload=_manual_command_payload(command_text),
+                priority=priority,
+                source=source,
+                requested_by="manual_reconciler",
+            ),
         )
     except DeviceCommandError as exc:
         if exc.command is not None:
@@ -813,13 +837,25 @@ def _run_logged_manual_command(device: Device, command_text: str) -> str | None:
     return execution.result.response_text
 
 
-def _run_logged_driver_command(device: Device, command_name: str, payload: dict[str, Any] | None = None) -> Any:
+def _run_logged_driver_command(
+    device: Device,
+    command_name: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    priority: int,
+    source: str,
+) -> Any:
     try:
-        execution = execute_device_command(
+        execution = dispatch_device_command(
             device,
-            command_name=command_name,
-            payload=payload or {},
-            requested_by="manual_reconciler",
+            DeviceCommand(
+                device_id=device.device_id,
+                command_type=command_name,
+                payload=payload or {},
+                priority=priority,
+                source=source,
+                requested_by="manual_reconciler",
+            ),
         )
     except DeviceCommandError as exc:
         if exc.command is not None:
@@ -837,9 +873,24 @@ def _run_logged_driver_command(device: Device, command_name: str, payload: dict[
 
 
 def _read_ika_status(device: Device) -> dict[str, float | None]:
-    setpoint_response = _run_logged_manual_command(device, "IN_SP_4")
-    actual_response = _run_logged_manual_command(device, "IN_PV_4")
-    torque_response = _run_logged_manual_command(device, "IN_PV_5")
+    setpoint_response = _run_logged_manual_command(
+        device,
+        "IN_SP_4",
+        priority=CommandPriority.POLLING,
+        source=CommandSource.POLLER,
+    )
+    actual_response = _run_logged_manual_command(
+        device,
+        "IN_PV_4",
+        priority=CommandPriority.POLLING,
+        source=CommandSource.POLLER,
+    )
+    torque_response = _run_logged_manual_command(
+        device,
+        "IN_PV_5",
+        priority=CommandPriority.POLLING,
+        source=CommandSource.POLLER,
+    )
 
     setpoint = _parse_ika_numeric_response(setpoint_response)
     actual = _parse_ika_numeric_response(actual_response)
@@ -875,7 +926,13 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
 
         def optional_value(command_name: str) -> Any:
             try:
-                return _run_logged_driver_command(device, command_name, poll)
+                return _run_logged_driver_command(
+                    device,
+                    command_name,
+                    poll,
+                    priority=CommandPriority.POLLING,
+                    source=CommandSource.POLLER,
+                )
             except Exception:
                 return None
 
@@ -911,8 +968,18 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
             raise RuntimeError("CC230 returned no valid numeric temperature data.")
         return telemetry
 
-    setpoint = _run_logged_driver_command(device, "get_setpoint")
-    actual = _run_logged_driver_command(device, "get_internal_temp")
+    setpoint = _run_logged_driver_command(
+        device,
+        "get_setpoint",
+        priority=CommandPriority.POLLING,
+        source=CommandSource.POLLER,
+    )
+    actual = _run_logged_driver_command(
+        device,
+        "get_internal_temp",
+        priority=CommandPriority.POLLING,
+        source=CommandSource.POLLER,
+    )
     setpoint_c = None if setpoint is None else float(setpoint)
     actual_temp_c = None if actual is None else float(actual)
     if setpoint_c is None and actual_temp_c is None:
@@ -1259,18 +1326,33 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
     desired_speed = max(0, int(state.desired_speed or 0))
 
     if desired_is_on:
-        _run_logged_manual_command(device, "START_4")
+        _run_logged_manual_command(
+            device,
+            "START_4",
+            priority=CommandPriority.MANUAL,
+            source=CommandSource.MANUAL_RECONCILER,
+        )
         # Give the device time to process the start command before sending
         # the setpoint.  0.5 s is more robust than 0.18 s, especially after
         # a power cycle when firmware may not be fully ready.
         time.sleep(0.5)
-        _run_logged_manual_command(device, f"OUT_SP_4 {desired_speed}")
+        _run_logged_manual_command(
+            device,
+            f"OUT_SP_4 {desired_speed}",
+            priority=CommandPriority.MANUAL,
+            source=CommandSource.MANUAL_RECONCILER,
+        )
         time.sleep(0.5)
 
         # Verify the setpoint was accepted: a None response means the device
         # is not communicating (e.g. still booting).  Raise so the reconciler
         # stores a visible error and retries on the next cycle.
-        sp_response = _run_logged_manual_command(device, "IN_SP_4")
+        sp_response = _run_logged_manual_command(
+            device,
+            "IN_SP_4",
+            priority=CommandPriority.MANUAL,
+            source=CommandSource.MANUAL_RECONCILER,
+        )
         sp_value = _parse_ika_numeric_response(sp_response)
         if sp_value is None:
             raise RuntimeError(
@@ -1290,7 +1372,12 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
             )
         return
 
-    _run_logged_manual_command(device, "STOP_4")
+    _run_logged_manual_command(
+        device,
+        "STOP_4",
+        priority=CommandPriority.MANUAL,
+        source=CommandSource.MANUAL_RECONCILER,
+    )
     # Give device time to process the stop command before subsequent reads.
     time.sleep(0.5)
 
@@ -1471,6 +1558,13 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
             _persist_ika_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
     except Exception as exc:
         db.session.rollback()
+        if isinstance(exc, DeviceCommandError) and is_runtime_interrupted_error(exc):
+            _commit_manual_state_release(
+                device_id,
+                status="queued",
+                next_poll_at=_now_utc() + timedelta(milliseconds=250),
+            )
+            return
         if isinstance(exc, OperationalError) and _is_transient_mysql_error(exc):
             try:
                 _commit_manual_state_release(
