@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 """One-shot measurement retention runner.
 
-Deletes measurement rows older than MEASUREMENT_RETENTION_DAYS (default: 30)
-from the reactor_ctrl database.  Designed to be invoked by a systemd timer;
-all configuration is read from the .env file or environment variables.
+Deletes measurement rows older than MEASUREMENT_RETENTION_DAYS from the
+reactor_ctrl database.  The current default is 0, which keeps all SQL
+measurements. Set MEASUREMENT_RETENTION_DAYS=30 to restore the previous
+30-day cleanup window. Designed to be invoked by a systemd timer; all
+configuration is read from the .env file or environment variables.
 
 Usage:
     .venv/bin/python run_measurement_retention.py
 
 Key settings (in .env or environment):
     MEASUREMENT_RETENTION_ENABLED=true      # must be set to actually delete
-    MEASUREMENT_RETENTION_DAYS=30
+    MEASUREMENT_RETENTION_DAYS=0            # 0 keeps all SQL measurements
     MEASUREMENT_RETENTION_BATCH_SIZE=10000
     MEASUREMENT_RETENTION_MAX_BATCHES_PER_RUN=50
     MEASUREMENT_RETENTION_DRY_RUN=false     # set to true for a safe trial run

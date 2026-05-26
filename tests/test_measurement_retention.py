@@ -70,6 +70,11 @@ class RetentionResultLogLineTests(unittest.TestCase):
         line = self._make(rows_deleted=50000, batches_run=5, stopped_early=True).as_log_line()
         self.assertIn("stopped_early=true", line)
 
+    def test_unlimited(self):
+        line = RetentionResult(cutoff=None, unlimited=True).as_log_line()
+        self.assertIn("cutoff=unlimited", line)
+        self.assertIn("unlimited=true", line)
+
     def test_error(self):
         line = self._make(error="connection refused").as_log_line()
         self.assertIn("error=", line)
@@ -86,6 +91,28 @@ class RunRetentionDisabledTests(unittest.TestCase):
         mock_db.session.commit.assert_not_called()
         self.assertEqual(result.rows_deleted, 0)
         self.assertIsNone(result.error)
+
+
+class RunRetentionUnlimitedTests(unittest.TestCase):
+    def test_zero_days_keeps_all_measurements_without_touching_db(self):
+        app = _make_app(MEASUREMENT_RETENTION_ENABLED=True, MEASUREMENT_RETENTION_DAYS=0)
+        with app.app_context():
+            with patch("reactor_app.services.measurement_retention.db") as mock_db:
+                result = run_retention(app)
+        mock_db.session.execute.assert_not_called()
+        mock_db.session.commit.assert_not_called()
+        self.assertTrue(result.unlimited)
+        self.assertIsNone(result.cutoff)
+        self.assertEqual(result.rows_deleted, 0)
+        self.assertIsNone(result.error)
+
+    def test_negative_days_also_keeps_all_measurements(self):
+        app = _make_app(MEASUREMENT_RETENTION_ENABLED=True, MEASUREMENT_RETENTION_DAYS=-1)
+        with app.app_context():
+            with patch("reactor_app.services.measurement_retention.db") as mock_db:
+                result = run_retention(app)
+        mock_db.session.execute.assert_not_called()
+        self.assertTrue(result.unlimited)
 
 
 class RunRetentionDryRunTests(unittest.TestCase):

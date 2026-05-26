@@ -21,10 +21,11 @@ def cutoff_for_days(days: int) -> datetime:
 
 @dataclass
 class RetentionResult:
-    cutoff: datetime
+    cutoff: datetime | None
     rows_deleted: int = 0
     batches_run: int = 0
     dry_run: bool = False
+    unlimited: bool = False
     stopped_early: bool = False
     error: str | None = None
     elapsed_seconds: float = 0.0
@@ -33,15 +34,25 @@ class RetentionResult:
         mode = "DRY-RUN" if self.dry_run else "LIVE"
         status = f"error={self.error!r}" if self.error else "ok"
         early = " stopped_early=true" if self.stopped_early else ""
+        cutoff = self.cutoff.isoformat() if self.cutoff else "unlimited"
+        unlimited = " unlimited=true" if self.unlimited else ""
         return (
             f"measurement_retention [{mode}] "
-            f"cutoff={self.cutoff.isoformat()} "
+            f"cutoff={cutoff} "
             f"deleted={self.rows_deleted} "
             f"batches={self.batches_run}"
+            f"{unlimited}"
             f"{early} "
             f"elapsed={self.elapsed_seconds:.2f}s "
             f"status={status}"
         )
+
+
+def _int_config(app: Flask, key: str, default: int) -> int:
+    try:
+        return int(app.config.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def run_retention(app: Flask) -> RetentionResult:
@@ -51,18 +62,26 @@ def run_retention(app: Flask) -> RetentionResult:
     Returns a :class:`RetentionResult` describing what happened.
     """
     enabled: bool = bool(app.config.get("MEASUREMENT_RETENTION_ENABLED", False))
-    days: int = max(1, int(app.config.get("MEASUREMENT_RETENTION_DAYS", 30)))
-    batch_size: int = max(1, int(app.config.get("MEASUREMENT_RETENTION_BATCH_SIZE", 10_000)))
-    max_batches: int = max(1, int(app.config.get("MEASUREMENT_RETENTION_MAX_BATCHES_PER_RUN", 50)))
+    days: int = _int_config(app, "MEASUREMENT_RETENTION_DAYS", 0)
+    batch_size: int = max(1, _int_config(app, "MEASUREMENT_RETENTION_BATCH_SIZE", 10_000))
+    max_batches: int = max(1, _int_config(app, "MEASUREMENT_RETENTION_MAX_BATCHES_PER_RUN", 50))
     dry_run: bool = bool(app.config.get("MEASUREMENT_RETENTION_DRY_RUN", False))
 
-    cutoff = cutoff_for_days(days)
-    result = RetentionResult(cutoff=cutoff, dry_run=dry_run)
+    cutoff = cutoff_for_days(days) if days > 0 else None
+    result = RetentionResult(cutoff=cutoff, dry_run=dry_run, unlimited=days <= 0)
     t0 = time.monotonic()
 
     if not enabled:
         app.logger.info(
             "measurement_retention: disabled (set MEASUREMENT_RETENTION_ENABLED=true to enable)"
+        )
+        result.elapsed_seconds = time.monotonic() - t0
+        return result
+
+    if days <= 0:
+        app.logger.info(
+            "measurement_retention: unlimited SQL measurement retention "
+            "(set MEASUREMENT_RETENTION_DAYS=30 to restore the 30-day cleanup window)"
         )
         result.elapsed_seconds = time.monotonic() - t0
         return result
