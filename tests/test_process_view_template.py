@@ -59,7 +59,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("process-program-start-button", html)
         self.assertIn("process-program-stop-button", html)
         self.assertIn("process-program-stop-dialog", html)
-        self.assertIn("process-confirm-dialog-icon", html)
+        self.assertIn("process-program-stop-confirm-button", html)
+        self.assertIn("process-program-stop-cancel-button", html)
 
         forbidden_strings = (
             "Read status",

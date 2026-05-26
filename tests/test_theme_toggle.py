@@ -22,6 +22,10 @@ class ThemeToggleTests(unittest.TestCase):
         cls.app = create_app()
         cls.client = cls.app.test_client()
 
+    def setUp(self):
+        with self.client.session_transaction() as session:
+            session["authenticated"] = True
+
     @classmethod
     def tearDownClass(cls):
         cls.app.extensions["sqlalchemy"]._app_engines.pop(cls.app, None)
