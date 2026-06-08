@@ -171,7 +171,7 @@ class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
             db.session.commit()
 
     def _seed_ika_on_moxa_port_1(self) -> None:
-        server = DeviceServer(server_code="MOXA", display_name="MOXA", host="127.0.0.1")
+        server = DeviceServer(server_code="MOXA-01", display_name="MOXA", host="127.0.0.1")
         db.session.add(server)
         db.session.flush()
 

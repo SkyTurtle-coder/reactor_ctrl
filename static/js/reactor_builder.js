@@ -322,6 +322,7 @@
         undoStack: [],
         modalReturnFocus: null,
         displayTargets: normalizeDisplayTargets(displayTargetData),
+        displayTargetError: "",
         displayLiveValues: {},
         displayTargetTimer: null,
         displayTargetRequestId: 0,
@@ -1212,6 +1213,38 @@
         });
     }
 
+    function displayTargetUnavailableMessages() {
+        if (state.displayTargetError) {
+            return [state.displayTargetError];
+        }
+        const targets = Object.values(state.displayTargets || {}).filter(
+            (target) => target && typeof target === "object" && !isDisplayNode(target),
+        );
+        if (!targets.length) {
+            return ["Map a source element first."];
+        }
+
+        const unresolved = targets
+            .filter((target) => !target.is_resolved)
+            .map((target) => {
+                const label = asString(target.instance_id, asString(target.label, "Source"));
+                const note = asString(target.resolution_note, "No bound device was found for this mapping.");
+                return `${label}: ${note}`;
+            });
+        if (unresolved.length) {
+            return unresolved.slice(0, 3);
+        }
+
+        const resolvedWithoutChannels = targets
+            .filter((target) => target.is_resolved && (!Array.isArray(target.channels) || target.channels.length === 0))
+            .map((target) => `${asString(target.instance_id, "Source")}: No numeric channels are active for this device.`);
+        if (resolvedWithoutChannels.length) {
+            return resolvedWithoutChannels.slice(0, 3);
+        }
+
+        return ["No mapped values available."];
+    }
+
     function selectedDisplayValueId(node) {
         const sourceNodeId = asString(node?.display?.source_node_id, "");
         const channelCode = asString(node?.display?.channel_code, "");
@@ -1407,13 +1440,16 @@
             if (requestId !== state.displayTargetRequestId) {
                 return;
             }
+            state.displayTargetError = "";
             state.displayTargets = normalizeDisplayTargets(payload);
             renderCommunicationTable();
             renderDisplayValues();
             void loadDisplayLiveValues({ quiet: true });
         } catch (error) {
             if (requestId === state.displayTargetRequestId) {
+                state.displayTargetError = error?.message || "Display values could not be loaded.";
                 console.warn("Display target refresh failed", error);
+                setStatus(state.displayTargetError, "error");
             }
         } finally {
             if (requestId === state.displayTargetRequestId) {
@@ -1623,6 +1659,15 @@
                     noOptions.textContent = state.isDisplayTargetBusy ? "Loading values ..." : "No mapped values available";
                     noOptions.disabled = true;
                     displaySelect.appendChild(noOptions);
+                    if (!state.isDisplayTargetBusy) {
+                        for (const message of displayTargetUnavailableMessages()) {
+                            const noteOption = document.createElement("option");
+                            noteOption.value = "";
+                            noteOption.textContent = message;
+                            noteOption.disabled = true;
+                            displaySelect.appendChild(noteOption);
+                        }
+                    }
                 }
 
                 displaySelect.addEventListener("change", () => {

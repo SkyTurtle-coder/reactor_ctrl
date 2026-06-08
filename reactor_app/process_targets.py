@@ -150,30 +150,35 @@ def resolve_process_device_targets_for_definition(
         if binding is None or connection is None or server is None:
             continue
 
-        server_code = normalize_lookup_value(server.server_code)
+        server_keys = {
+            normalize_lookup_value(server.server_code),
+            normalize_lookup_value(server.display_name),
+        }
+        server_keys.discard("")
         protocol = normalize_lookup_value(device.protocol)
         connection_labels = {
             normalize_lookup_value(connection.connection_label),
             normalize_lookup_value(f"Port {connection.port_number}"),
         }
 
-        for connection_label in connection_labels:
-            if not server_code or not connection_label:
-                continue
-            if protocol:
-                exact_lookup[(server_code, connection_label, protocol)] = device
+        for server_key in server_keys:
+            for connection_label in connection_labels:
+                if not server_key or not connection_label:
+                    continue
+                if protocol:
+                    exact_lookup[(server_key, connection_label, protocol)] = device
 
-            connection_key = (server_code, connection_label)
-            if connection_key in ambiguous_connection_keys:
-                continue
-            existing = connection_lookup.get(connection_key)
-            if existing is None:
-                connection_lookup[connection_key] = device
-            elif existing.device_id == device.device_id:
-                connection_lookup[connection_key] = device
-            else:
-                connection_lookup.pop(connection_key, None)
-                ambiguous_connection_keys.add(connection_key)
+                connection_key = (server_key, connection_label)
+                if connection_key in ambiguous_connection_keys:
+                    continue
+                existing = connection_lookup.get(connection_key)
+                if existing is None:
+                    connection_lookup[connection_key] = device
+                elif existing.device_id == device.device_id:
+                    connection_lookup[connection_key] = device
+                else:
+                    connection_lookup.pop(connection_key, None)
+                    ambiguous_connection_keys.add(connection_key)
 
     targets: dict[str, dict[str, Any]] = {}
     for node in matching_nodes:

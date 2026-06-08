@@ -314,6 +314,8 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("void refreshDisplayTargets();", builder_script)
         self.assertIn("state.isDisplayTargetBusy = true;\n        renderCommunicationTable();", builder_script)
         self.assertIn("state.isDisplayTargetBusy = false;\n                renderCommunicationTable();", builder_script)
+        self.assertIn("function displayTargetUnavailableMessages()", builder_script)
+        self.assertIn("No bound device was found for this mapping.", builder_script)
 
     def test_process_trends_selection_is_content_sized(self):
         stylesheet = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
