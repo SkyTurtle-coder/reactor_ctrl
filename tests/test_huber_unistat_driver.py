@@ -94,7 +94,10 @@ class HuberUnistatDriverTests(unittest.TestCase):
         )
         self.assertEqual(transport.sent, [b"{M00****\r\n", b"{M01****\r\n", b"{M07****\r\n"])
 
-    def test_read_live_telemetry_keeps_missing_external_sensor_raw_value(self):
+    def test_read_live_telemetry_suppresses_missing_external_sensor_sentinel_to_none(self):
+        # 0xC504 → -151.0 °C is the Unistat "no Pt100 connected" sentinel value.
+        # The driver must store None rather than -151.0 so the Data view shows
+        # no reading instead of a physically impossible temperature.
         transport = _FakeTransport([b"{S0009C4\r\n", b"{S010960\r\n", b"{S07C504\r\n"])
         result = HuberUnistatDriver().execute(
             transport=transport,
@@ -106,7 +109,7 @@ class HuberUnistatDriverTests(unittest.TestCase):
             {
                 "setpoint_C": 25.0,
                 "actual_temp_C": 24.0,
-                "external_temp_C": -151.0,
+                "external_temp_C": None,
             },
         )
         self.assertEqual(transport.sent, [b"{M00****\r\n", b"{M01****\r\n", b"{M07****\r\n"])

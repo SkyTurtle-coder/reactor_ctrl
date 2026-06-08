@@ -547,10 +547,12 @@ class HuberUnistatDriver(DeviceDriver):
         )
         if _is_missing_external_sensor_temp(external_temp):
             LOGGER.warning(
-                "Huber external/process temperature reports missing Pt100 sensor sentinel %.2f degC; "
-                "recording raw external_temp_C value.",
-                float(external_temp),
+                "Huber external/process temperature (addr 07) returned the missing-sensor sentinel "
+                "%.2f degC; suppressing to None. "
+                "Verify that the Pt100 is connected and the device is configured for external sensor mode.",
+                _MISSING_EXTERNAL_SENSOR_TEMP_C,
             )
+            external_temp = None
         telemetry = {
             "setpoint_C": None if setpoint is None else float(setpoint),
             "actual_temp_C": None if actual_temp is None else float(actual_temp),
