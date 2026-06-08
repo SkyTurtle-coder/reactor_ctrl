@@ -459,6 +459,107 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], 24.4)
         self.assertEqual(transport.sent, [b"TEMP?\r\n", b"TEMP?\r\n", b"TI?\r\n"])
 
+    # ------------------------------------------------------------------ #
+    # read_live_telemetry: partial failures / robustness                  #
+    # ------------------------------------------------------------------ #
+
+    def test_read_live_telemetry_partial_timeout_external_still_returns_other_channels(self):
+        # TE? times out (no external sensor) but internal_temp_C and setpoint_C
+        # must still be returned.  No DriverError should be raised.
+        result, transport = self.execute(
+            "read_live_telemetry",
+            responses=[
+                b"TI +02440\r\n",   # TI? → internal_temp_C
+                socket.timeout,     # TE? → times out, external_temp_C = None
+                b"SP +02500\r\n",   # SP? → setpoint_C
+            ],
+        )
+
+        telemetry = result.metadata["value"]
+        self.assertEqual(telemetry["internal_temp_C"], 24.4)
+        self.assertEqual(telemetry["setpoint_C"], 25.0)
+        self.assertIsNone(telemetry["external_temp_C"])
+        self.assertIn(b"TI?\r\n", transport.sent)
+        self.assertIn(b"TE?\r\n", transport.sent)
+        self.assertIn(b"SP?\r\n", transport.sent)
+
+    def test_read_live_telemetry_partial_timeout_setpoint_still_returns_temps(self):
+        # SP? and SETPOINT? both time out, but the two temperature channels succeed.
+        result, transport = self.execute(
+            "read_live_telemetry",
+            responses=[
+                b"TI +02440\r\n",  # internal_temp_C
+                b"TE +02420\r\n",  # external_temp_C
+                socket.timeout,    # SP? → timeout
+                socket.timeout,    # SETPOINT? → timeout
+            ],
+        )
+
+        telemetry = result.metadata["value"]
+        self.assertEqual(telemetry["internal_temp_C"], 24.4)
+        self.assertEqual(telemetry["external_temp_C"], 24.2)
+        self.assertIsNone(telemetry["setpoint_C"])
+
+    def test_read_live_telemetry_all_channels_fail_raises_driver_error(self):
+        # All three reads time out → DriverError.
+        with self.assertRaises(DriverError):
+            self.execute("read_live_telemetry", responses=[])
+
+    def test_read_external_temperature_does_not_fall_back_to_temp_query(self):
+        # TE? times out.  TEMP? must NOT be tried, because TEMP? returns the
+        # active (potentially internal) sensor and would be misleadingly stored
+        # as external_temp_C.
+        from reactor_app.services.drivers.huber_cc230 import HuberCC230Client
+        transport = _FakeTransport([socket.timeout])
+        client = HuberCC230Client(transport)
+        with self.assertRaises((DriverError, socket.timeout, OSError)):
+            client.read_external_temperature()
+        # Only TE? should have been sent — no TEMP? fallback.
+        self.assertEqual(transport.sent, [b"TE?\r\n"])
+
+    # ------------------------------------------------------------------ #
+    # Temperature parsing: additional formats                             #
+    # ------------------------------------------------------------------ #
+
+    def test_parse_temperature_comma_decimal_separator(self):
+        self.assertAlmostEqual(_temperature_from_response("25,00"), 25.0)
+        self.assertAlmostEqual(_temperature_from_response("SP 25,50"), 25.5)
+        self.assertAlmostEqual(_temperature_from_response("-5,00"), -5.0)
+
+    def test_parse_temperature_integer_hundredths_all_formats(self):
+        # These are the documented CC230 fixed-width integer formats.
+        self.assertEqual(_temperature_from_response("+02500"), 25.0)
+        self.assertEqual(_temperature_from_response("02500"), 25.0)
+        self.assertEqual(_temperature_from_response("-00500"), -5.0)
+        self.assertEqual(_temperature_from_response("TE -00500"), -5.0)
+        self.assertEqual(_temperature_from_response("TI -00069"), -0.69)
+
+    def test_parse_temperature_decimal_point_formats(self):
+        self.assertEqual(_temperature_from_response("025.0"), 25.0)
+        self.assertEqual(_temperature_from_response("+025.0"), 25.0)
+        self.assertEqual(_temperature_from_response("25.00"), 25.0)
+        self.assertEqual(_temperature_from_response("-5.00"), -5.0)
+        self.assertEqual(_temperature_from_response("- 10.0"), -10.0)
+
+    def test_parse_temperature_raises_on_text_only_response(self):
+        with self.assertRaises(DriverError):
+            _temperature_from_response("INTERN")
+        with self.assertRaises(DriverError):
+            _temperature_from_response("OK")
+        with self.assertRaises(DriverError):
+            _temperature_from_response("")
+        with self.assertRaises(DriverError):
+            _temperature_from_response("SENSOR OFF")
+
+    # ------------------------------------------------------------------ #
+    # drain idle timeout constant is exposed                              #
+    # ------------------------------------------------------------------ #
+
+    def test_drain_idle_timeout_constant_is_at_least_50ms(self):
+        from reactor_app.services.drivers.huber_cc230 import _CC230_DRAIN_IDLE_TIMEOUT_S
+        # Must be generous enough to absorb Moxa NPort delayed ACKs.
+        self.assertGreaterEqual(_CC230_DRAIN_IDLE_TIMEOUT_S, 0.05)
+
 
 if __name__ == "__main__":
     unittest.main()

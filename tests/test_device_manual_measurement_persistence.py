@@ -619,6 +619,102 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
 
             self.assertEqual(claimed, recipe_device.device_id)
 
+    # ------------------------------------------------------------------ #
+    # CC230 partial telemetry persistence                                 #
+    # ------------------------------------------------------------------ #
+
+    def test_cc230_partial_telemetry_persists_available_channels_skips_none(self):
+        # external_temp_C = None (no external sensor) must not produce a row,
+        # but internal_temp_C and setpoint_C must be written.
+        with self.app.app_context():
+            device = Device(
+                asset_serial="CC230-PARTIAL-001",
+                manufacturer_serial="SN-CC230-PARTIAL-001",
+                display_name="CC230 Partial Telemetry Test",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            db.session.add(DeviceManualState(
+                device_id=device.device_id,
+                queue_status="idle",
+                desired_version=0,
+                applied_version=0,
+            ))
+            db.session.commit()
+
+            device_manual_runtime._ensure_huber_measurement_channels(device)
+            db.session.commit()
+
+            measured_at = datetime.now(timezone.utc)
+            device_manual_runtime._persist_huber_telemetry_as_measurements(
+                device,
+                {
+                    "setpoint_C": 25.0,
+                    "internal_temp_C": 24.5,
+                    "external_temp_C": None,  # sensor not connected
+                },
+                measured_at,
+            )
+            db.session.commit()
+
+            measurements = (
+                Measurement.query
+                .filter(Measurement.device_id == device.device_id)
+                .order_by(Measurement.channel_code.asc())
+                .all()
+            )
+            channel_codes = [m.channel_code for m in measurements]
+            self.assertIn("setpoint_C", channel_codes)
+            self.assertIn("internal_temp_C", channel_codes)
+            self.assertNotIn("external_temp_C", channel_codes)
+            self.assertEqual(len(measurements), 2)
+
+    def test_cc230_ensure_channels_creates_active_channels_and_deactivates_obsolete(self):
+        # Even when no channels exist yet, _ensure_huber_measurement_channels must
+        # create the three active ones and deactivate any pre-existing obsolete ones.
+        with self.app.app_context():
+            device = Device(
+                asset_serial="CC230-ENSURE-001",
+                manufacturer_serial="SN-CC230-ENSURE-001",
+                display_name="CC230 Ensure Channels Test",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            # Seed obsolete channels as if migration has not run yet.
+            for code in ("actual_temp_C", "bath_temp_C", "cc230_error"):
+                db.session.add(MeasurementChannel(
+                    device_id=device.device_id,
+                    channel_code=code,
+                    display_name=code,
+                    unit="",
+                    value_type="float",
+                    is_active=True,
+                ))
+            db.session.commit()
+
+            channels = device_manual_runtime._ensure_huber_measurement_channels(device)
+            db.session.commit()
+
+            all_channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == device.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+            active = [c.channel_code for c in all_channels if bool(c.is_active)]
+            inactive = [c.channel_code for c in all_channels if not bool(c.is_active)]
+
+            self.assertCountEqual(active, ["external_temp_C", "internal_temp_C", "setpoint_C"])
+            self.assertCountEqual(inactive, ["actual_temp_C", "bath_temp_C", "cc230_error"])
+            # Return value must contain the three active channels.
+            self.assertCountEqual(list(channels.keys()), ["external_temp_C", "internal_temp_C", "setpoint_C"])
+
 
 if __name__ == "__main__":
     unittest.main()

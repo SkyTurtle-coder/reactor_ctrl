@@ -27,6 +27,11 @@ _CC230_SETPOINT_READBACK_TOLERANCE_C = 0.1
 _CC230_REMOTE_SETTLE_S = 0.2
 # Short settle after the write command before the readback query.
 _CC230_WRITE_SETTLE_S = 0.5
+# Idle timeout used when draining stale bytes from the input buffer.
+# 0.08 s gives 4× the margin of the old 0.02 s value, which is long enough
+# to absorb a delayed ACK from the CC230 or a Moxa NPort echo, without
+# meaningfully slowing down normal (echo-free) communication.
+_CC230_DRAIN_IDLE_TIMEOUT_S = 0.08
 
 
 @dataclass(frozen=True)
@@ -197,9 +202,13 @@ class HuberCC230Client:
         if not callable(drain):
             return b""
         try:
-            drained = drain(max_bytes=self.max_response_bytes, idle_timeout_s=0.02)
+            drained = drain(max_bytes=self.max_response_bytes, idle_timeout_s=_CC230_DRAIN_IDLE_TIMEOUT_S)
             if drained:
-                LOGGER.debug("CC230 drained stale input bytes: %s", drained.hex())
+                LOGGER.debug(
+                    "CC230 drained %d stale input byte(s) before command: %s",
+                    len(drained),
+                    drained.hex(),
+                )
             return drained
         except Exception:
             LOGGER.debug("CC230 input drain failed; continuing with command send.", exc_info=True)
@@ -398,7 +407,14 @@ class HuberCC230Client:
         return self._read_temperature_chain(("TI?", "BATH?", "TEMP?"))
 
     def read_external_temperature(self) -> float:
-        return self._read_temperature_chain(("TE?", "TEMP?"))
+        # Query only TE? for the external Pt100 sensor.  TEMP? is intentionally
+        # omitted: it returns the currently-active sensor value (internal or
+        # external depending on firmware mode), so using it as a fallback here
+        # would silently store an internal temperature under the external_temp_C
+        # key whenever no external sensor is attached.  A TE? timeout is the
+        # correct signal that no external sensor is present; the caller records
+        # None via optional_read, which is the right outcome.
+        return self._read_temperature_chain(("TE?",))
 
     def set_internal_sensor(self, *, skip_remote: bool = False) -> bool:
         if not skip_remote:
@@ -435,15 +451,21 @@ class HuberCC230Client:
         }
 
     def read_live_telemetry(self) -> dict[str, Any]:
-        def optional_read(reader) -> Any:
+        def _safe_read(channel_name: str, reader) -> Any:
             try:
                 return reader()
-            except (DriverError, OSError, socket.timeout):
+            except (DriverError, OSError, socket.timeout) as exc:
+                LOGGER.debug(
+                    "CC230 live telemetry: %s read failed (%s: %s).",
+                    channel_name,
+                    type(exc).__name__,
+                    exc,
+                )
                 return None
 
-        internal_temp = optional_read(self.read_internal_temperature)
-        external_temp = optional_read(self.read_external_temperature)
-        setpoint = optional_read(self.read_setpoint)
+        internal_temp = _safe_read("internal_temp_C", self.read_internal_temperature)
+        external_temp = _safe_read("external_temp_C", self.read_external_temperature)
+        setpoint = _safe_read("setpoint_C", self.read_setpoint)
 
         telemetry = {
             "setpoint_C": None if setpoint is None else float(setpoint),
@@ -455,6 +477,15 @@ class HuberCC230Client:
             for key in ("setpoint_C", "internal_temp_C", "external_temp_C")
         ):
             raise DriverError("CC230 returned no valid numeric temperature data.")
+
+        missing = [k for k, v in telemetry.items() if v is None]
+        if missing:
+            LOGGER.debug(
+                "CC230 live telemetry: no data for %s "
+                "(external sensor absent, query timed out, or device mode mismatch).",
+                ", ".join(missing),
+            )
+
         return telemetry
 
 

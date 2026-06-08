@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -8,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
+
+LOGGER = logging.getLogger(__name__)
 
 from flask import Flask, has_app_context
 from sqlalchemy import and_, case, inspect, or_, text
@@ -1187,6 +1190,12 @@ def _persist_telemetry_as_measurements(
 
         channel = channels.get(spec["channel_code"])
         if channel is None:
+            LOGGER.debug(
+                "Telemetry channel %r not in measurement_channel for device %s; "
+                "skipping. Run migration v10 or wait for the next poll cycle to create it.",
+                spec["channel_code"],
+                device.device_id,
+            )
             continue
 
         value_type = str(spec.get("value_type") or channel.value_type or "float").strip().lower()
