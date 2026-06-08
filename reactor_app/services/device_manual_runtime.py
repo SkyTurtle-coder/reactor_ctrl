@@ -55,14 +55,13 @@ _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
 # commands so that user-triggered commands (start, set_setpoint, …) can preempt
 # polling within one cooperative-poll interval (250 ms).
 #
-# The CC230 sometimes ignores primary queries (e.g. SETPOINT?, TE?) forcing the
-# driver to wait for the full socket read_timeout before trying the fallback
-# command.  A primary + fallback chain therefore takes up to 2 × read_timeout.
-# With execution_timeout_s = 10 s for POLLING and 2 commands in the fallback
-# chain at 1.5 s each the worst-case driver time is 3 s — well inside the budget.
-# Working commands (TEMP?, TI?, BATH?) respond in well under 200 ms at 9600 baud
-# so 1.5 s gives 7× headroom even against occasional NPort latency spikes.
-_CC230_POLL_RESPONSE_TIMEOUT_MS = 1500
+# During active ramp phases the CC230 may take 1–2 s to respond while it
+# processes a concurrent setpoint write.  2500 ms per query gives enough
+# headroom for those slow responses.  The normal (ramp-idle) case still
+# resolves in < 300 ms per command, so typical poll cycles finish in ~ 1 s.
+# Pathological all-timeout cases are bounded by the POLLING execution_timeout_s
+# (10 s) via the CancellationToken rather than by the per-query timeout.
+_CC230_POLL_RESPONSE_TIMEOUT_MS = 2500
 _UNISTAT_POLL_RESPONSE_TIMEOUT_MS = 800
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},

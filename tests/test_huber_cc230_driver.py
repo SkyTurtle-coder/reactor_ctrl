@@ -7,7 +7,9 @@ from reactor_app.services.drivers.base import DeviceCommandRequest
 from reactor_app.services.drivers.huber_cc230 import (
     DriverError,
     HuberCC230Driver,
+    _CC230_READ_INTER_COMMAND_DELAY_S,
     _format_cc230_matlab_set_command,
+    _is_stale_cc230_response,
     _ordered_setpoint_write_variants,
     _format_set_command_b,
     _format_set_command_c,
@@ -157,7 +159,8 @@ class HuberCC230DriverTests(unittest.TestCase):
         with self.assertRaises((socket.timeout, OSError, DriverError)):
             self.execute("get_setpoint", responses=[socket.timeout])
 
-    def test_read_live_telemetry_batches_temperature_reads_into_one_driver_command(self):
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_read_live_telemetry_batches_temperature_reads_into_one_driver_command(self, _mock_sleep):
         result, transport = self.execute(
             "read_live_telemetry",
             responses=[
@@ -463,7 +466,8 @@ class HuberCC230DriverTests(unittest.TestCase):
     # read_live_telemetry: partial failures / robustness                  #
     # ------------------------------------------------------------------ #
 
-    def test_read_live_telemetry_partial_timeout_external_still_returns_other_channels(self):
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_read_live_telemetry_partial_timeout_external_still_returns_other_channels(self, _mock_sleep):
         # TE? times out (no external sensor) but internal_temp_C and setpoint_C
         # must still be returned.  No DriverError should be raised.
         result, transport = self.execute(
@@ -483,7 +487,8 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertIn(b"TE?\r\n", transport.sent)
         self.assertIn(b"SP?\r\n", transport.sent)
 
-    def test_read_live_telemetry_partial_timeout_setpoint_still_returns_temps(self):
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_read_live_telemetry_partial_timeout_setpoint_still_returns_temps(self, _mock_sleep):
         # SP? and SETPOINT? both time out, but the two temperature channels succeed.
         result, transport = self.execute(
             "read_live_telemetry",
@@ -500,7 +505,8 @@ class HuberCC230DriverTests(unittest.TestCase):
         self.assertEqual(telemetry["external_temp_C"], 24.2)
         self.assertIsNone(telemetry["setpoint_C"])
 
-    def test_read_live_telemetry_all_channels_fail_raises_driver_error(self):
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_read_live_telemetry_all_channels_fail_raises_driver_error(self, _mock_sleep):
         # All three reads time out → DriverError.
         with self.assertRaises(DriverError):
             self.execute("read_live_telemetry", responses=[])
@@ -559,6 +565,122 @@ class HuberCC230DriverTests(unittest.TestCase):
         from reactor_app.services.drivers.huber_cc230 import _CC230_DRAIN_IDLE_TIMEOUT_S
         # Must be generous enough to absorb Moxa NPort delayed ACKs.
         self.assertGreaterEqual(_CC230_DRAIN_IDLE_TIMEOUT_S, 0.05)
+
+    # ------------------------------------------------------------------ #
+    # Timing constants: ramp-phase robustness                             #
+    # ------------------------------------------------------------------ #
+
+    def test_write_settle_constant_at_least_700ms(self):
+        from reactor_app.services.drivers.huber_cc230 import _CC230_WRITE_SETTLE_S
+        # Must be long enough for the CC230 to process a SET during a ramp
+        # without a delayed ACK racing the subsequent readback query.
+        self.assertGreaterEqual(_CC230_WRITE_SETTLE_S, 0.7)
+
+    def test_read_inter_command_delay_constant_is_at_least_150ms(self):
+        # Pause between TI?, TE? and SP? prevents stale responses from one
+        # query contaminating the next channel read during rapid polling.
+        self.assertGreaterEqual(_CC230_READ_INTER_COMMAND_DELAY_S, 0.15)
+
+    # ------------------------------------------------------------------ #
+    # _is_stale_cc230_response: unit tests                                #
+    # ------------------------------------------------------------------ #
+
+    def test_is_stale_response_detects_echo(self):
+        # Moxa NPort software echo: response == sent command.
+        self.assertTrue(_is_stale_cc230_response("TI?", "TI?"))
+        self.assertTrue(_is_stale_cc230_response("TEMP?", "TEMP?"))
+        self.assertTrue(_is_stale_cc230_response("SP?", "SP?"))
+        # Command without trailing '?' also counts as echo.
+        self.assertTrue(_is_stale_cc230_response("TI", "TI?"))
+
+    def test_is_stale_response_detects_ack_tokens(self):
+        # Known status/ACK strings emitted by the CC230 or its firmware.
+        self.assertTrue(_is_stale_cc230_response("INTERN", "TI?"))
+        self.assertTrue(_is_stale_cc230_response("OK", "TI?"))
+        self.assertTrue(_is_stale_cc230_response("REMOTE", "SP?"))
+        self.assertTrue(_is_stale_cc230_response("RUNNING", "TI?"))
+        self.assertTrue(_is_stale_cc230_response("LOCAL", "TE?"))
+        self.assertTrue(_is_stale_cc230_response("STOP", "TI?"))
+
+    def test_is_stale_response_does_not_classify_temperature_responses(self):
+        # Real temperature responses must never be treated as stale.
+        self.assertFalse(_is_stale_cc230_response("TI +02440", "TI?"))
+        self.assertFalse(_is_stale_cc230_response("TEMP +02450", "TEMP?"))
+        self.assertFalse(_is_stale_cc230_response("+02500", "SP?"))
+        self.assertFalse(_is_stale_cc230_response("TE -00500", "TE?"))
+
+    def test_is_stale_response_returns_false_for_empty_or_none(self):
+        self.assertFalse(_is_stale_cc230_response(None, "TI?"))
+        self.assertFalse(_is_stale_cc230_response("", "TI?"))
+
+    # ------------------------------------------------------------------ #
+    # Stale ACK / echo in temperature chain                               #
+    # ------------------------------------------------------------------ #
+
+    def test_stale_ok_ack_in_chain_skips_to_next_fallback_command(self):
+        # An "OK" ACK left in the buffer from a prior write is received as the
+        # TI? response; the chain detects it as stale and falls to BATH?.
+        result, transport = self.execute(
+            "get_internal_temp",
+            responses=[b"OK\r\n", b"BATH +02440\r\n"],
+        )
+        self.assertEqual(result.metadata["value"], 24.4)
+        self.assertEqual(transport.sent, [b"TI?\r\n", b"BATH?\r\n"])
+
+    def test_echo_response_in_chain_skips_to_next_fallback_command(self):
+        # Moxa NPort software echo reflects TI? back; the chain detects it
+        # and falls to BATH? which returns the real temperature.
+        result, transport = self.execute(
+            "get_internal_temp",
+            responses=[b"TI?\r\n", b"BATH +02440\r\n"],
+        )
+        self.assertEqual(result.metadata["value"], 24.4)
+        self.assertEqual(transport.sent, [b"TI?\r\n", b"BATH?\r\n"])
+
+    def test_stale_remote_ack_in_setpoint_chain_skips_to_setpoint_fallback(self):
+        # "REMOTE" ACK lands in the buffer just before SP? reads it; the chain
+        # falls to SETPOINT? which responds correctly.
+        result, transport = self.execute(
+            "get_setpoint",
+            responses=[b"REMOTE\r\n", b"SETPOINT +02500\r\n"],
+        )
+        self.assertEqual(result.metadata["value"], 25.0)
+        self.assertEqual(transport.sent, [b"SP?\r\n", b"SETPOINT?\r\n"])
+
+    # ------------------------------------------------------------------ #
+    # write_setpoint: explicit drain after write-settle                   #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_write_setpoint_drains_buffer_after_write_settle(self, _mock_sleep):
+        # An explicit _clear_input_buffer() call after the write-settle sleep
+        # means the total drain count for a single verified write is 4:
+        #   REMOTE (drain in send_command) + SET (drain in send_command)
+        #   + explicit post-settle drain + SETPOINT? (drain in send_command).
+        result, transport = self.execute(
+            "set_setpoint",
+            payload={"temp_c": 25, "min_setpoint_c": -40, "max_setpoint_c": 150},
+            responses=[b"SETPOINT +02500\r\n"],
+        )
+        self.assertEqual(result.metadata["setpoint_sync_status"], "verified")
+        self.assertEqual(transport.drained, 4)
+
+    # ------------------------------------------------------------------ #
+    # read_live_telemetry: inter-command delay                            #
+    # ------------------------------------------------------------------ #
+
+    @patch("reactor_app.services.drivers.huber_cc230.time.sleep")
+    def test_read_live_telemetry_inserts_inter_command_delays(self, mock_sleep):
+        # Two pauses of _CC230_READ_INTER_COMMAND_DELAY_S are inserted between
+        # the three channel reads (TI→TE, TE→SP) to prevent response crosstalk
+        # during ramp phases.
+        self.execute(
+            "read_live_telemetry",
+            responses=[b"TI +02440\r\n", b"TE +02420\r\n", b"SP +02500\r\n"],
+        )
+        sleep_args = [c.args[0] for c in mock_sleep.call_args_list]
+        inter_delay_count = sum(1 for v in sleep_args if v == _CC230_READ_INTER_COMMAND_DELAY_S)
+        self.assertEqual(inter_delay_count, 2)
 
 
 if __name__ == "__main__":

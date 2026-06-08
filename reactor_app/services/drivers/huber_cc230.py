@@ -25,13 +25,29 @@ _STATUS_OFF_TOKENS = {"0", "OFF", "STOP", "STOPPED", "LOCAL"}
 _CC230_SETPOINT_READBACK_TOLERANCE_C = 0.1
 # Short settle after REMOTE before the write command (CC230 needs time to switch modes).
 _CC230_REMOTE_SETTLE_S = 0.2
-# Short settle after the write command before the readback query.
-_CC230_WRITE_SETTLE_S = 0.5
+# Settle after a write command before the readback query.  0.7 s gives the
+# CC230 time to process the SET during active ramp phases without the
+# readback query racing against a delayed ACK from the write.
+_CC230_WRITE_SETTLE_S = 0.7
 # Idle timeout used when draining stale bytes from the input buffer.
 # 0.08 s gives 4× the margin of the old 0.02 s value, which is long enough
 # to absorb a delayed ACK from the CC230 or a Moxa NPort echo, without
 # meaningfully slowing down normal (echo-free) communication.
 _CC230_DRAIN_IDLE_TIMEOUT_S = 0.08
+# Pause inserted between consecutive channel reads in read_live_telemetry().
+# During ramp phases the CC230 may queue a stale response for a previous
+# command; 0.20 s of guard time prevents TI?, TE? and SP? from stepping on
+# each other's responses over the shared Moxa NPort serial channel.
+_CC230_READ_INTER_COMMAND_DELAY_S = 0.20
+
+# Non-measurement tokens the CC230 (or Moxa NPort echo) may send as an
+# ACK or status line.  When one of these appears as a temperature response
+# the current fallback-chain entry is skipped and the next command is tried.
+_CC230_ACK_TOKENS: frozenset[str] = frozenset({
+    "INTERN", "EXTERN", "REMOTE", "LOCAL", "START", "STOP",
+    "OK", "ACK", "ON", "OFF", "RUN", "RUNNING", "STOPPED",
+    "BATH", "STATUS", "ERROR", "WARN",
+})
 
 
 @dataclass(frozen=True)
@@ -176,6 +192,25 @@ def _unknown_status_payload(error: Exception | None = None) -> dict[str, Any]:
     return payload
 
 
+def _is_stale_cc230_response(response_text: str | None, sent_command: str) -> bool:
+    """True if *response_text* is a Moxa echo of *sent_command* or a known ACK/status token.
+
+    When the CC230 (or the Moxa NPort) returns one of these non-measurement
+    strings as the first line after a query, it is treated as a stale leftover
+    from a prior write command.  The caller should skip to the next command in
+    its fallback chain rather than attempting to parse a temperature from it.
+    """
+    raw = str(response_text or "").strip()
+    if not raw:
+        return False
+    raw_upper = raw.upper()
+    cmd_upper = str(sent_command or "").strip().upper()
+    # Echo: the device (or NPort) reflected the sent command back verbatim.
+    if raw_upper == cmd_upper or raw_upper == cmd_upper.rstrip("?"):
+        return True
+    return raw_upper in _CC230_ACK_TOKENS
+
+
 class HuberCC230Client:
     """Line-oriented RS-232 client for the older Huber/Polystat CC230."""
 
@@ -246,6 +281,13 @@ class HuberCC230Client:
         for command in commands:
             try:
                 response = self.send_command(command)
+                if _is_stale_cc230_response(response.response_text, command):
+                    LOGGER.debug(
+                        "CC230 %s: stale ACK/echo response %r; skipping to next fallback command.",
+                        command, response.response_text,
+                    )
+                    errors.append(f"{command}: stale response ({response.response_text!r})")
+                    continue
                 return _temperature_from_response(response.response_text)
             except (DriverError, OSError, socket.timeout) as exc:
                 errors.append(f"{command}: {exc}")
@@ -336,7 +378,9 @@ class HuberCC230Client:
             )
             self.send_command(command_text, expect_response=False)
             time.sleep(_CC230_WRITE_SETTLE_S)
-
+            # Drain any ACK or echo that arrived during the settle window so the
+            # readback query always gets a fresh response, not a stale write ACK.
+            self._clear_input_buffer()
             readback_value = self._readback_setpoint_celsius()
             deviation = round(abs(readback_value - value), 4) if readback_value is not None else None
             attempt: dict[str, Any] = {
@@ -464,7 +508,9 @@ class HuberCC230Client:
                 return None
 
         internal_temp = _safe_read("internal_temp_C", self.read_internal_temperature)
+        time.sleep(_CC230_READ_INTER_COMMAND_DELAY_S)
         external_temp = _safe_read("external_temp_C", self.read_external_temperature)
+        time.sleep(_CC230_READ_INTER_COMMAND_DELAY_S)
         setpoint = _safe_read("setpoint_C", self.read_setpoint)
 
         telemetry = {
