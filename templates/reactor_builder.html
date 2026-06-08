@@ -173,7 +173,6 @@
             <div class="builder-view-tabs">
                 <button id="builder-layout-view-tab" class="btn btn-primary" type="button">Flowsheet</button>
                 <button id="builder-communication-view-tab" class="btn" type="button">Communication</button>
-                <button id="builder-control-view-tab" class="btn" type="button">Actuators</button>
             </div>
 
             <section class="builder-view" id="builder-layout-view">
@@ -221,16 +220,6 @@
                 </div>
             </section>
 
-            <section class="builder-view is-hidden" id="builder-control-view">
-                <div class="card-body builder-control-panel">
-                    <div class="builder-panel-header">
-                        <h2>Actuator Settings</h2>
-                    </div>
-                    <div id="builder-control-body" class="builder-control-body">
-                        <p class="empty-state">No actuators in the current build.</p>
-                    </div>
-                </div>
-            </section>
         </article>
     </section>
 </section>
@@ -262,7 +251,6 @@
 
 <script id="builder-library-data" type="application/json">{{ symbol_categories | tojson }}</script>
 <script id="builder-build-data" type="application/json">{{ current_build | tojson }}</script>
-<script id="builder-actuator-profiles" type="application/json">{{ actuator_profiles | tojson }}</script>
 <script id="builder-display-targets" type="application/json">{{ display_targets | tojson }}</script>
 <script id="builder-supported-protocols" type="application/json">{{ supported_protocol_options | tojson }}</script>
 <script id="builder-meta-data" type="application/json">{{ {"currentBuildId": current_build_id, "apiAuthRequired": api_auth_required, "builderWriteToken": builder_write_token} | tojson }}</script>

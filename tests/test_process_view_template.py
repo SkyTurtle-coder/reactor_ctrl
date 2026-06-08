@@ -266,7 +266,6 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('"channel_code": "ika_torque_ncm"', source)
         self.assertIn('"channel_code": "setpoint_C"', source)
         self.assertIn('"channel_code": "actual_temp_C"', source)
-        self.assertIn('"channel_code": "bath_temp_C"', source)
         self.assertIn('"channel_code": "internal_temp_C"', source)
         self.assertIn('"channel_code": "external_temp_C"', source)
         self.assertIn('"data_source": "measurement"', source)
@@ -288,6 +287,33 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn(".ui-collapsible-panel", stylesheet)
         self.assertIn(".ui-collapsible-chevron svg", stylesheet)
         self.assertIn(".ui-collapsible-details[open] > .ui-collapsible-panel", stylesheet)
+
+    def test_reactor_builder_actuators_tab_is_removed(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        builder_template = (repo_root / "templates" / "reactor_builder.html").read_text(encoding="utf-8")
+        builder_script = (repo_root / "static" / "js" / "reactor_builder.js").read_text(encoding="utf-8")
+        stylesheet = (repo_root / "static" / "css" / "app.css").read_text(encoding="utf-8")
+
+        self.assertNotIn("builder-control-view-tab", builder_template)
+        self.assertNotIn("builder-control-view", builder_template)
+        self.assertNotIn("builder-control-body", builder_template)
+        self.assertNotIn("builder-actuator-profiles", builder_template)
+        self.assertNotIn("Actuator Settings", builder_template)
+        self.assertNotIn("builder-control-view-tab", builder_script)
+        self.assertNotIn("renderActuatorControls", builder_script)
+        self.assertNotIn('setView("control")', builder_script)
+        self.assertNotIn(".builder-control", stylesheet)
+
+    def test_reactor_builder_display_placement_refreshes_value_options(self):
+        builder_script = (Path(__file__).resolve().parents[1] / "static" / "js" / "reactor_builder.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("if (isDisplayNode(node)) {", builder_script)
+        self.assertIn('setView("communication");', builder_script)
+        self.assertIn("void refreshDisplayTargets();", builder_script)
+        self.assertIn("state.isDisplayTargetBusy = true;\n        renderCommunicationTable();", builder_script)
+        self.assertIn("state.isDisplayTargetBusy = false;\n                renderCommunicationTable();", builder_script)
 
     def test_process_trends_selection_is_content_sized(self):
         stylesheet = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")

@@ -812,7 +812,7 @@ def _reactor_build_to_dict(item: ReactorBuild, *, include_definition: bool = Tru
     return payload
 
 
-def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
+def _validate_reactor_build_definition(value: Any, *, validate_control: bool = True) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Field 'definition_json' must be a JSON object.")
 
@@ -939,10 +939,13 @@ def _validate_reactor_build_definition(value: Any) -> dict[str, Any]:
                 ),
             }
 
-        try:
-            control_payload = normalize_control_definition(symbol_id, node.get("control"))
-        except ValueError as exc:
-            raise ValueError(f"Node {index} control is invalid: {exc}") from exc
+        if validate_control:
+            try:
+                control_payload = normalize_control_definition(symbol_id, node.get("control"))
+            except ValueError as exc:
+                raise ValueError(f"Node {index} control is invalid: {exc}") from exc
+        else:
+            control_payload = node.get("control") if isinstance(node.get("control"), dict) else None
 
         raw_anchors = node.get("anchors", [])
         if raw_anchors in (None, ""):
@@ -1405,7 +1408,7 @@ def create_reactor_build():
 def resolve_reactor_build_display_targets():
     try:
         payload = _load_json_payload()
-        definition = _validate_reactor_build_definition(payload.get("definition_json"))
+        definition = _validate_reactor_build_definition(payload.get("definition_json"), validate_control=False)
     except ValueError as exc:
         return _json_error(str(exc), 400)
 

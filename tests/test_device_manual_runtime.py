@@ -461,19 +461,17 @@ class ReadHuberStatusTests(unittest.TestCase):
             calls.append((args, kwargs))
             return {
                 "setpoint_C": 25.0,
-                "actual_temp_C": 24.8,
-                "bath_temp_C": 24.7,
                 "internal_temp_C": 24.9,
                 "external_temp_C": None,
-                "status": None,
-                "error": None,
-                "warning": None,
             }
 
         with patch.object(device_manual_runtime, "_run_logged_driver_command", fake_run):
             telemetry = device_manual_runtime._read_huber_status(device)
 
         self.assertEqual(telemetry["setpoint_C"], 25.0)
+        self.assertNotIn("actual_temp_C", telemetry)
+        self.assertNotIn("bath_temp_C", telemetry)
+        self.assertNotIn("cc230_error", telemetry)
         self.assertEqual(len(calls), 1)
         args, kwargs = calls[0]
         self.assertEqual(args[1], "read_live_telemetry")
@@ -493,16 +491,16 @@ class ReadHuberStatusTests(unittest.TestCase):
 
         def fake_run(*args, **kwargs):
             calls.append((args, kwargs))
-            return {"setpoint_C": 22.5, "actual_temp_C": 22.1}
+            return {"setpoint_C": 22.5, "actual_temp_C": 22.1, "external_temp_C": 21.9}
 
         with patch.object(device_manual_runtime, "_run_logged_driver_command", fake_run):
             telemetry = device_manual_runtime._read_huber_status(device)
 
-        self.assertEqual(telemetry, {"setpoint_C": 22.5, "actual_temp_C": 22.1})
+        self.assertEqual(telemetry, {"setpoint_C": 22.5, "actual_temp_C": 22.1, "external_temp_C": 21.9})
         self.assertEqual(len(calls), 1)
         args, kwargs = calls[0]
         self.assertEqual(args[1], "read_live_telemetry")
-        self.assertEqual(args[2], {})
+        self.assertEqual(args[2], {"response_timeout_ms": device_manual_runtime._UNISTAT_POLL_RESPONSE_TIMEOUT_MS})
         self.assertEqual(kwargs["priority"], device_manual_runtime.CommandPriority.POLLING)
         self.assertEqual(kwargs["source"], device_manual_runtime.CommandSource.POLLER)
 

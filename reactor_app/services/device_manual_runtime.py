@@ -60,19 +60,23 @@ _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
 # Working commands (TEMP?, TI?, BATH?) respond in well under 200 ms at 9600 baud
 # so 1.5 s gives 7× headroom even against occasional NPort latency spikes.
 _CC230_POLL_RESPONSE_TIMEOUT_MS = 1500
+_UNISTAT_POLL_RESPONSE_TIMEOUT_MS = 800
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
     {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Actual Temperature", "unit": "degC"},
+    {"key": "external_temp_C", "channel_code": "external_temp_C", "display_name": "External Temperature", "unit": "degC"},
 )
 _CC230_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
-    {"key": "actual_temp_C", "channel_code": "actual_temp_C", "display_name": "Process Temperature", "unit": "degC"},
-    {"key": "bath_temp_C", "channel_code": "bath_temp_C", "display_name": "Bath Temperature", "unit": "degC"},
     {"key": "internal_temp_C", "channel_code": "internal_temp_C", "display_name": "Internal Temperature", "unit": "degC"},
     {"key": "external_temp_C", "channel_code": "external_temp_C", "display_name": "External Temperature", "unit": "degC"},
-    {"key": "status", "channel_code": "cc230_status", "display_name": "Status", "unit": "", "value_type": "text"},
-    {"key": "error", "channel_code": "cc230_error", "display_name": "Error", "unit": "", "value_type": "text"},
-    {"key": "warning", "channel_code": "cc230_warning", "display_name": "Warning", "unit": "", "value_type": "text"},
+)
+_CC230_OBSOLETE_TELEMETRY_CHANNEL_CODES: tuple[str, ...] = (
+    "actual_temp_C",
+    "bath_temp_C",
+    "cc230_status",
+    "cc230_error",
+    "cc230_warning",
 )
 _IKA_TELEMETRY_MEASUREMENT_SOURCE = "poller"
 
@@ -602,11 +606,35 @@ def _ensure_measurement_channels(device: Device, specs: tuple[dict, ...]) -> dic
     return existing_channels
 
 
+def _deactivate_measurement_channels(device: Device, channel_codes: tuple[str, ...]) -> None:
+    if not channel_codes:
+        return
+
+    changed = False
+    channels = (
+        db.session.query(MeasurementChannel)
+        .filter(
+            MeasurementChannel.device_id == device.device_id,
+            MeasurementChannel.channel_code.in_(list(channel_codes)),
+        )
+        .all()
+    )
+    for channel in channels:
+        if bool(channel.is_active):
+            channel.is_active = False
+            changed = True
+
+    if changed:
+        db.session.flush()
+
+
 def _ensure_ika_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
     return _ensure_measurement_channels(device, _IKA_TELEMETRY_CHANNELS)
 
 
 def _ensure_huber_measurement_channels(device: Device) -> dict[str, MeasurementChannel]:
+    if _is_cc230_device(device):
+        _deactivate_measurement_channels(device, _CC230_OBSOLETE_TELEMETRY_CHANNEL_CODES)
     return _ensure_measurement_channels(
         device,
         _CC230_TELEMETRY_CHANNELS if _is_cc230_device(device) else _HUBER_TELEMETRY_CHANNELS,
@@ -931,7 +959,7 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
         # five separate queue/lock/DB round-trips for a single telemetry refresh.
         poll_payload = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
     else:
-        poll_payload = {}
+        poll_payload = {"response_timeout_ms": _UNISTAT_POLL_RESPONSE_TIMEOUT_MS}
 
     telemetry = _run_logged_driver_command(
         device,

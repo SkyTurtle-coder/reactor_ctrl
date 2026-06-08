@@ -393,10 +393,10 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
             self.assertIsNotNone(state)
             self.assertEqual(
                 [channel.channel_code for channel in channels],
-                ["actual_temp_C", "setpoint_C"],
+                ["actual_temp_C", "external_temp_C", "setpoint_C"],
             )
 
-    def test_cc230_discovery_and_measurement_persistence_include_extended_channels(self):
+    def test_cc230_discovery_and_measurement_persistence_only_include_active_temperature_channels(self):
         with self.app.app_context():
             device = Device(
                 asset_serial="CC230-DISCOVERY-001",
@@ -407,6 +407,24 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 is_active=True,
             )
             db.session.add(device)
+            db.session.flush()
+            for code, value_type in (
+                ("actual_temp_C", "float"),
+                ("bath_temp_C", "float"),
+                ("cc230_error", "text"),
+                ("cc230_status", "text"),
+                ("cc230_warning", "text"),
+            ):
+                db.session.add(
+                    MeasurementChannel(
+                        device_id=device.device_id,
+                        channel_code=code,
+                        display_name=code,
+                        unit="",
+                        value_type=value_type,
+                        is_active=True,
+                    )
+                )
             db.session.commit()
 
             device_manual_runtime._ensure_manual_states_for_active_devices(self.app)
@@ -418,20 +436,21 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 .order_by(MeasurementChannel.channel_code.asc())
                 .all()
             )
+            active_channels = [channel for channel in channels if bool(channel.is_active)]
+            inactive_channel_codes = [channel.channel_code for channel in channels if not bool(channel.is_active)]
 
             self.assertIsNotNone(state)
             self.assertEqual(
-                [(channel.channel_code, channel.value_type) for channel in channels],
+                [(channel.channel_code, channel.value_type) for channel in active_channels],
                 [
-                    ("actual_temp_C", "float"),
-                    ("bath_temp_C", "float"),
-                    ("cc230_error", "text"),
-                    ("cc230_status", "text"),
-                    ("cc230_warning", "text"),
                     ("external_temp_C", "float"),
                     ("internal_temp_C", "float"),
                     ("setpoint_C", "float"),
                 ],
+            )
+            self.assertEqual(
+                inactive_channel_codes,
+                ["actual_temp_C", "bath_temp_C", "cc230_error", "cc230_status", "cc230_warning"],
             )
 
             measured_at = datetime.now(timezone.utc)
@@ -442,7 +461,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                     "actual_temp_C": 24.8,
                     "bath_temp_C": 24.7,
                     "internal_temp_C": 24.9,
-                    "external_temp_C": None,
+                    "external_temp_C": 24.6,
                     "status": "ON REMOTE",
                     "error": "0",
                     "warning": "WARN 0",
@@ -455,15 +474,75 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
             self.assertEqual(
                 [(item.channel_code, item.numeric_value, item.text_value) for item in measurements],
                 [
-                    ("actual_temp_C", 24.8, None),
-                    ("bath_temp_C", 24.7, None),
-                    ("cc230_error", None, "0"),
-                    ("cc230_status", None, "ON REMOTE"),
-                    ("cc230_warning", None, "WARN 0"),
+                    ("external_temp_C", 24.6, None),
                     ("internal_temp_C", 24.9, None),
                     ("setpoint_C", 25.0, None),
                 ],
             )
+
+    def test_data_overview_queries_hide_inactive_channel_rows(self):
+        from reactor_app import web as web_module
+
+        with self.app.app_context():
+            device = Device(
+                asset_serial="DATA-FILTER-CC230-001",
+                manufacturer_serial="SN-DATA-FILTER-001",
+                display_name="Data Filter CC230",
+                device_type="thermostat",
+                protocol="huber_cc230",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            active_channel = MeasurementChannel(
+                device_id=device.device_id,
+                channel_code="setpoint_C",
+                display_name="Setpoint",
+                unit="degC",
+                value_type="float",
+                is_active=True,
+            )
+            inactive_channel = MeasurementChannel(
+                device_id=device.device_id,
+                channel_code="actual_temp_C",
+                display_name="Actual Temperature",
+                unit="degC",
+                value_type="float",
+                is_active=False,
+            )
+            db.session.add_all([active_channel, inactive_channel])
+            db.session.flush()
+            measured_at = datetime.now(timezone.utc)
+            db.session.add_all(
+                [
+                    Measurement(
+                        device_id=device.device_id,
+                        channel_id=active_channel.channel_id,
+                        channel_code="setpoint_C",
+                        measured_at=measured_at,
+                        numeric_value=25.0,
+                        unit="degC",
+                        source="poller",
+                    ),
+                    Measurement(
+                        device_id=device.device_id,
+                        channel_id=inactive_channel.channel_id,
+                        channel_code="actual_temp_C",
+                        measured_at=measured_at,
+                        numeric_value=24.8,
+                        unit="degC",
+                        source="poller",
+                    ),
+                ]
+            )
+            db.session.commit()
+
+            summary = web_module._load_data_summary()
+            channel_stats = web_module._load_channel_stats()
+
+            self.assertEqual(summary["total_count"], 1)
+            self.assertEqual(summary["channel_count"], 1)
+            self.assertEqual([row.channel_code for row in channel_stats], ["setpoint_C"])
 
     def test_background_huber_polling_is_claimed_without_watch_or_recipe(self):
         # Huber devices are always eligible for background polling (same as IKA),

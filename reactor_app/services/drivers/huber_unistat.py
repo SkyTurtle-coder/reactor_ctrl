@@ -19,6 +19,8 @@ _NOT_AVAILABLE_VALUE = "7FFF"
 _DEFAULT_MIN_SETPOINT_C = -40.0
 _DEFAULT_MAX_SETPOINT_C = 150.0
 _MAX_STALE_PB_RESPONSES = 3
+_MISSING_EXTERNAL_SENSOR_TEMP_C = -151.0
+_MISSING_EXTERNAL_SENSOR_TOLERANCE_C = 0.005
 _PB_NAMES = {
     "setpoint": "00",
     "internal_temp": "01",
@@ -37,6 +39,7 @@ _READ_COMMANDS = {
     "get_return_temp": ("02", "temperature_c"),
     "get_pump_pressure": ("03", "raw_u16"),
     "get_process_temp": ("07", "temperature_c"),
+    "get_external_temp": ("07", "temperature_c"),
     "get_error": ("05", "i16"),
     "get_warning": ("06", "i16"),
 }
@@ -112,6 +115,12 @@ def _coerce_int(value: Any, *, field_name: str, default: int | None = None) -> i
         return int(value)
     except (TypeError, ValueError) as exc:
         raise DriverValidationError(f"Field '{field_name}' must be an integer.") from exc
+
+
+def _is_missing_external_sensor_temp(value: float | None) -> bool:
+    if value is None:
+        return False
+    return abs(float(value) - _MISSING_EXTERNAL_SENSOR_TEMP_C) <= _MISSING_EXTERNAL_SENSOR_TOLERANCE_C
 
 
 class HuberUnistatTCP:
@@ -245,6 +254,9 @@ class HuberUnistatTCP:
 
     def get_process_temp(self) -> float:
         return self.decode_temp(self.read_var("07"))
+
+    def get_external_temp(self) -> float:
+        return self.get_process_temp()
 
     def start(self) -> bool:
         status = self.get_status()
@@ -527,12 +539,25 @@ class HuberUnistatDriver(DeviceDriver):
             decoder="temperature_c",
             interrupt_location="driver.huber_unistat.live_telemetry_actual",
         )
+        external_temp = self._optional_named_read(
+            client,
+            addr="07",
+            decoder="temperature_c",
+            interrupt_location="driver.huber_unistat.live_telemetry_external",
+        )
+        if _is_missing_external_sensor_temp(external_temp):
+            LOGGER.warning(
+                "Huber external/process temperature reports missing Pt100 sensor sentinel %.2f degC; "
+                "recording raw external_temp_C value.",
+                float(external_temp),
+            )
         telemetry = {
             "setpoint_C": None if setpoint is None else float(setpoint),
             "actual_temp_C": None if actual_temp is None else float(actual_temp),
+            "external_temp_C": None if external_temp is None else float(external_temp),
         }
-        if telemetry["setpoint_C"] is None and telemetry["actual_temp_C"] is None:
-            raise DriverError("Huber returned no valid data for setpoint or actual temperature.")
+        if not any(telemetry.get(key) is not None for key in ("setpoint_C", "actual_temp_C", "external_temp_C")):
+            raise DriverError("Huber returned no valid data for setpoint, actual or external temperature.")
         return telemetry
 
     def _read_start_preflight(self, client: _TransportHuberClient) -> dict[str, Any]:

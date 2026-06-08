@@ -441,31 +441,18 @@ class HuberCC230Client:
             except (DriverError, OSError, socket.timeout):
                 return None
 
-        process_temp = optional_read(self.read_process_temperature)
         internal_temp = optional_read(self.read_internal_temperature)
-        bath_temp = optional_read(self.read_bath_temperature)
         external_temp = optional_read(self.read_external_temperature)
         setpoint = optional_read(self.read_setpoint)
 
-        actual_temp = process_temp
-        if actual_temp is None:
-            actual_temp = internal_temp if internal_temp is not None else bath_temp
-        if actual_temp is None:
-            actual_temp = external_temp
-
         telemetry = {
             "setpoint_C": None if setpoint is None else float(setpoint),
-            "actual_temp_C": None if actual_temp is None else float(actual_temp),
-            "bath_temp_C": None if bath_temp is None else float(bath_temp),
             "internal_temp_C": None if internal_temp is None else float(internal_temp),
             "external_temp_C": None if external_temp is None else float(external_temp),
-            "status": None,
-            "error": None,
-            "warning": None,
         }
         if not any(
             telemetry.get(key) is not None
-            for key in ("setpoint_C", "actual_temp_C", "bath_temp_C", "internal_temp_C", "external_temp_C")
+            for key in ("setpoint_C", "internal_temp_C", "external_temp_C")
         ):
             raise DriverError("CC230 returned no valid numeric temperature data.")
         return telemetry

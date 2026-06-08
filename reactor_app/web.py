@@ -9,14 +9,24 @@ from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, make_response, redirect, render_template, request, url_for
-from sqlalchemy import func, text
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import joinedload, selectinload
 
 from .actuator_profiles import list_actuator_profiles
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, create_scoped_token
 from .extensions import db
 from .flowsheet_library import group_flowsheet_library, load_flowsheet_library
-from .models import ControlCommand, Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, Measurement, ReactorBuild, Recipe
+from .models import (
+    ControlCommand,
+    Device,
+    DeviceBindingCurrent,
+    DeviceConnection,
+    DeviceServer,
+    Measurement,
+    MeasurementChannel,
+    ReactorBuild,
+    Recipe,
+)
 from .process_targets import (
     default_measurement_plot_channels_for_target,
     normalize_lookup_value as _normalized_lookup_value,
@@ -138,7 +148,6 @@ def _default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: s
     "channel_code": "ika_torque_ncm"
     "channel_code": "setpoint_C"
     "channel_code": "actual_temp_C"
-    "channel_code": "bath_temp_C"
     "channel_code": "internal_temp_C"
     "channel_code": "external_temp_C"
     "data_source": "measurement"
@@ -564,7 +573,6 @@ def reactor_builder_view() -> str:
         builder_date=builder_date,
         library_symbol_total=len(symbol_library),
         symbol_categories=group_flowsheet_library(symbol_library),
-        actuator_profiles=list_actuator_profiles(),
         display_targets=display_targets,
         saved_builds=[_reactor_build_summary_to_dict(item) for item in saved_builds],
         summary=_control_summary(),
@@ -719,14 +727,30 @@ def _parse_data_export_params() -> tuple[int | None, int | None]:
     return device_id, since_days
 
 
+def _measurement_channel_match_condition():
+    return and_(
+        MeasurementChannel.device_id == Measurement.device_id,
+        MeasurementChannel.channel_code == Measurement.channel_code,
+    )
+
+
+def _active_measurement_channel_filter():
+    return or_(MeasurementChannel.channel_id.is_(None), MeasurementChannel.is_active.is_(True))
+
+
 def _load_data_summary() -> dict:
-    row = db.session.query(
-        func.count(Measurement.measurement_id).label("total_count"),
-        func.count(func.distinct(Measurement.device_id)).label("device_count"),
-        func.count(func.distinct(Measurement.channel_code)).label("channel_count"),
-        func.min(Measurement.measured_at).label("oldest_at"),
-        func.max(Measurement.measured_at).label("newest_at"),
-    ).one()
+    row = (
+        db.session.query(
+            func.count(Measurement.measurement_id).label("total_count"),
+            func.count(func.distinct(Measurement.device_id)).label("device_count"),
+            func.count(func.distinct(Measurement.channel_code)).label("channel_count"),
+            func.min(Measurement.measured_at).label("oldest_at"),
+            func.max(Measurement.measured_at).label("newest_at"),
+        )
+        .outerjoin(MeasurementChannel, _measurement_channel_match_condition())
+        .filter(_active_measurement_channel_filter())
+        .one()
+    )
     return {
         "total_count": int(row.total_count or 0),
         "device_count": int(row.device_count or 0),
@@ -747,6 +771,8 @@ def _load_channel_stats() -> list:
             func.max(Measurement.measured_at).label("latest_at"),
         )
         .join(Device, Device.device_id == Measurement.device_id)
+        .outerjoin(MeasurementChannel, _measurement_channel_match_condition())
+        .filter(_active_measurement_channel_filter())
         .group_by(Device.device_id, Device.display_name, Measurement.channel_code)
         .order_by(Device.display_name.asc(), Measurement.channel_code.asc())
         .all()
@@ -775,6 +801,8 @@ def data_overview() -> str:
         lambda: (
             db.session.query(Device.device_id, Device.display_name)
             .join(Measurement, Measurement.device_id == Device.device_id)
+            .outerjoin(MeasurementChannel, _measurement_channel_match_condition())
+            .filter(_active_measurement_channel_filter())
             .group_by(Device.device_id, Device.display_name)
             .order_by(Device.display_name.asc())
             .all()
@@ -802,7 +830,11 @@ def data_count_json():
     device_id, since_days = _parse_data_export_params()
     cutoff = _data_filter_cutoff(since_days)
     try:
-        q = db.session.query(func.count(Measurement.measurement_id))
+        q = (
+            db.session.query(func.count(Measurement.measurement_id))
+            .outerjoin(MeasurementChannel, _measurement_channel_match_condition())
+            .filter(_active_measurement_channel_filter())
+        )
         if device_id:
             q = q.filter(Measurement.device_id == device_id)
         if cutoff is not None:
@@ -833,7 +865,9 @@ def data_export_zip():
                 Measurement.source,
             )
             .join(Device, Device.device_id == Measurement.device_id)
+            .outerjoin(MeasurementChannel, _measurement_channel_match_condition())
             .filter(
+                _active_measurement_channel_filter(),
                 *([Measurement.device_id == device_id] if device_id else []),
                 *([Measurement.measured_at >= cutoff] if cutoff is not None else []),
             )

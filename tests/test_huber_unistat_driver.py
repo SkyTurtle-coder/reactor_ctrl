@@ -66,8 +66,19 @@ class HuberUnistatDriverTests(unittest.TestCase):
         self.assertEqual(result.metadata["value"], 25.0)
         self.assertEqual(result.metadata["value_hex"], "09C4")
 
-    def test_read_live_telemetry_reads_setpoint_and_actual_temperature(self):
-        transport = _FakeTransport([b"{S0009C4\r\n", b"{S010960\r\n"])
+    def test_get_external_temp_reads_pb_07_and_decodes_temperature(self):
+        transport = _FakeTransport([b"{S0709C4\r\n"])
+        result = HuberUnistatDriver().execute(
+            transport=transport,
+            request=DeviceCommandRequest(command_name="get_external_temp", payload={}),
+        )
+
+        self.assertEqual(transport.sent, [b"{M07****\r\n"])
+        self.assertEqual(result.metadata["value"], 25.0)
+        self.assertEqual(result.metadata["value_hex"], "09C4")
+
+    def test_read_live_telemetry_reads_setpoint_actual_and_external_temperature(self):
+        transport = _FakeTransport([b"{S0009C4\r\n", b"{S010960\r\n", b"{S07092E\r\n"])
         result = HuberUnistatDriver().execute(
             transport=transport,
             request=DeviceCommandRequest(command_name="read_live_telemetry", payload={}),
@@ -78,9 +89,27 @@ class HuberUnistatDriverTests(unittest.TestCase):
             {
                 "setpoint_C": 25.0,
                 "actual_temp_C": 24.0,
+                "external_temp_C": 23.5,
             },
         )
-        self.assertEqual(transport.sent, [b"{M00****\r\n", b"{M01****\r\n"])
+        self.assertEqual(transport.sent, [b"{M00****\r\n", b"{M01****\r\n", b"{M07****\r\n"])
+
+    def test_read_live_telemetry_keeps_missing_external_sensor_raw_value(self):
+        transport = _FakeTransport([b"{S0009C4\r\n", b"{S010960\r\n", b"{S07C504\r\n"])
+        result = HuberUnistatDriver().execute(
+            transport=transport,
+            request=DeviceCommandRequest(command_name="read_live_telemetry", payload={}),
+        )
+
+        self.assertEqual(
+            result.metadata["value"],
+            {
+                "setpoint_C": 25.0,
+                "actual_temp_C": 24.0,
+                "external_temp_C": -151.0,
+            },
+        )
+        self.assertEqual(transport.sent, [b"{M00****\r\n", b"{M01****\r\n", b"{M07****\r\n"])
 
     def test_set_setpoint_checks_safety_range_and_writes_pb_00(self):
         transport = _FakeTransport([b"{S0009C4\r\n"])
