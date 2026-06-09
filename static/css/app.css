@@ -669,6 +669,14 @@ pre {
     gap: 0.6rem;
 }
 
+.process-program-status-text {
+    margin: 0;
+    padding: 0.45rem 1.15rem;
+    font-size: 0.875rem;
+    border-bottom: 1px solid var(--border);
+    min-height: 2rem;
+}
+
 .process-program-body {
     display: grid;
     gap: 1rem;
