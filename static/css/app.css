@@ -1967,20 +1967,18 @@ h2 {
 
 .builder-toolbar {
     display: flex;
-    align-items: center;
-    gap: 1rem;
+    flex-direction: column;
+    gap: 0.55rem;
     padding: 0.95rem 1.4rem;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
-    flex-wrap: wrap;
 }
 
 .builder-toolbar-actions {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 0.65rem;
-    flex: 1;
-    min-width: 0;
+    align-items: center;
 }
 
 .builder-toolbar-actions .btn.is-active {
