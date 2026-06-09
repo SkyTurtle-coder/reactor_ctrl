@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload
 
 from ..actuator_profiles import get_default_profile_id
+from ..process_targets import server_lookup_values as _server_lookup_values
 from ..device_limits import IKA_EUROSTAR_60_MAX_RPM
 from ..extensions import db
 from ..models import (
@@ -572,30 +573,34 @@ def _build_target_lookup(item: ReactorBuild | None) -> dict[str, dict[str, Any]]
         if binding is None or connection is None or server is None:
             continue
 
-        server_code = _normalized_lookup_value(server.server_code)
+        server_keys = [
+            *_server_lookup_values(server.server_code),
+            *_server_lookup_values(server.display_name),
+        ]
         protocol = _normalized_lookup_value(device.protocol)
         connection_labels = {
             _normalized_lookup_value(connection.connection_label),
             _normalized_lookup_value(f"Port {connection.port_number}"),
         }
 
-        for connection_label in connection_labels:
-            if not server_code or not connection_label:
-                continue
-            if protocol:
-                exact_lookup[(server_code, connection_label, protocol)] = device
+        for server_key in dict.fromkeys(server_keys):
+            for connection_label in connection_labels:
+                if not server_key or not connection_label:
+                    continue
+                if protocol:
+                    exact_lookup[(server_key, connection_label, protocol)] = device
 
-            connection_key = (server_code, connection_label)
-            if connection_key in ambiguous_connection_keys:
-                continue
-            existing = connection_lookup.get(connection_key)
-            if existing is None:
-                connection_lookup[connection_key] = device
-            elif existing.device_id == device.device_id:
-                connection_lookup[connection_key] = device
-            else:
-                connection_lookup.pop(connection_key, None)
-                ambiguous_connection_keys.add(connection_key)
+                connection_key = (server_key, connection_label)
+                if connection_key in ambiguous_connection_keys:
+                    continue
+                existing = connection_lookup.get(connection_key)
+                if existing is None:
+                    connection_lookup[connection_key] = device
+                elif existing.device_id == device.device_id:
+                    connection_lookup[connection_key] = device
+                else:
+                    connection_lookup.pop(connection_key, None)
+                    ambiguous_connection_keys.add(connection_key)
 
     # Expunge DeviceConnection and DeviceServer objects now that all needed
     # metadata has been read above.  The background device runtime updates
@@ -651,14 +656,21 @@ def _build_target_lookup(item: ReactorBuild | None) -> dict[str, dict[str, Any]]
             "resolution_note": "",
         }
 
-        normalized_server = _normalized_lookup_value(server_code)
+        normalized_servers = _server_lookup_values(server_code)
         normalized_connection = _normalized_lookup_value(connection_label)
         normalized_protocol = _normalized_lookup_value(protocol)
         device = None
-        if normalized_server and normalized_connection and normalized_protocol:
-            device = exact_lookup.get((normalized_server, normalized_connection, normalized_protocol))
-        if device is None and normalized_server and normalized_connection:
-            device = connection_lookup.get((normalized_server, normalized_connection))
+        for ns in normalized_servers:
+            if not ns or not normalized_connection:
+                continue
+            if normalized_protocol:
+                device = exact_lookup.get((ns, normalized_connection, normalized_protocol))
+                if device is not None:
+                    break
+            if device is None:
+                device = connection_lookup.get((ns, normalized_connection))
+                if device is not None:
+                    break
 
         if device is None:
             target["resolution_note"] = "No bound device was found for this actor."

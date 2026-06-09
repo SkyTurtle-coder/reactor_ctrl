@@ -22,7 +22,7 @@ _LOOKUP_TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 _LOOKUP_TRAILING_NUMBER_RE = re.compile(r"^([a-z]+)\d+$")
 
 
-def _server_lookup_values(value: Any) -> list[str]:
+def server_lookup_values(value: Any) -> list[str]:
     normalized = normalize_lookup_value(value)
     if not normalized:
         return []
@@ -183,8 +183,8 @@ def resolve_process_device_targets_for_definition(
             continue
 
         server_keys = [
-            *(_server_lookup_values(server.server_code)),
-            *(_server_lookup_values(server.display_name)),
+            *(server_lookup_values(server.server_code)),
+            *(server_lookup_values(server.display_name)),
         ]
         protocol = normalize_lookup_value(device.protocol)
         connection_labels = {
@@ -246,7 +246,7 @@ def resolve_process_device_targets_for_definition(
             "channels": [],
         }
 
-        normalized_servers = _server_lookup_values(server_code)
+        normalized_servers = server_lookup_values(server_code)
         normalized_connection = normalize_lookup_value(connection_label)
         normalized_protocol = normalize_lookup_value(protocol)
 
