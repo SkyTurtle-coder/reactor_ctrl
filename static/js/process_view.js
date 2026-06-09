@@ -2464,6 +2464,7 @@
             headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
         }
 
+        let startError = null;
         try {
             const payload = await fetchJson("/api/process-program/start", {
                 method: "POST",
@@ -2475,14 +2476,17 @@
                 }),
             });
             state.programData = payload?.program || null;
-            setProgramStatus("Recipe program started.", "success");
         } catch (error) {
-            setProgramStatus(error?.message || "Recipe program could not be started.", "error");
+            startError = error?.message || "Recipe program could not be started.";
         } finally {
             state.isProgramBusy = false;
             updateProgramCard();
             syncManualModeToggle();
             renderNodes();
+        }
+
+        if (startError) {
+            setProgramStatus(startError, "error");
         }
     }
 
@@ -2540,6 +2544,7 @@
             headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
         }
 
+        let stopError = null;
         try {
             const payload = await fetchJson("/api/process-program/stop", {
                 method: "POST",
@@ -2550,18 +2555,21 @@
             const stoppedProgram = payload?.program || null;
             if (asString(stoppedProgram?.status, "") === "error") {
                 state.programData = stoppedProgram;
-                setProgramStatus(asString(stoppedProgram?.last_error, "Safe stop failed."), "error");
+                stopError = asString(stoppedProgram?.last_error, "Safe stop failed.");
             } else {
                 state.programData = normalizeStoppedProgramPayload(stoppedProgram);
-                setProgramStatus("Recipe program stopped.", "success");
             }
         } catch (error) {
-            setProgramStatus(error?.message || "Recipe program could not be stopped.", "error");
+            stopError = error?.message || "Recipe program could not be stopped.";
         } finally {
             state.isProgramBusy = false;
             updateProgramCard();
             syncManualModeToggle();
             renderNodes();
+        }
+
+        if (stopError) {
+            setProgramStatus(stopError, "error");
         }
     }
 
