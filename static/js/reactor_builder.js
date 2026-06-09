@@ -14,6 +14,7 @@
     const newBuildButton = document.getElementById("builder-new-build-button");
     const saveButton = document.getElementById("builder-save-button");
     const saveAsButton = document.getElementById("builder-save-as-button");
+    const deleteBuildButton = document.getElementById("builder-delete-build-button");
     const deleteNodeButton = document.getElementById("builder-delete-node-button");
     const selectToolButton = document.getElementById("builder-select-tool");
     const anchorToolButton = document.getElementById("builder-anchor-tool");
@@ -311,6 +312,7 @@
         isDirty: false,
         isSaving: false,
         isLoading: false,
+        isDeleting: false,
         selectedNodeId: null,
         selectedEdgeId: null,
         pendingAnchor: null,
@@ -441,7 +443,7 @@
     }
 
     function syncUiState() {
-        const busy = state.isSaving || state.isLoading;
+        const busy = state.isSaving || state.isLoading || state.isDeleting;
         const saveBlocked = busy || (metaData.apiAuthRequired && !metaData.builderWriteToken);
         const selectionExists = Boolean(state.selectedNodeId || state.selectedEdgeId);
 
@@ -474,6 +476,9 @@
         deleteNodeButton.disabled = busy || !selectionExists;
         saveButton.disabled = saveBlocked;
         saveAsButton.disabled = saveBlocked;
+        if (deleteBuildButton) {
+            deleteBuildButton.disabled = busy || !state.currentBuildId;
+        }
         if (buildSelect) {
             buildSelect.disabled = busy;
         }
@@ -2857,6 +2862,55 @@
         }
     }
 
+    async function deleteBuild() {
+        if (!state.currentBuildId || state.isSaving || state.isLoading || state.isDeleting) {
+            return;
+        }
+        if (metaData.apiAuthRequired && !metaData.builderWriteToken) {
+            setStatus("The server did not provide a builder token. Deleting is unavailable.", "error");
+            return;
+        }
+
+        const buildName = nameInput.value.trim() || `Build #${state.currentBuildId}`;
+        const confirmed = window.confirm(
+            `Delete "${buildName}"?\n\nThis build will be permanently removed from the database and cannot be recovered.`,
+        );
+        if (!confirmed) {
+            return;
+        }
+
+        const url = `/api/reactor-builds/${state.currentBuildId}`;
+        const headers = {};
+        if (metaData.builderWriteToken) {
+            headers["X-Reactor-Builder-Token"] = metaData.builderWriteToken;
+        }
+
+        state.isDeleting = true;
+        syncUiState();
+        setStatus("Deleting build ...", "muted");
+
+        try {
+            await fetchJson(url, { method: "DELETE", headers });
+
+            if (buildSelect) {
+                const option = Array.from(buildSelect.options).find(
+                    (o) => o.value === String(state.currentBuildId),
+                );
+                if (option) {
+                    option.remove();
+                }
+            }
+
+            resetDraft();
+            setStatus(`"${buildName}" deleted.`, "success");
+        } catch (error) {
+            setStatus(error.message || "Delete failed.", "error");
+        } finally {
+            state.isDeleting = false;
+            syncUiState();
+        }
+    }
+
     canvas.addEventListener("dragover", (event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
@@ -2914,6 +2968,12 @@
     saveAsButton.addEventListener("click", () => {
         void saveBuild(true);
     });
+
+    if (deleteBuildButton) {
+        deleteBuildButton.addEventListener("click", () => {
+            void deleteBuild();
+        });
+    }
 
     nameInput.addEventListener("input", () => {
         syncDirtyState();

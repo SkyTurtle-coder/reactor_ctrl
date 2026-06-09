@@ -1286,6 +1286,18 @@ h2 {
     color: #000000;
 }
 
+.btn-danger {
+    background: #c0392b;
+    color: #ffffff;
+    border-color: #c0392b;
+}
+
+.btn-danger:hover {
+    background: #a93226;
+    border-color: #a93226;
+    color: #ffffff;
+}
+
 .metric-grid,
 .content-grid {
     display: grid;

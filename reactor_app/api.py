@@ -1450,6 +1450,19 @@ def update_reactor_build(reactor_build_id: int):
     return jsonify(_reactor_build_to_dict(item, include_definition=True))
 
 
+@api_bp.delete("/reactor-builds/<int:reactor_build_id>")
+def delete_reactor_build(reactor_build_id: int):
+    item, error_response = _get_or_404(ReactorBuild, reactor_build_id, "ReactorBuild")
+    if error_response:
+        return error_response
+
+    db.session.delete(item)
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return "", 204
+
+
 @api_bp.get("/devices")
 def list_devices():
     items = Device.query.order_by(Device.device_id.asc()).all()
