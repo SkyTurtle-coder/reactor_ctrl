@@ -1966,40 +1966,27 @@ h2 {
 }
 
 .builder-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+    display: flex;
+    align-items: center;
     gap: 1rem;
     padding: 0.95rem 1.4rem;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
+    flex-wrap: wrap;
 }
 
 .builder-toolbar-actions {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 0.65rem;
+    flex: 1;
+    min-width: 0;
 }
 
 .builder-toolbar-actions .btn.is-active {
     background: var(--accent);
     border-color: var(--accent);
     color: #000000;
-}
-
-.builder-toolbar-meta {
-    display: grid;
-    justify-items: end;
-    gap: 0.3rem;
-}
-
-.builder-toolbar-shortcuts {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.35rem;
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.82rem;
 }
 
 .builder-view-tabs {
@@ -2997,14 +2984,6 @@ html[data-theme="dark"] textarea {
 
     .builder-board-meta {
         justify-content: flex-start;
-    }
-
-    .builder-toolbar {
-        grid-template-columns: 1fr;
-    }
-
-    .builder-toolbar-meta {
-        justify-items: start;
     }
 
     .builder-status {

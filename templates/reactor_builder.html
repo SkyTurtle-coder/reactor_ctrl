@@ -152,23 +152,13 @@
                     <button id="builder-delete-build-button" class="btn btn-danger" type="button" title="Permanently delete this saved build from the database">Delete Build</button>
                     <button id="builder-delete-node-button" class="btn" type="button">Delete selection</button>
                 </div>
-                <div class="builder-toolbar-meta">
-                    <p class="builder-toolbar-shortcuts">
-                        <span>Shortcuts</span>
-                        <kbd>Ctrl</kbd><kbd>S</kbd>
-                        <kbd>Ctrl</kbd><kbd>Z</kbd>
-                        <kbd>Del</kbd>
-                        <kbd>R</kbd><span>Route</span>
-                        <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>
-                    </p>
-                    <p id="builder-status" class="builder-status muted" aria-live="polite">
-                        {% if current_build_id %}
-                        Build #{{ current_build_id }} loaded.
-                        {% else %}
-                        New build. Drag elements from the library onto the canvas.
-                        {% endif %}
-                    </p>
-                </div>
+                <p id="builder-status" class="builder-status muted" aria-live="polite">
+                    {% if current_build_id %}
+                    Build #{{ current_build_id }} loaded.
+                    {% else %}
+                    New build. Drag elements from the library onto the canvas.
+                    {% endif %}
+                </p>
             </div>
 
             <div class="builder-view-tabs">
