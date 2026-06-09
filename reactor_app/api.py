@@ -177,7 +177,7 @@ def _extract_recipe_write_token() -> str | None:
 
 
 def _is_builder_write_request() -> bool:
-    if request.method not in {"POST", "PATCH"}:
+    if request.method not in {"POST", "PATCH", "DELETE"}:
         return False
     path = request.path.rstrip("/")
     return path == "/api/reactor-builds" or path.startswith("/api/reactor-builds/")
