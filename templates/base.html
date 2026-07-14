@@ -17,9 +17,12 @@
         <header class="site-header">
             <div class="container">
                 <div class="navbar">
-                    <a class="brand" href="{{ url_for('web.process_view') }}">
-                        <span class="brand-kicker">U1 Lab</span>
-                        <strong>Reactor Control</strong>
+                    <a class="brand" href="{{ url_for('web.process_view') }}" aria-label="Hochschule für Life Sciences FHNW">
+                        <img
+                            class="brand-logo"
+                            src="{{ static_asset('png/Hochschule für Life Sciences FHNW.png') }}"
+                            alt="Hochschule für Life Sciences FHNW"
+                        >
                     </a>
                     <div class="navbar-actions">
                         <nav class="nav">
