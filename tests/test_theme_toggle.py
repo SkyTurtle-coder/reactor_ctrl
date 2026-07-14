@@ -61,6 +61,8 @@ class ThemeToggleTests(unittest.TestCase):
 
         self.assertIn('html[data-theme="dark"]', stylesheet)
         self.assertIn(".theme-switch", stylesheet)
+        self.assertIn('html[data-theme="dark"] .brand-logo', stylesheet)
+        self.assertIn("filter: invert(1);", stylesheet)
         self.assertIn("--plot-surface", stylesheet)
         self.assertIn("--plot-label", stylesheet)
         self.assertIn(".process-program-meta-item", stylesheet)

@@ -252,9 +252,12 @@ pre {
     height: auto;
     max-height: 54px;
     padding: 0.35rem 0.5rem;
-    border-radius: 2px;
-    background: #ffffff;
+    filter: none;
     object-fit: contain;
+}
+
+html[data-theme="dark"] .brand-logo {
+    filter: invert(1);
 }
 
 .brand-kicker {
