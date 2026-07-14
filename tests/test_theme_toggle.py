@@ -42,6 +42,7 @@ class ThemeToggleTests(unittest.TestCase):
                 html = response.get_data(as_text=True)
                 self.assertIn('data-theme-toggle', html)
                 self.assertIn('class="brand-logo"', html)
+                self.assertIn("svg/FHNW_U1_Logo.svg", html)
                 self.assertIn('alt="Hochschule für Life Sciences FHNW"', html)
                 self.assertIn("reactor_ctrl.theme.v1", html)
                 self.assertIn("js/theme.js", html)
