@@ -14,7 +14,10 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload
 
 from ..actuator_profiles import get_default_profile_id
-from ..process_targets import server_lookup_values as _server_lookup_values
+from ..process_targets import (
+    connection_lookup_values as _connection_lookup_values,
+    server_lookup_values as _server_lookup_values,
+)
 from ..device_limits import IKA_EUROSTAR_60_MAX_RPM
 from ..extensions import db
 from ..models import (
@@ -576,12 +579,15 @@ def _build_target_lookup(item: ReactorBuild | None) -> dict[str, dict[str, Any]]
         server_keys = [
             *_server_lookup_values(server.server_code),
             *_server_lookup_values(server.display_name),
+            *_server_lookup_values(server.host),
         ]
         protocol = _normalized_lookup_value(device.protocol)
-        connection_labels = {
-            _normalized_lookup_value(connection.connection_label),
-            _normalized_lookup_value(f"Port {connection.port_number}"),
-        }
+        connection_labels = _connection_lookup_values(
+            connection_label=connection.connection_label,
+            port_number=connection.port_number,
+            tcp_host=connection.tcp_host,
+            tcp_port=connection.tcp_port,
+        )
 
         for server_key in dict.fromkeys(server_keys):
             for connection_label in connection_labels:
@@ -657,20 +663,23 @@ def _build_target_lookup(item: ReactorBuild | None) -> dict[str, dict[str, Any]]
         }
 
         normalized_servers = _server_lookup_values(server_code)
-        normalized_connection = _normalized_lookup_value(connection_label)
+        normalized_connections = _connection_lookup_values(connection_label=connection_label)
         normalized_protocol = _normalized_lookup_value(protocol)
         device = None
         for ns in normalized_servers:
-            if not ns or not normalized_connection:
+            if not ns or not normalized_connections:
                 continue
-            if normalized_protocol:
-                device = exact_lookup.get((ns, normalized_connection, normalized_protocol))
-                if device is not None:
-                    break
-            if device is None:
-                device = connection_lookup.get((ns, normalized_connection))
-                if device is not None:
-                    break
+            for normalized_connection in normalized_connections:
+                if normalized_protocol:
+                    device = exact_lookup.get((ns, normalized_connection, normalized_protocol))
+                    if device is not None:
+                        break
+                if device is None:
+                    device = connection_lookup.get((ns, normalized_connection))
+                    if device is not None:
+                        break
+            if device is not None:
+                break
 
         if device is None:
             target["resolution_note"] = "No bound device was found for this actor."

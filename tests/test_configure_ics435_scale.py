@@ -162,6 +162,17 @@ class ConfigureIcs435ScaleTests(unittest.TestCase):
                 }
             if path == "/api/devices/33" and method == "PATCH":
                 return 200, {"device_id": 33, "current_binding": {"connection_id": 22}, **payload}
+            if path == "/api/devices/33/binding" and method == "PUT":
+                return 200, {
+                    "device_id": 33,
+                    "asset_serial": "ICS435-01",
+                    "display_name": "ICS435 Balance",
+                    "protocol": "mettler_toledo_ics435",
+                    "current_binding": {
+                        "connection_id": payload["connection_id"],
+                        "connection": {"connection_label": "COM2 Ethernet"},
+                    },
+                }
             raise AssertionError(f"Unexpected request: {method} {path}")
 
         argv = [
@@ -179,7 +190,7 @@ class ConfigureIcs435ScaleTests(unittest.TestCase):
         self.assertTrue(any(call["path"] == "/api/device-servers/11" for call in calls))
         self.assertTrue(any(call["path"] == "/api/device-connections/22" for call in calls))
         self.assertTrue(any(call["path"] == "/api/devices/33" for call in calls))
-        self.assertFalse(any(call["path"] == "/api/devices/33/binding" for call in calls))
+        self.assertTrue(any(call["path"] == "/api/devices/33/binding" for call in calls))
 
 
 if __name__ == "__main__":

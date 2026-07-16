@@ -25,6 +25,7 @@ from .models import (
     DeviceManualState,
     DeviceServer,
     Measurement,
+    MeasurementChannel,
     ReactorBuild,
     Recipe,
     RecipeProgramState,
@@ -132,6 +133,15 @@ _PROCESS_MANUAL_ALLOWED_DRIVER_PAYLOAD_FIELDS = {
     "recv_size",
 }
 _PROCESS_MANUAL_MAX_TEXT_LENGTH = 160
+_SCALE_PROTOCOLS = {"mettler_toledo_ics435", "ics435_mtsics"}
+_SCALE_DEFAULT_MEASUREMENT_CHANNELS: tuple[dict[str, str], ...] = (
+    {
+        "channel_code": "weight",
+        "display_name": "Weight",
+        "unit": "",
+        "value_type": "float",
+    },
+)
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -789,6 +799,54 @@ def _measurement_to_dict(item: Measurement) -> dict[str, Any]:
         "raw_payload": item.raw_payload,
         "source": item.source,
     }
+
+
+def _ensure_default_measurement_channels_for_device(item: Device) -> None:
+    protocol = str(item.protocol or "").strip().lower()
+    specs = _SCALE_DEFAULT_MEASUREMENT_CHANNELS if protocol in _SCALE_PROTOCOLS else ()
+    if not specs:
+        return
+
+    existing_channels = {
+        channel.channel_code: channel
+        for channel in MeasurementChannel.query.filter(
+            MeasurementChannel.device_id == item.device_id,
+            MeasurementChannel.channel_code.in_([spec["channel_code"] for spec in specs]),
+        ).all()
+    }
+    needs_flush = False
+    for spec in specs:
+        channel = existing_channels.get(spec["channel_code"])
+        if channel is None:
+            db.session.add(
+                MeasurementChannel(
+                    device_id=item.device_id,
+                    channel_code=spec["channel_code"],
+                    display_name=spec["display_name"],
+                    unit=spec["unit"],
+                    value_type=spec["value_type"],
+                    is_active=True,
+                )
+            )
+            needs_flush = True
+            continue
+
+        if channel.display_name != spec["display_name"]:
+            channel.display_name = spec["display_name"]
+            needs_flush = True
+        if spec["unit"] or not str(channel.unit or "").strip():
+            if channel.unit != spec["unit"]:
+                channel.unit = spec["unit"]
+                needs_flush = True
+        if str(channel.value_type or "").strip().lower() != spec["value_type"]:
+            channel.value_type = spec["value_type"]
+            needs_flush = True
+        if not bool(channel.is_active):
+            channel.is_active = True
+            needs_flush = True
+
+    if needs_flush:
+        db.session.flush()
 
 
 @api_bp.get("/logs")
@@ -1544,6 +1602,8 @@ def update_device(device_id: int):
     try:
         payload = _load_json_payload()
         _apply_device_payload(item, payload, partial=True)
+        if item.current_binding is not None:
+            _ensure_default_measurement_channels_for_device(item)
     except ValueError as exc:
         return _json_error(str(exc), 400)
 
@@ -1607,6 +1667,8 @@ def bind_device(device_id: int):
         current.last_seen_at = now
         current.is_online = is_online
         current.quality_state = quality_state
+
+    _ensure_default_measurement_channels_for_device(device)
 
     ok, error_response = _commit()
     if not ok:

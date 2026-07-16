@@ -39,13 +39,37 @@ def server_lookup_values(value: Any) -> list[str]:
     add(compact)
 
     tokens = [token for token in _LOOKUP_TOKEN_SPLIT_RE.split(normalized) if token]
-    if tokens:
+    if tokens and any(char.isalpha() for char in tokens[0]):
         add(tokens[0])
 
     compact_match = _LOOKUP_TRAILING_NUMBER_RE.fullmatch(compact)
     if compact_match:
         add(compact_match.group(1))
 
+    return aliases
+
+
+def connection_lookup_values(
+    *,
+    connection_label: Any,
+    port_number: Any | None = None,
+    tcp_host: Any | None = None,
+    tcp_port: Any | None = None,
+) -> list[str]:
+    aliases: list[str] = []
+
+    def add(alias: Any) -> None:
+        normalized = normalize_lookup_value(alias)
+        if normalized and normalized not in aliases:
+            aliases.append(normalized)
+
+    add(connection_label)
+    if port_number not in (None, ""):
+        add(f"Port {port_number}")
+    if tcp_host not in (None, "") and tcp_port not in (None, ""):
+        add(f"{tcp_host}:{tcp_port}")
+    if tcp_port not in (None, ""):
+        add(tcp_port)
     return aliases
 
 
@@ -199,12 +223,15 @@ def resolve_process_device_targets_for_definition(
         server_keys = [
             *(server_lookup_values(server.server_code)),
             *(server_lookup_values(server.display_name)),
+            *(server_lookup_values(server.host)),
         ]
         protocol = normalize_lookup_value(device.protocol)
-        connection_labels = {
-            normalize_lookup_value(connection.connection_label),
-            normalize_lookup_value(f"Port {connection.port_number}"),
-        }
+        connection_labels = connection_lookup_values(
+            connection_label=connection.connection_label,
+            port_number=connection.port_number,
+            tcp_host=connection.tcp_host,
+            tcp_port=connection.tcp_port,
+        )
 
         for server_key in dict.fromkeys(server_keys):
             for connection_label in connection_labels:
@@ -261,26 +288,32 @@ def resolve_process_device_targets_for_definition(
         }
 
         normalized_servers = server_lookup_values(server_code)
-        normalized_connection = normalize_lookup_value(connection_label)
+        normalized_connections = connection_lookup_values(connection_label=connection_label)
         normalized_protocol = normalize_lookup_value(protocol)
 
         device = None
-        if normalized_servers and normalized_connection and normalized_protocol:
+        if normalized_servers and normalized_connections and normalized_protocol:
             for normalized_server in normalized_servers:
-                device = exact_lookup.get((normalized_server, normalized_connection, normalized_protocol))
+                for normalized_connection in normalized_connections:
+                    device = exact_lookup.get((normalized_server, normalized_connection, normalized_protocol))
+                    if device is not None:
+                        break
                 if device is not None:
                     break
 
-        if device is None and normalized_servers and normalized_connection:
+        if device is None and normalized_servers and normalized_connections:
             for normalized_server in normalized_servers:
-                device = connection_lookup.get((normalized_server, normalized_connection))
+                for normalized_connection in normalized_connections:
+                    device = connection_lookup.get((normalized_server, normalized_connection))
+                    if device is not None:
+                        break
                 if device is not None:
                     if normalized_protocol:
                         target["resolution_note"] = "Resolved by server and connection mapping."
                     break
 
         if device is None:
-            if not normalized_servers or not normalized_connection:
+            if not normalized_servers or not normalized_connections:
                 target["resolution_note"] = "The communication mapping for this flowsheet element is still incomplete."
             else:
                 target["resolution_note"] = "No bound device was found for this mapping."

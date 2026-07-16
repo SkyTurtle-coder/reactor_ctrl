@@ -326,22 +326,24 @@ def _upsert_device(*, args: argparse.Namespace, connection: dict[str, Any]) -> d
 
     connection_id = int(connection["connection_id"])
     current_binding = device.get("current_binding") if isinstance(device.get("current_binding"), dict) else None
-    if not current_binding or int(current_binding.get("connection_id") or 0) != connection_id:
+    binding_is_current = bool(current_binding) and int(current_binding.get("connection_id") or 0) == connection_id
+    if not binding_is_current:
         print(f"4. Binde Device {device['device_id']} an Connection {connection_id}.")
-        _, device = _request_json(
-            base_url=args.base_url,
-            path=f"/api/devices/{device['device_id']}/binding",
-            method="PUT",
-            token=args.api_token,
-            payload={
-                "connection_id": connection_id,
-                "quality_state": args.binding_quality_state,
-                "is_online": bool(args.binding_online),
-                "reason": "ics435_provisioning",
-            },
-        )
     else:
-        print(f"4. Binding Device {device['device_id']} -> Connection {connection_id} existiert bereits.")
+        print(f"4. Aktualisiere Binding Device {device['device_id']} -> Connection {connection_id}.")
+
+    _, device = _request_json(
+        base_url=args.base_url,
+        path=f"/api/devices/{device['device_id']}/binding",
+        method="PUT",
+        token=args.api_token,
+        payload={
+            "connection_id": connection_id,
+            "quality_state": args.binding_quality_state,
+            "is_online": bool(args.binding_online or (current_binding or {}).get("is_online")),
+            "reason": "ics435_provisioning",
+        },
+    )
 
     return device
 
@@ -377,6 +379,7 @@ def main() -> int:
     print(f"   Moxa / Device Server = {server['server_code']}")
     print(f"   Port / Connection    = {connection['connection_label']}")
     print(f"   Protocol             = {device['protocol']}")
+    print("   Measurement channel  = weight")
     print(f"   TCP endpoint         = {connection['tcp_host']}:{connection['tcp_port']}")
     return 0
 

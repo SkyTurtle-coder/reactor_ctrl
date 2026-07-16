@@ -7,7 +7,7 @@ from sqlalchemy import text
 
 from reactor_app import create_app
 from reactor_app.extensions import db
-from reactor_app.models import Device, DeviceBindingCurrent, DeviceConnection, DeviceServer
+from reactor_app.models import Device, DeviceBindingCurrent, DeviceConnection, DeviceServer, MeasurementChannel
 
 
 class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
@@ -121,6 +121,20 @@ class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
             db.session.execute(
                 text(
                     """
+                    CREATE TABLE device_binding_history (
+                        binding_history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        device_id INTEGER NOT NULL,
+                        connection_id INTEGER NOT NULL,
+                        bound_from TEXT NOT NULL,
+                        bound_to TEXT,
+                        reason TEXT
+                    )
+                    """
+                )
+            )
+            db.session.execute(
+                text(
+                    """
                     CREATE TABLE measurement_channel (
                         channel_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         device_id INTEGER NOT NULL,
@@ -144,6 +158,7 @@ class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
             db.session.remove()
             for table_name in (
                 "measurement_channel",
+                "device_binding_history",
                 "device_binding_current",
                 "device",
                 "device_connection",
@@ -164,6 +179,7 @@ class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
     def setUp(self):
         with self.app.app_context():
             db.session.execute(text("DELETE FROM measurement_channel"))
+            db.session.execute(text("DELETE FROM device_binding_history"))
             db.session.execute(text("DELETE FROM device_binding_current"))
             Device.query.delete()
             DeviceConnection.query.delete()
@@ -215,6 +231,51 @@ class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
             )
         )
         db.session.commit()
+
+    def _seed_unbound_ics435_on_ethernet(self) -> tuple[int, int]:
+        server = DeviceServer(
+            server_code="ICS435-01",
+            display_name="Mettler Toledo ICS435",
+            vendor="Mettler Toledo",
+            model="ICS435",
+            host="192.168.55.29",
+            serial_standard="ethernet",
+            port_count=1,
+        )
+        db.session.add(server)
+        db.session.flush()
+
+        connection = DeviceConnection(
+            device_server_id=server.device_server_id,
+            port_number=1,
+            connection_label="COM2 Ethernet",
+            transport_type="tcp_socket",
+            tcp_host="192.168.55.29",
+            tcp_port=4305,
+            baud_rate=9600,
+            data_bits=8,
+            parity="N",
+            stop_bits=1,
+            flow_control="none",
+            read_timeout_ms=1200,
+            write_timeout_ms=1200,
+            reconnect_delay_ms=1000,
+            is_enabled=True,
+        )
+        db.session.add(connection)
+        db.session.flush()
+
+        device = Device(
+            asset_serial="ICS435-01",
+            manufacturer_serial="SN-ICS435-01",
+            display_name="ICS435 Balance",
+            device_type="scale",
+            protocol="mettler_toledo_ics435",
+            is_active=True,
+        )
+        db.session.add(device)
+        db.session.commit()
+        return int(device.device_id), int(connection.connection_id)
 
     def test_display_targets_include_ika_channels_for_new_display_draft(self):
         with self.app.app_context():
@@ -274,6 +335,114 @@ class ReactorBuilderDisplayTargetApiTests(unittest.TestCase):
         self.assertIn("ika_actual_rpm", channel_codes)
         self.assertIn("ika_setpoint_rpm", channel_codes)
         self.assertIn("ika_torque_ncm", channel_codes)
+
+    def test_binding_ics435_scale_seeds_weight_channel_and_resolves_by_ip(self):
+        with self.app.app_context():
+            device_id, connection_id = self._seed_unbound_ics435_on_ethernet()
+
+        bind_response = self.client.put(
+            f"/api/devices/{device_id}/binding",
+            json={
+                "connection_id": connection_id,
+                "quality_state": "configured",
+                "is_online": False,
+                "reason": "test_ics435_binding",
+            },
+        )
+        self.assertEqual(bind_response.status_code, 200, bind_response.get_data(as_text=True))
+
+        with self.app.app_context():
+            channel = MeasurementChannel.query.filter_by(device_id=device_id, channel_code="weight").one()
+            self.assertEqual(channel.display_name, "Weight")
+            self.assertEqual(channel.value_type, "float")
+            self.assertTrue(channel.is_active)
+
+        response = self.client.post(
+            "/api/reactor-builds/display-targets",
+            json={
+                "definition_json": {
+                    "canvas": {"width": 1200, "height": 800},
+                    "nodes": [
+                        {
+                            "id": "node-display",
+                            "symbol_id": "display",
+                            "instance_id": "DISPLAY",
+                            "label": "Display",
+                            "category": "displays",
+                            "x": 100,
+                            "y": 100,
+                            "width": 150,
+                            "height": 62,
+                            "communication": {},
+                            "display": {},
+                            "anchors": [],
+                        },
+                        {
+                            "id": "node-scale",
+                            "symbol_id": "scale",
+                            "instance_id": "SCALE-01",
+                            "label": "Scale",
+                            "category": "sensors",
+                            "x": 300,
+                            "y": 120,
+                            "width": 82,
+                            "height": 82,
+                            "communication": {
+                                "device_server_code": "192.168.55.29",
+                                "connection_label": "COM2 Ethernet",
+                                "protocol": "mettler_toledo_ics435",
+                            },
+                            "display": {},
+                            "anchors": [],
+                        },
+                    ],
+                    "edges": [],
+                }
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json()
+        scale_target = payload["targets"]["node-scale"]
+        self.assertTrue(scale_target["is_resolved"])
+        self.assertEqual(scale_target["device_id"], device_id)
+        self.assertEqual(
+            [(channel["channel_code"], channel["data_source"]) for channel in scale_target["channels"]],
+            [("weight", "measurement")],
+        )
+
+    def test_binding_ics435_scale_reactivates_weight_channel_without_clearing_unit(self):
+        with self.app.app_context():
+            device_id, connection_id = self._seed_unbound_ics435_on_ethernet()
+            db.session.add(
+                MeasurementChannel(
+                    device_id=device_id,
+                    channel_code="weight",
+                    display_name="Old Weight",
+                    unit="g",
+                    value_type="text",
+                    is_active=False,
+                )
+            )
+            db.session.commit()
+
+        response = self.client.put(
+            f"/api/devices/{device_id}/binding",
+            json={
+                "connection_id": connection_id,
+                "quality_state": "configured",
+                "is_online": False,
+                "reason": "test_ics435_rebind",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        with self.app.app_context():
+            channel = MeasurementChannel.query.filter_by(device_id=device_id, channel_code="weight").one()
+            self.assertEqual(channel.display_name, "Weight")
+            self.assertEqual(channel.unit, "g")
+            self.assertEqual(channel.value_type, "float")
+            self.assertTrue(channel.is_active)
 
 
 if __name__ == "__main__":
