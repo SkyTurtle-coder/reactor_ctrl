@@ -51,6 +51,8 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
 _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
+_SCALE_PROTOCOLS = {"mettler_toledo_ics435", "ics435_mtsics"}
+_BACKGROUND_POLL_PROTOCOLS = ("ika_eurostar_60", *_HUBER_PROTOCOLS, *_SCALE_PROTOCOLS)
 # Background polling must finish well within the execution_timeout_s for POLLING
 # commands so that user-triggered commands (start, set_setpoint, …) can preempt
 # polling within one cooperative-poll interval (250 ms).
@@ -72,6 +74,17 @@ _CC230_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
     {"key": "internal_temp_C", "channel_code": "internal_temp_C", "display_name": "Internal Temperature", "unit": "degC"},
     {"key": "external_temp_C", "channel_code": "external_temp_C", "display_name": "External Temperature", "unit": "degC"},
+)
+_SCALE_TELEMETRY_CHANNELS: tuple[dict, ...] = (
+    {
+        "key": "weight",
+        "channel_code": "weight",
+        "display_name": "Weight",
+        "unit": "",
+        "value_type": "float",
+        "quality_score_key": "weight_quality_score",
+        "raw_payload_key": "weight_raw_payload",
+    },
 )
 _CC230_OBSOLETE_TELEMETRY_CHANNEL_CODES: tuple[str, ...] = (
     "actual_temp_C",
@@ -247,6 +260,11 @@ def _background_huber_poll_enabled(app: Flask) -> bool:
     return bool(app.config.get("MEASUREMENT_POLLER_BACKGROUND_HUBER_ENABLED", False))
 
 
+def _scale_poll_interval(app: Flask) -> timedelta:
+    milliseconds = max(500, int(app.config.get("ICS435_POLLER_INTERVAL_MS", 1000)))
+    return timedelta(milliseconds=milliseconds)
+
+
 def _manual_lease_duration(app: Flask) -> timedelta:
     seconds = max(3, int(app.config.get("DEVICE_MANUAL_RECONCILER_LEASE_SECONDS", 15)))
     return timedelta(seconds=seconds)
@@ -282,7 +300,7 @@ def _parse_ika_numeric_response(text: str | None) -> float | None:
 
 def _supports_manual_runtime(device: Device | None) -> bool:
     protocol = str(getattr(device, "protocol", "") or "").strip().lower()
-    return protocol == "ika_eurostar_60" or protocol in _HUBER_PROTOCOLS
+    return protocol == "ika_eurostar_60" or protocol in _HUBER_PROTOCOLS or protocol in _SCALE_PROTOCOLS
 
 
 def _is_ika_device(device: Device | None) -> bool:
@@ -295,6 +313,10 @@ def _is_huber_device(device: Device | None) -> bool:
 
 def _is_cc230_device(device: Device | None) -> bool:
     return str(getattr(device, "protocol", "") or "").strip().lower() == "huber_cc230"
+
+
+def _is_scale_device(device: Device | None) -> bool:
+    return str(getattr(device, "protocol", "") or "").strip().lower() in _SCALE_PROTOCOLS
 
 
 def _active_recipe_program_device_ids() -> set[int] | None:
@@ -643,6 +665,13 @@ def _ensure_huber_measurement_channels(device: Device) -> dict[str, MeasurementC
     )
 
 
+def _ensure_scale_measurement_channels(device: Device, *, unit: str | None = None) -> dict[str, MeasurementChannel]:
+    specs = _SCALE_TELEMETRY_CHANNELS
+    if unit:
+        specs = tuple({**spec, "unit": unit} if spec["channel_code"] == "weight" else spec for spec in specs)
+    return _ensure_measurement_channels(device, specs)
+
+
 def _ensure_manual_state(device: Device) -> DeviceManualState:
     state = db.session.get(DeviceManualState, device.device_id)
     if state is not None:
@@ -975,6 +1004,42 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
     return telemetry
 
 
+def _read_scale_status(app: Flask, device: Device) -> dict[str, Any]:
+    weight_command = str(app.config.get("ICS435_WEIGHT_COMMAND", "SI") or "SI").strip().upper()
+    if weight_command not in {"SI", "S"}:
+        weight_command = "SI"
+    telemetry = _run_logged_driver_command(
+        device,
+        "read_live_telemetry",
+        {
+            "weight_command": weight_command,
+            "response_timeout_ms": max(100, int(app.config.get("ICS435_RESPONSE_TIMEOUT_MS", 1200))),
+            "connect_timeout_ms": max(100, int(app.config.get("ICS435_CONNECT_TIMEOUT_MS", 3000))),
+            "write_timeout_ms": max(100, int(app.config.get("ICS435_WRITE_TIMEOUT_MS", 1200))),
+            "max_retries": max(0, int(app.config.get("ICS435_MAX_RETRIES", 1))),
+            "retry_delay_ms": max(0, int(app.config.get("ICS435_RETRY_DELAY_MS", 250))),
+            "log_raw_telegrams": bool(app.config.get("ICS435_LOG_RAW_TELEGRAMS", False)),
+        },
+        priority=CommandPriority.POLLING,
+        source=CommandSource.POLLER,
+    )
+    if not isinstance(telemetry, dict):
+        raise RuntimeError("ICS435 live telemetry did not return a structured payload.")
+    numeric_value = telemetry.get("value")
+    if numeric_value in (None, ""):
+        numeric_value = telemetry.get("weight")
+    if numeric_value in (None, ""):
+        raise RuntimeError("ICS435 live telemetry did not contain a weight value.")
+    stable = bool(telemetry.get("stable"))
+    return {
+        "weight": numeric_value,
+        "weight_unit": telemetry.get("unit"),
+        "weight_stable": stable,
+        "weight_quality_score": 1.0 if stable else 0.5,
+        "weight_raw_payload": telemetry,
+    }
+
+
 def _manual_state_next_poll_at(app: Flask, *, watch_active: bool, bg_interval: timedelta, measured_at: datetime) -> datetime:
     if watch_active:
         return measured_at + _manual_poll_interval(app)
@@ -1135,6 +1200,46 @@ def _commit_huber_manual_state_success(
     return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
 
 
+def _commit_scale_manual_state_success(
+    app: Flask,
+    *,
+    device_id: int,
+    measured_at: datetime,
+    watch_active: bool,
+    bg_interval: timedelta,
+) -> DeviceManualState:
+    next_poll_at = _manual_state_next_poll_at(
+        app,
+        watch_active=watch_active,
+        bg_interval=bg_interval,
+        measured_at=measured_at,
+    )
+
+    def values_factory() -> dict[Any, Any]:
+        return {
+            DeviceManualState.last_reported_at: measured_at,
+            DeviceManualState.applied_version: case(
+                (DeviceManualState.desired_version == 0, 0),
+                else_=DeviceManualState.applied_version,
+            ),
+            DeviceManualState.last_error: None,
+            DeviceManualState.next_poll_at: next_poll_at,
+            DeviceManualState.queue_status: "idle",
+            DeviceManualState.lease_owner: None,
+            DeviceManualState.lease_expires_at: None,
+        }
+
+    def memory_update(state: DeviceManualState) -> None:
+        state.last_reported_at = measured_at
+        if state.desired_version == 0:
+            state.applied_version = 0
+        state.last_error = None
+        state.next_poll_at = next_poll_at
+        _release_manual_state_lease(state, status="idle")
+
+    return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
+
+
 def _commit_manual_state_release(
     device_id: int,
     *,
@@ -1204,6 +1309,17 @@ def _persist_telemetry_as_measurements(
         else:
             numeric_value = float(value)
             text_value = None
+        quality_score = None
+        quality_key = spec.get("quality_score_key")
+        if quality_key:
+            raw_quality = telemetry.get(str(quality_key))
+            if raw_quality not in (None, ""):
+                quality_score = float(raw_quality)
+        raw_payload = None
+        raw_payload_key = spec.get("raw_payload_key")
+        if raw_payload_key:
+            payload_value = telemetry.get(str(raw_payload_key))
+            raw_payload = payload_value if isinstance(payload_value, dict) else None
 
         db.session.add(
             Measurement(
@@ -1214,6 +1330,8 @@ def _persist_telemetry_as_measurements(
                 numeric_value=numeric_value,
                 text_value=text_value,
                 unit=channel.unit,
+                quality_score=quality_score,
+                raw_payload=raw_payload,
                 # Must stay inside the measurement schema's allowed source enum.
                 source=_IKA_TELEMETRY_MEASUREMENT_SOURCE,
             )
@@ -1249,6 +1367,21 @@ def _persist_huber_telemetry_as_measurements(
         telemetry,
         measured_at,
         specs=specs,
+        channels=channels,
+    )
+
+
+def _persist_scale_telemetry_as_measurements(
+    device: Device,
+    telemetry: dict[str, Any],
+    measured_at: datetime,
+) -> None:
+    channels = _ensure_scale_measurement_channels(device, unit=str(telemetry.get("weight_unit") or "").strip() or None)
+    _persist_telemetry_as_measurements(
+        device,
+        telemetry,
+        measured_at,
+        specs=_SCALE_TELEMETRY_CHANNELS,
         channels=channels,
     )
 
@@ -1307,6 +1440,34 @@ def _persist_huber_telemetry_as_measurements_best_effort(
             pass
         app.logger.warning(
             "Measurement persistence failed for Huber device %s; keeping live state update and retrying history on the next poll.",
+            device.device_id,
+            exc_info=True,
+        )
+
+
+def _persist_scale_telemetry_as_measurements_best_effort(
+    app: Flask,
+    device: Device,
+    telemetry: dict[str, Any],
+    measured_at: datetime,
+) -> None:
+    session = db.session
+    if not all(hasattr(session, attr) for attr in ("query", "add", "flush", "commit", "rollback")):
+        return
+
+    try:
+        def operation() -> None:
+            _persist_scale_telemetry_as_measurements(device, telemetry, measured_at)
+            db.session.commit()
+
+        _run_with_transient_db_retry(operation, retry_duplicate_key=True)
+    except Exception:
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        app.logger.warning(
+            "Measurement persistence failed for ICS435 device %s; keeping live state update and retrying history on the next poll.",
             device.device_id,
             exc_info=True,
         )
@@ -1386,7 +1547,7 @@ def _ensure_manual_states_for_active_devices(app: Flask) -> None:
     """
     active_recipe_device_ids = _active_recipe_program_device_ids()
     active_devices_query = db.session.query(Device).filter(
-        Device.protocol.in_(("ika_eurostar_60", *_HUBER_PROTOCOLS)),
+        Device.protocol.in_(_BACKGROUND_POLL_PROTOCOLS),
         Device.is_active.is_(True),
     )
     if active_recipe_device_ids is not None:
@@ -1413,6 +1574,9 @@ def _ensure_manual_states_for_active_devices(app: Flask) -> None:
             if _is_huber_device(device):
                 specs = _CC230_TELEMETRY_CHANNELS if _is_cc230_device(device) else _HUBER_TELEMETRY_CHANNELS
                 ensure_channels = _ensure_huber_measurement_channels
+            elif _is_scale_device(device):
+                specs = _SCALE_TELEMETRY_CHANNELS
+                ensure_channels = _ensure_scale_measurement_channels
             else:
                 specs = _IKA_TELEMETRY_CHANNELS
                 ensure_channels = _ensure_ika_measurement_channels
@@ -1466,7 +1630,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
     ui_poll_due = watch_active and (next_poll_at is None or next_poll_at <= now)
     # Background poll: fires even with no UI session so measurements are stored
     # continuously.  Uses a longer interval than the live UI poll cadence.
-    bg_interval = _background_poll_interval(app)
+    bg_interval = _scale_poll_interval(app) if _is_scale_device(device) else _background_poll_interval(app)
     last_reported = _as_utc_datetime(state.last_reported_at)
     bg_poll_due = last_reported is None or last_reported + bg_interval <= now
     poll_due = ui_poll_due or bg_poll_due
@@ -1479,6 +1643,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         )
         return
     is_huber = _is_huber_device(device)
+    is_scale = _is_scale_device(device)
 
     if not desired_pending and not poll_due:
         _commit_manual_state_release(device_id, status="idle")
@@ -1517,6 +1682,21 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                     bg_interval=bg_interval,
                 )
                 _persist_huber_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
+                return
+
+            if is_scale:
+                if desired_pending:
+                    raise RuntimeError("Queued manual-state writes are not supported for ICS435 scale devices.")
+                telemetry = _read_scale_status(app, device)
+                measured_at = _now_utc()
+                _commit_scale_manual_state_success(
+                    app,
+                    device_id=device_id,
+                    measured_at=measured_at,
+                    watch_active=watch_active,
+                    bg_interval=bg_interval,
+                )
+                _persist_scale_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
                 return
 
             if desired_pending:
@@ -1595,7 +1775,9 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         fallback_error = describe_device_command_error(exc) if isinstance(exc, DeviceCommandError) else str(exc)
         # Use the background interval for retry when no UI session is watching so
         # an unreachable device is not hammered on every reconciler tick.
-        retry_interval = _manual_poll_interval(app) if watch_active else _background_poll_interval(app)
+        retry_interval = _manual_poll_interval(app) if watch_active else (
+            _scale_poll_interval(app) if is_scale else _background_poll_interval(app)
+        )
         _commit_manual_state_release(
             device_id,
             status="error",
@@ -1610,6 +1792,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     now = _now_utc()
     # Background telemetry cutoff: poll even without an active UI session.
     bg_cutoff = now - _background_poll_interval(app)
+    scale_bg_cutoff = now - _scale_poll_interval(app)
     active_recipe_device_ids = _active_recipe_program_device_ids()
     active_recipe_priority_order = _active_recipe_device_priority_order(now)
     include_port_order = _manual_claim_port_order_available()
@@ -1628,7 +1811,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
         .join(Device, Device.device_id == DeviceManualState.device_id)
         .filter(
             Device.is_active.is_(True),
-            Device.protocol.in_(("ika_eurostar_60", *_HUBER_PROTOCOLS)),
+            Device.protocol.in_(_BACKGROUND_POLL_PROTOCOLS),
             or_(DeviceManualState.lease_expires_at.is_(None), DeviceManualState.lease_expires_at < now),
             or_(
                 # Explicit command pending
@@ -1647,6 +1830,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                     or_(
                         Device.protocol == "ika_eurostar_60",
                         Device.protocol.in_(list(_HUBER_PROTOCOLS)),
+                        Device.protocol.in_(list(_SCALE_PROTOCOLS)),
                         and_(
                             DeviceManualState.watch_expires_at.is_not(None),
                             DeviceManualState.watch_expires_at > now,
@@ -1654,8 +1838,20 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                         Device.device_id.in_(active_recipe_device_ids or []),
                     ),
                     or_(
-                        DeviceManualState.last_reported_at.is_(None),
-                        DeviceManualState.last_reported_at <= bg_cutoff,
+                        and_(
+                            Device.protocol.in_(list(_SCALE_PROTOCOLS)),
+                            or_(
+                                DeviceManualState.last_reported_at.is_(None),
+                                DeviceManualState.last_reported_at <= scale_bg_cutoff,
+                            ),
+                        ),
+                        and_(
+                            ~Device.protocol.in_(list(_SCALE_PROTOCOLS)),
+                            or_(
+                                DeviceManualState.last_reported_at.is_(None),
+                                DeviceManualState.last_reported_at <= bg_cutoff,
+                            ),
+                        ),
                     ),
                     or_(
                         DeviceManualState.next_poll_at.is_(None),

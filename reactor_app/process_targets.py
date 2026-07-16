@@ -134,6 +134,17 @@ def default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: st
             },
         ]
         return channels
+    if normalized_symbol_id in {"qi", "qic"} and normalized_protocol in {"mettler_toledo_ics435", "ics435_mtsics"}:
+        return [
+            {
+                "channel_id": None,
+                "channel_code": "weight",
+                "display_name": "Weight",
+                "unit": "",
+                "value_type": "float",
+                "data_source": "measurement",
+            },
+        ]
     return []
 
 

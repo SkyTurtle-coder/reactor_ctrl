@@ -396,6 +396,74 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 ["actual_temp_C", "external_temp_C", "setpoint_C"],
             )
 
+    def test_active_ics435_discovery_seeds_manual_state_and_weight_channel(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="ICS435-DISCOVERY-001",
+                manufacturer_serial="SN-ICS435-001",
+                display_name="ICS435 Discovery Test",
+                device_type="scale",
+                protocol="mettler_toledo_ics435",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.commit()
+
+            device_manual_runtime._ensure_manual_states_for_active_devices(self.app)
+
+            state = db.session.get(DeviceManualState, device.device_id)
+            channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == device.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+
+            self.assertIsNotNone(state)
+            self.assertEqual(
+                [(channel.channel_code, channel.display_name, channel.value_type) for channel in channels],
+                [("weight", "Weight", "float")],
+            )
+
+    def test_ics435_telemetry_persists_weight_quality_and_raw_payload(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="ICS435-PERSIST-001",
+                manufacturer_serial="SN-ICS435-PERSIST-001",
+                display_name="ICS435 Persist Test",
+                device_type="scale",
+                protocol="mettler_toledo_ics435",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            measured_at = datetime.now(timezone.utc)
+
+            device_manual_runtime._persist_scale_telemetry_as_measurements(
+                device,
+                {
+                    "weight": 12.34,
+                    "weight_unit": "g",
+                    "weight_quality_score": 1.0,
+                    "weight_raw_payload": {
+                        "value_decimal": "12.34",
+                        "unit": "g",
+                        "stable": True,
+                        "raw_response": "S S      12.34 g",
+                    },
+                },
+                measured_at,
+            )
+            db.session.commit()
+
+            channel = MeasurementChannel.query.filter_by(device_id=device.device_id, channel_code="weight").one()
+            measurement = Measurement.query.filter_by(device_id=device.device_id, channel_code="weight").one()
+
+            self.assertEqual(channel.unit, "g")
+            self.assertEqual(measurement.numeric_value, 12.34)
+            self.assertEqual(float(measurement.quality_score), 1.0)
+            self.assertEqual(measurement.raw_payload["stable"], True)
+
     def test_cc230_discovery_and_measurement_persistence_only_include_active_temperature_channels(self):
         with self.app.app_context():
             device = Device(

@@ -48,6 +48,7 @@ class DriverNotFoundError(DriverError):
 class DeviceDriver(ABC):
     protocol_names: tuple[str, ...] = ()
     uses_transport: bool = True
+    persistent_transport: bool = False
 
     @abstractmethod
     def execute(self, *, transport: ITransport | None, request: DeviceCommandRequest) -> DeviceCommandResult:

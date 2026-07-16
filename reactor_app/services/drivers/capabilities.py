@@ -31,6 +31,7 @@ class DeviceCapability:
 
     # Feedback / observability
     HAS_FEEDBACK = "has_feedback"
+    CAN_WEIGH = "can_weigh"
 
     # Recipe / profile features
     SUPPORTS_RAMP = "supports_ramp"

@@ -6,15 +6,17 @@ from .generic_text import GenericTextDriver
 from .huber_cc230 import HuberCC230Driver
 from .huber_unistat import HuberUnistatDriver, HuberUnistatTCP
 from .ika_eurostar import IkaEurostarDriver
+from .mettler_toledo_ics435 import MettlerToledoICS435Driver
 
 
-_DRIVER_TYPES = (HuberUnistatDriver, HuberCC230Driver, IkaEurostarDriver)
+_DRIVER_TYPES = (HuberUnistatDriver, HuberCC230Driver, IkaEurostarDriver, MettlerToledoICS435Driver)
 
 # Protocols available in the UI selection list.
 _PROTOCOL_LABELS = {
     "huber_cc230": "Huber/Polystat CC230",
     "huber_unistat_430": "Huber Unistat 430",
     "ika_eurostar_60": "IKA 60",
+    "mettler_toledo_ics435": "Mettler Toledo ICS435",
 }
 
 
@@ -55,6 +57,7 @@ __all__ = [
     "HuberUnistatDriver",
     "HuberUnistatTCP",
     "IkaEurostarDriver",
+    "MettlerToledoICS435Driver",
     "get_driver",
     "list_supported_protocol_options",
     "list_supported_protocols",

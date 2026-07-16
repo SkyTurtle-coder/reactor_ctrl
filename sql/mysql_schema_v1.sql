@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS device_server (
   UNIQUE KEY uq_device_server_code (server_code),
   UNIQUE KEY uq_device_server_host (host),
   KEY idx_device_server_active (is_active),
-  CONSTRAINT chk_device_server_serial_standard CHECK (serial_standard IN ('rs232', 'rs422', 'rs485'))
+  CONSTRAINT chk_device_server_serial_standard CHECK (serial_standard IN ('rs232', 'rs422', 'rs485', 'ethernet'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS device_connection (

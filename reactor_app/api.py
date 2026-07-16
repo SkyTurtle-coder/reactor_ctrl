@@ -80,6 +80,15 @@ _PROCESS_MANUAL_ALLOWED_COMMANDS = {
     "select_internal_sensor",
     "select_external_sensor",
     "detect_protocol",
+    "initialize",
+    "list_commands",
+    "read_weight",
+    "get_weight",
+    "read_stable_weight",
+    "get_stable_weight",
+    "tare",
+    "clear_tare",
+    "zero",
     "start",
     "stop",
 }
@@ -103,6 +112,12 @@ _PROCESS_MANUAL_ALLOWED_PAYLOAD_FIELDS = {
     "write_timeout_ms",
     "connect_timeout_ms",
     "recv_size",
+    "weight_command",
+    "max_response_bytes",
+    "max_retries",
+    "retry_delay_ms",
+    "reconnect",
+    "log_raw_telegrams",
 }
 _PROCESS_MANUAL_ALLOWED_DRIVER_PAYLOAD_FIELDS = {
     "temp_c",
@@ -410,9 +425,18 @@ def _validate_process_manual_command_payload(command_name: str, payload: dict[st
                 sanitized[field_name] = _clean_string(sanitized[field_name], field_name=f"payload.{field_name}")
                 if sanitized[field_name] is not None and len(str(sanitized[field_name])) > 32:
                     raise ValueError(f"Field 'payload.{field_name}' must not exceed 32 characters.")
+        if "weight_command" in sanitized:
+            sanitized["weight_command"] = _clean_string(sanitized.get("weight_command"), field_name="payload.weight_command")
+            if sanitized["weight_command"] is not None and str(sanitized["weight_command"]).strip().upper() not in {"SI", "S"}:
+                raise ValueError("Field 'payload.weight_command' must be either 'SI' or 'S'.")
+        for field_name in ("reconnect", "log_raw_telegrams"):
+            if field_name in sanitized:
+                sanitized[field_name] = _parse_bool(sanitized[field_name], field_name=f"payload.{field_name}")
 
         bounded_int_fields = {
             "max_retries": (0, 5),
+            "retry_delay_ms": (0, 60000),
+            "max_response_bytes": (1, 65536),
             "response_timeout_ms": (100, 60000),
             "write_timeout_ms": (100, 60000),
             "connect_timeout_ms": (100, 60000),
@@ -1234,7 +1258,7 @@ def _apply_device_server_payload(item: DeviceServer, payload: dict[str, Any], *,
         item.serial_standard = _validate_choice(
             payload.get("serial_standard"),
             field_name="serial_standard",
-            allowed={"rs232", "rs422", "rs485"},
+            allowed={"rs232", "rs422", "rs485", "ethernet"},
             required=True,
         )
     elif not partial and not item.serial_standard:

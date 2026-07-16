@@ -38,6 +38,8 @@ _DEVICE_COMMAND_LOCK_TIMEOUT_BY_PRIORITY: dict[int, float] = {
 }
 _DEVICE_COMMAND_LOCKS: dict[int, threading.RLock] = {}
 _DEVICE_COMMAND_LOCKS_GUARD = threading.Lock()
+_PERSISTENT_TRANSPORTS: dict[tuple[Any, ...], Any] = {}
+_PERSISTENT_TRANSPORTS_GUARD = threading.Lock()
 _UNSET = object()
 
 # ---------------------------------------------------------------------------
@@ -52,6 +54,7 @@ _DB_RETRY_BACKOFF_S = 0.05
 _SESSION_TRANSIENT_DB_ERROR_FLAG = "reactor_ctrl_last_transient_db_error"
 _PERSISTENCE_ERROR_KIND = "persistence"
 _HUBER_PROTOCOL_NAMES: frozenset[str] = frozenset({"huber_unistat_430", "huber_pilot_one", "huber_cc230"})
+_SCALE_PROTOCOL_NAMES: frozenset[str] = frozenset({"mettler_toledo_ics435", "ics435_mtsics"})
 
 _T = TypeVar("_T")
 
@@ -228,6 +231,56 @@ def _parse_optional_int(value: Any, *, field_name: str, min_value: int = 1) -> i
     if parsed < min_value:
         raise DeviceCommandError(f"Field '{field_name}' must be >= {min_value}.", status_code=400)
     return parsed
+
+
+def _transport_cache_key(connection: Any, payload: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        getattr(connection, "connection_id", None),
+        str(getattr(connection, "transport_type", None) or "tcp_socket").strip().lower(),
+        str(getattr(connection, "tcp_host", "") or "").strip(),
+        int(getattr(connection, "tcp_port", 0) or 0),
+        str(payload.get("connect_timeout_ms", "")),
+        str(payload.get("response_timeout_ms", "")),
+        str(payload.get("write_timeout_ms", "")),
+        str(payload.get("recv_size", "")),
+    )
+
+
+def _build_command_transport(
+    driver: Any,
+    connection: Any,
+    payload: dict[str, Any],
+    *,
+    cancellation_token: CancellationToken | None,
+) -> tuple[Any, tuple[Any, ...] | None]:
+    if not bool(getattr(driver, "persistent_transport", False)):
+        return build_transport(connection, payload, cancellation_token=cancellation_token), None
+
+    cache_key = _transport_cache_key(connection, payload)
+    with _PERSISTENT_TRANSPORTS_GUARD:
+        transport = _PERSISTENT_TRANSPORTS.get(cache_key)
+        if transport is None:
+            transport = build_transport(connection, payload, cancellation_token=cancellation_token)
+            _PERSISTENT_TRANSPORTS[cache_key] = transport
+        else:
+            bind_runtime_control = getattr(transport, "bind_runtime_control", None)
+            if callable(bind_runtime_control):
+                bind_runtime_control(cancellation_token=cancellation_token)
+    return transport, cache_key
+
+
+def _forget_persistent_transport(cache_key: tuple[Any, ...] | None, transport: Any | None) -> None:
+    if cache_key is None:
+        return
+    with _PERSISTENT_TRANSPORTS_GUARD:
+        cached = _PERSISTENT_TRANSPORTS.get(cache_key)
+        if cached is transport:
+            _PERSISTENT_TRANSPORTS.pop(cache_key, None)
+    if transport is not None:
+        try:
+            transport.close()
+        except Exception:
+            logging.getLogger(__name__).debug("Persistent transport close failed.", exc_info=True)
 
 
 @dataclass
@@ -1554,12 +1607,58 @@ def _result_measurement_spec(
 ) -> dict[str, Any] | None:
     normalized_protocol = str(getattr(device, "protocol", "") or "").strip().lower()
     normalized_command = str(command_name or "").strip().lower()
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    if normalized_protocol in _SCALE_PROTOCOL_NAMES and normalized_command in {
+        "read_weight",
+        "get_weight",
+        "weight",
+        "read_live_telemetry",
+        "read_stable_weight",
+        "get_stable_weight",
+    }:
+        weight = metadata.get("weight")
+        if not isinstance(weight, dict):
+            return None
+        raw_value = weight.get("value_decimal", weight.get("value"))
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
+            return None
+        stable = bool(weight.get("stable"))
+        unit = str(weight.get("unit") or "").strip()
+        command_source = str(getattr(command, "command_source", "") or "").strip().lower()
+        return {
+            "channel_code": "weight",
+            "display_name": "Weight",
+            "unit": unit,
+            "value_type": "float",
+            "numeric_value": numeric_value,
+            "text_value": None,
+            "quality_score": 1.0 if stable else 0.5,
+            "source": "poller" if command_source == "poller" else "event",
+            "raw_payload": {
+                "command_id": command.command_id,
+                "command_name": command.command_name,
+                "command_source": command_source,
+                "request_payload": payload,
+                "response_text": result.response_text,
+                "response_hex": result.response_hex,
+                "driver_metadata": metadata,
+                "measurement": {
+                    "origin": "driver_result",
+                    "field": "weight",
+                    "stable": stable,
+                    "quality_status": weight.get("quality_status"),
+                    "raw_response": weight.get("raw_response"),
+                    "device_serial": weight.get("device_serial"),
+                },
+            },
+        }
     if normalized_protocol not in _HUBER_PROTOCOL_NAMES:
         return None
     if normalized_command not in {"set_setpoint", "set_temperature", "write_setpoint"}:
         return None
 
-    metadata = result.metadata if isinstance(result.metadata, dict) else {}
     raw_value = metadata.get("verified_setpoint")
     if raw_value in (None, ""):
         raw_value = metadata.get("value")
@@ -1628,7 +1727,7 @@ def _persist_result_measurement(
         numeric_value=float(spec["numeric_value"]) if spec["numeric_value"] is not None else None,
         text_value=None if spec["text_value"] is None else str(spec["text_value"]),
         unit=str(spec["unit"]),
-        quality_score=None,
+        quality_score=float(spec["quality_score"]) if spec.get("quality_score") is not None else None,
         source=str(spec["source"]),
         value_type=str(spec["value_type"]),
         raw_payload=dict(spec["raw_payload"]),
@@ -1792,13 +1891,7 @@ def execute_device_command(
     except DriverNotFoundError as exc:
         raise DeviceCommandError(str(exc), status_code=400) from exc
 
-    transport_obj = None
-    if driver.uses_transport:
-        try:
-            transport_obj = build_transport(connection, payload, cancellation_token=cancellation_token)
-        except TransportTypeNotSupportedError as exc:
-            raise DeviceCommandError(str(exc), status_code=400) from exc
-    elif str(connection.transport_type or "tcp_socket").strip().lower() not in {"tcp_socket"}:
+    if not driver.uses_transport and str(connection.transport_type or "tcp_socket").strip().lower() not in {"tcp_socket"}:
         raise DeviceCommandError(
             f"Transport type '{connection.transport_type}' is not supported for command execution.",
             status_code=400,
@@ -1869,6 +1962,19 @@ def execute_device_command(
         if stored_mode is not None:
             effective_payload = {**payload, "cc230_write_mode": int(stored_mode)}
 
+    transport_obj = None
+    persistent_transport_key: tuple[Any, ...] | None = None
+    if driver.uses_transport:
+        try:
+            transport_obj, persistent_transport_key = _build_command_transport(
+                driver,
+                connection,
+                effective_payload,
+                cancellation_token=cancellation_token,
+            )
+        except TransportTypeNotSupportedError as exc:
+            raise DeviceCommandError(str(exc), status_code=400) from exc
+
     request = DeviceCommandRequest(
         command_name=command_name,
         payload=effective_payload,
@@ -1887,7 +1993,8 @@ def execute_device_command(
             _raise_if_interrupted(cancellation_token, location="device_runtime.pre_send")
             if driver.uses_transport:
                 assert transport_obj is not None
-                with transport_obj:
+                if persistent_transport_key is not None:
+                    transport_obj.connect()
                     _raise_if_interrupted(cancellation_token, location="device_runtime.pre_driver_execute")
                     transition_control_command_record(
                         command,
@@ -1897,6 +2004,17 @@ def execute_device_command(
                         event_payload={"sent_at": sent_at.isoformat()},
                     )
                     result = driver.execute(transport=transport_obj, request=request)
+                else:
+                    with transport_obj:
+                        _raise_if_interrupted(cancellation_token, location="device_runtime.pre_driver_execute")
+                        transition_control_command_record(
+                            command,
+                            RuntimeStatus.SENT,
+                            sent_at=sent_at,
+                            error_message=None,
+                            event_payload={"sent_at": sent_at.isoformat()},
+                        )
+                        result = driver.execute(transport=transport_obj, request=request)
             else:
                 _raise_if_interrupted(cancellation_token, location="device_runtime.pre_driver_execute")
                 transition_control_command_record(
@@ -1912,6 +2030,7 @@ def execute_device_command(
         rollback_session_safely(db.session)
         raise
     except CommandExecutionInterrupted as exc:
+        _forget_persistent_transport(persistent_transport_key, transport_obj)
         _fail_command_without_connection_health(command, status=exc.status, message=str(exc))
         raise
     except DeviceCommandError as exc:
@@ -1920,6 +2039,7 @@ def execute_device_command(
         details.setdefault("runtime_status", command.status)
         raise DeviceCommandError(str(exc), status_code=exc.status_code, command=command, details=details) from exc
     except socket.timeout as exc:
+        _forget_persistent_transport(persistent_transport_key, transport_obj)
         _fail_command(
             command,
             status=RuntimeStatus.TIMEOUT,
@@ -1944,7 +2064,18 @@ def execute_device_command(
             binding_connection_id=binding_connection_id,
         )
         raise DeviceCommandError(str(exc), status_code=400, command=command) from exc
-    except (OSError, DriverError) as exc:
+    except OSError as exc:
+        _forget_persistent_transport(persistent_transport_key, transport_obj)
+        _fail_command(
+            command,
+            status=RuntimeStatus.FAILED,
+            message=str(exc),
+            connection_id=connection_id,
+            binding_device_id=binding_device_id,
+            binding_connection_id=binding_connection_id,
+        )
+        raise DeviceCommandError("Device command execution failed.", status_code=502, command=command) from exc
+    except DriverError as exc:
         _fail_command(
             command,
             status=RuntimeStatus.FAILED,

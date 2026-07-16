@@ -125,6 +125,42 @@ class _FakeHuberSetpointDriver:
         )
 
 
+class _FakePersistentTransport:
+    def __init__(self):
+        self.connect_calls = 0
+        self.close_calls = 0
+        self.recv_size = 4096
+
+    def connect(self):
+        self.connect_calls += 1
+
+    def close(self):
+        self.close_calls += 1
+
+    def is_connected(self):
+        return True
+
+    def bind_runtime_control(self, *, cancellation_token=None):
+        return None
+
+
+class _FakePersistentDriver:
+    uses_transport = True
+    persistent_transport = True
+
+    def __init__(self):
+        self.transport_ids = []
+
+    def execute(self, *, transport, request):
+        self.transport_ids.append(id(transport))
+        return DeviceCommandResult(
+            acknowledged=True,
+            response_text="OK",
+            response_hex="4f4b",
+            metadata={"value": "OK"},
+        )
+
+
 class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
     def test_success_telemetry_updates_connection_timestamp_and_guard_binding_by_connection(self):
         session = _FakeSession()
@@ -342,6 +378,39 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
         self.assertEqual(captured["numeric_value"], 24.95)
         self.assertEqual(captured["measured_at"].tzinfo, timezone.utc)
         self.assertEqual(captured["raw_payload"]["command_id"], execution.command.command_id)
+
+    def test_persistent_driver_reuses_transport_for_same_connection_and_timeouts(self):
+        session = _FakeExecuteCommandSession()
+        driver = _FakePersistentDriver()
+        transport = _FakePersistentTransport()
+        connection = SimpleNamespace(
+            connection_id=42,
+            is_enabled=True,
+            transport_type="tcp_socket",
+            tcp_host="127.0.0.1",
+            tcp_port=4305,
+        )
+        binding = SimpleNamespace(device_id=7, connection_id=42, connection=connection)
+        device = SimpleNamespace(device_id=7, protocol="persistent_fake", current_binding=binding)
+
+        device_runtime._PERSISTENT_TRANSPORTS.clear()
+        try:
+            with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+                with patch.object(device_runtime, "get_driver", return_value=driver):
+                    with patch.object(device_runtime, "build_transport", return_value=transport) as build_transport:
+                        for _ in range(2):
+                            device_runtime.execute_device_command(
+                                device,
+                                command_name="read_weight",
+                                payload={"response_timeout_ms": 1200},
+                                requested_by="test",
+                            )
+
+            self.assertEqual(build_transport.call_count, 1)
+            self.assertEqual(driver.transport_ids, [id(transport), id(transport)])
+            self.assertEqual(transport.close_calls, 0)
+        finally:
+            device_runtime._PERSISTENT_TRANSPORTS.clear()
 
 
 # ---------------------------------------------------------------------------

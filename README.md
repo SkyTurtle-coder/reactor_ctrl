@@ -346,6 +346,58 @@ Unterstuetzte Huber-Kommandos im App-Treiber:
 - `clear_warning`
 - `read_var` / `write_var` fuer rohe PB-Adressen
 
+## Mettler Toledo ICS435 ueber COM2 Ethernet
+
+Die ICS435 wird direkt ueber COM2/Ethernet und MT-SICS angebunden, nicht ueber
+RS-232 und nicht ueber `pyserial`. Die App nutzt den bestehenden
+`tcp_socket`-Transport, die zentrale Runtime-Queue und einen persistenten
+Socket pro DeviceConnection/Timeout-Profil.
+
+Typische Geraeteeinstellung:
+
+- COM2 = Ethernet
+- Dialog/SICS-Modus
+- TCP Mode = Server
+- Local Port = 4305, falls am Geraet nicht anders konfiguriert
+
+Beispiel-Connection:
+
+```json
+{
+  "connection_label": "COM2 Ethernet",
+  "transport_type": "tcp_socket",
+  "tcp_host": "<WAAGEN-IP>",
+  "tcp_port": 4305,
+  "read_timeout_ms": 1200,
+  "write_timeout_ms": 1200
+}
+```
+
+Device-Protokoll:
+
+```json
+{
+  "device_type": "scale",
+  "protocol": "mettler_toledo_ics435"
+}
+```
+
+Unterstuetzte Kernkommandos:
+
+- `initialize`
+- `list_commands`
+- `read_weight`
+- `read_stable_weight`
+- `tare`
+- `clear_tare`
+- `zero`
+
+Regulaeres Polling nutzt standardmaessig `SI` und persistiert Messwerte im
+Channel `weight`. Instabile Werte werden gespeichert, aber mit niedrigerem
+`quality_score` und Stabilitaetsstatus im `raw_payload` markiert.
+
+Details, Quellen und erster Hardwaretest: [docs/ics435_mtsics_driver.md](docs/ics435_mtsics_driver.md)
+
 ## Validierter IKA EUROSTAR 60 Betrieb
 
 Die erste reale Inbetriebnahme wurde erfolgreich mit einem `IKA EUROSTAR 60` ueber `MOXA-01 / Port 1 / TCP 4001` verifiziert.
