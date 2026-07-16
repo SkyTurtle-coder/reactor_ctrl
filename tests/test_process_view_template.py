@@ -1,10 +1,12 @@
 import re
 import unittest
+import json
 from pathlib import Path
 
 import config as app_config
 
 from reactor_app import create_app
+from reactor_app.process_targets import default_measurement_plot_channels_for_target
 
 
 class ProcessViewTemplateTests(unittest.TestCase):
@@ -270,6 +272,20 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('"channel_code": "external_temp_C"', source)
         self.assertIn('"data_source": "measurement"', source)
         self.assertIn('"port_number": connection.port_number if connection is not None else None', source)
+
+    def test_scale_symbol_is_registered_for_ics435_weight_channel(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((repo_root / "static" / "flowsheet" / "library" / "manifest.json").read_text())
+        symbols = {symbol["id"]: symbol for symbol in manifest["symbols"]}
+
+        self.assertEqual(symbols["scale"]["svg_file"], "sensors/scale.svg")
+        self.assertTrue((repo_root / "static" / "flowsheet" / "library" / "sensors" / "scale.svg").exists())
+
+        channels = default_measurement_plot_channels_for_target(
+            symbol_id="scale",
+            protocol="mettler_toledo_ics435",
+        )
+        self.assertEqual([channel["channel_code"] for channel in channels], ["weight"])
 
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
         repo_root = Path(__file__).resolve().parents[1]

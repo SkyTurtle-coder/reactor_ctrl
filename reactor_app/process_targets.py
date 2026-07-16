@@ -134,7 +134,10 @@ def default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: st
             },
         ]
         return channels
-    if normalized_symbol_id in {"qi", "qic"} and normalized_protocol in {"mettler_toledo_ics435", "ics435_mtsics"}:
+    if normalized_symbol_id in {"qi", "qic", "scale"} and normalized_protocol in {
+        "mettler_toledo_ics435",
+        "ics435_mtsics",
+    }:
         return [
             {
                 "channel_id": None,

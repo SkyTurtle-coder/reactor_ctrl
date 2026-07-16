@@ -292,6 +292,28 @@
           "direction": "west"
         }
       ]
+    },
+    {
+      "id": "scale",
+      "label": "Scale",
+      "category": "sensors",
+      "svg_file": "sensors/scale.svg",
+      "default_width": 243,
+      "default_height": 73,
+      "ports": [
+        {
+          "id": "left_process",
+          "x": 41,
+          "y": 41,
+          "direction": "west"
+        },
+        {
+          "id": "right_process",
+          "x": 241,
+          "y": 1,
+          "direction": "east"
+        }
+      ]
     }
   ]
 }
