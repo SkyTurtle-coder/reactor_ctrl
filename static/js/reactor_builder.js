@@ -124,6 +124,9 @@
     const metaData = parseJsonScript("builder-meta-data", {});
     const BUILDER_DISPLAY_REFRESH_MS = 1500;
     const BUILDER_DISPLAY_TARGET_DEBOUNCE_MS = 450;
+    const BUILDER_SAVE_TIMEOUT_MS = 60000;
+    const BUILDER_LOCAL_BACKUP_DEBOUNCE_MS = 500;
+    const BUILDER_LOCAL_DRAFT_KEY = "reactor_builder:draft:v1";
     const buildCanvasData =
         buildData && typeof buildData === "object" && buildData.definition_json && typeof buildData.definition_json === "object"
             ? buildData.definition_json.canvas
@@ -309,6 +312,7 @@
         nodes: [],
         edges: [],
         persistedSnapshot: "",
+        hasPersistedSnapshot: false,
         isDirty: false,
         isSaving: false,
         isLoading: false,
@@ -327,6 +331,7 @@
         displayTargetError: "",
         displayLiveValues: {},
         displayTargetTimer: null,
+        localBackupTimer: null,
         displayTargetRequestId: 0,
         displayLiveRequestId: 0,
         isDisplayTargetBusy: false,
@@ -418,6 +423,133 @@
         };
     }
 
+    function safeReadLocalDraftBackup() {
+        try {
+            const raw = window.localStorage?.getItem(BUILDER_LOCAL_DRAFT_KEY);
+            if (!raw) {
+                return null;
+            }
+            const payload = JSON.parse(raw);
+            return payload && typeof payload === "object" ? payload : null;
+        } catch (error) {
+            console.warn("Reactor Builder local draft backup could not be read", error);
+            return null;
+        }
+    }
+
+    function safeWriteLocalDraftBackup(payload) {
+        try {
+            window.localStorage?.setItem(BUILDER_LOCAL_DRAFT_KEY, JSON.stringify(payload));
+        } catch (error) {
+            console.warn("Reactor Builder local draft backup could not be written", error);
+        }
+    }
+
+    function safeRemoveLocalDraftBackup() {
+        try {
+            window.localStorage?.removeItem(BUILDER_LOCAL_DRAFT_KEY);
+        } catch (error) {
+            console.warn("Reactor Builder local draft backup could not be removed", error);
+        }
+    }
+
+    function localDraftPayload() {
+        return {
+            version: 1,
+            saved_at: new Date().toISOString(),
+            current_build_id: state.currentBuildId,
+            build_name: nameInput.value.trim(),
+            build_date: dateInput.value.trim(),
+            build_user: userInput.value.trim(),
+            definition_json: buildDefinitionPayload(),
+        };
+    }
+
+    function comparableFromLocalDraft(payload) {
+        const definition = payload?.definition_json && typeof payload.definition_json === "object"
+            ? payload.definition_json
+            : {};
+        return {
+            build_name: asString(payload?.build_name, ""),
+            build_date: asString(payload?.build_date, ""),
+            build_user: asString(payload?.build_user, ""),
+            definition_json: {
+                nodes: Array.isArray(definition.nodes) ? definition.nodes : [],
+                edges: Array.isArray(definition.edges) ? definition.edges : [],
+            },
+        };
+    }
+
+    function localDraftDiffersFromPersisted(payload) {
+        if (!payload || !state.hasPersistedSnapshot) {
+            return false;
+        }
+        return JSON.stringify(comparableFromLocalDraft(payload)) !== state.persistedSnapshot;
+    }
+
+    function flushLocalDraftBackup() {
+        if (state.localBackupTimer) {
+            window.clearTimeout(state.localBackupTimer);
+            state.localBackupTimer = null;
+        }
+        if (!state.hasPersistedSnapshot) {
+            return;
+        }
+        if (state.isDirty) {
+            safeWriteLocalDraftBackup(localDraftPayload());
+        } else {
+            safeRemoveLocalDraftBackup();
+        }
+    }
+
+    function scheduleLocalDraftBackup() {
+        if (!state.hasPersistedSnapshot) {
+            return;
+        }
+        if (state.localBackupTimer) {
+            window.clearTimeout(state.localBackupTimer);
+        }
+        state.localBackupTimer = window.setTimeout(flushLocalDraftBackup, BUILDER_LOCAL_BACKUP_DEBOUNCE_MS);
+    }
+
+    function restoreLocalDraftBackup(payload) {
+        const definition = payload?.definition_json && typeof payload.definition_json === "object"
+            ? payload.definition_json
+            : {};
+        state.currentBuildId = parseBuildId(payload?.current_build_id);
+        nameInput.value = asString(payload?.build_name, nameInput.value || "Untitled Reactor Build");
+        dateInput.value = asString(payload?.build_date, dateInput.value || new Date().toISOString().slice(0, 10));
+        userInput.value = asString(payload?.build_user, userInput.value || "operator");
+        loadDefinition(definition);
+        setBuildSelection(state.currentBuildId);
+        updateHistory(state.currentBuildId);
+        renderAll();
+        scheduleDisplayTargetRefresh();
+        const savedAt = asString(payload?.saved_at, "");
+        setStatus(
+            savedAt
+                ? `Local unsaved draft restored from ${savedAt}. Save again to write it to SQL.`
+                : "Local unsaved draft restored. Save again to write it to SQL.",
+            "error",
+        );
+    }
+
+    function maybeOfferLocalDraftRestore() {
+        const backup = safeReadLocalDraftBackup();
+        if (!localDraftDiffersFromPersisted(backup)) {
+            return;
+        }
+        const savedAt = asString(backup?.saved_at, "unknown time");
+        const restore = window.confirm(
+            `A locally saved Reactor Builder draft from ${savedAt} was found. Restore it now?`,
+        );
+        if (restore) {
+            restoreLocalDraftBackup(backup);
+        } else {
+            safeRemoveLocalDraftBackup();
+        }
+    }
+
     function comparableState() {
         const definition = buildDefinitionPayload();
         return {
@@ -431,15 +563,27 @@
         };
     }
 
-    function capturePersistedSnapshot() {
+    function capturePersistedSnapshot(options) {
         state.persistedSnapshot = JSON.stringify(comparableState());
+        state.hasPersistedSnapshot = true;
         state.isDirty = false;
         syncUiState();
+        if (options?.clearLocalBackup !== false) {
+            safeRemoveLocalDraftBackup();
+        }
     }
 
     function syncDirtyState() {
         state.isDirty = JSON.stringify(comparableState()) !== state.persistedSnapshot;
         syncUiState();
+        if (!state.hasPersistedSnapshot) {
+            return;
+        }
+        if (state.isDirty) {
+            scheduleLocalDraftBackup();
+        } else {
+            flushLocalDraftBackup();
+        }
     }
 
     function syncUiState() {
@@ -804,7 +948,7 @@
         }
         updateHistory(state.currentBuildId);
         renderAll();
-        capturePersistedSnapshot();
+        capturePersistedSnapshot({ clearLocalBackup: options?.clearLocalBackup !== false });
         scheduleDisplayTargetRefresh();
         void loadDisplayLiveValues({ quiet: true });
     }
@@ -843,7 +987,7 @@
     }
 
     if (buildData && typeof buildData === "object") {
-        applyBuildRecord(buildData, { clearUndo: true });
+        applyBuildRecord(buildData, { clearUndo: true, clearLocalBackup: false });
     }
 
     function pointerToCanvas(event) {
@@ -1441,6 +1585,7 @@
                 headers,
                 body: JSON.stringify({ definition_json: buildDefinitionPayload() }),
                 timeoutMs: 6000,
+                timeoutMessage: "Display target refresh timed out. Build editing and saving remain available.",
             });
             if (requestId !== state.displayTargetRequestId) {
                 return;
@@ -2737,7 +2882,22 @@
                     ? 1
                     : 0
                 : Math.max(0, Math.round(asNumber(requestOptions.maxRetries, 0)));
-        const { timeoutMs: _timeoutMs, maxRetries: _maxRetries, ...fetchOptions } = requestOptions;
+        const retryMethods = new Set(
+            Array.isArray(requestOptions.retryMethods)
+                ? requestOptions.retryMethods.map((item) => asString(item, "").toUpperCase()).filter(Boolean)
+                : ["GET"],
+        );
+        const timeoutMessage = asString(
+            requestOptions.timeoutMessage,
+            "Request timeout. Check the connection and server status.",
+        );
+        const {
+            timeoutMs: _timeoutMs,
+            maxRetries: _maxRetries,
+            retryMethods: _retryMethods,
+            timeoutMessage: _timeoutMessage,
+            ...fetchOptions
+        } = requestOptions;
 
         let lastError = null;
         for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -2767,7 +2927,7 @@
                 const status = error?.status;
                 const retryable =
                     attempt < maxRetries &&
-                    method === "GET" &&
+                    retryMethods.has(method) &&
                     (error?.name === "AbortError" || error instanceof TypeError || isRetryableStatus(status));
                 if (retryable) {
                     lastError = error;
@@ -2775,7 +2935,7 @@
                     continue;
                 }
                 if (error?.name === "AbortError") {
-                    throw new Error("Request timeout. Check the connection and server status.");
+                    throw new Error(timeoutMessage);
                 }
                 throw new Error(error?.message || "Request fehlgeschlagen.");
             } finally {
@@ -2816,6 +2976,7 @@
 
         state.isSaving = true;
         syncUiState();
+        flushLocalDraftBackup();
         setStatus("Saving build ...", "muted");
 
         try {
@@ -2823,12 +2984,18 @@
                 method,
                 headers,
                 body: JSON.stringify(payload),
+                timeoutMs: BUILDER_SAVE_TIMEOUT_MS,
+                maxRetries: isCreate ? 0 : 1,
+                retryMethods: ["PATCH"],
+                timeoutMessage:
+                    "Save timeout. The local draft backup was kept in this browser; retry Save after checking the server.",
             });
 
             applyBuildRecord(savedBuild, { clearUndo: false });
             setStatus("Build saved. SQL state and builder are synchronized.", "success");
         } catch (error) {
-            setStatus(error.message || "Save failed.", "error");
+            flushLocalDraftBackup();
+            setStatus(error.message || "Save failed. The local draft backup was kept in this browser.", "error");
         } finally {
             state.isSaving = false;
             syncUiState();
@@ -3133,6 +3300,7 @@
         if (!state.isDirty) {
             return;
         }
+        flushLocalDraftBackup();
         event.preventDefault();
         event.returnValue = "";
     });
@@ -3149,6 +3317,7 @@
     setView("layout");
     applyLibraryFilter();
     renderAll();
-    capturePersistedSnapshot();
+    capturePersistedSnapshot({ clearLocalBackup: false });
+    maybeOfferLocalDraftRestore();
     void loadDisplayLiveValues({ quiet: true });
 })();

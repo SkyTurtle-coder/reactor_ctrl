@@ -333,6 +333,18 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function displayTargetUnavailableMessages()", builder_script)
         self.assertIn("No bound device was found for this mapping.", builder_script)
 
+    def test_reactor_builder_keeps_local_backup_for_failed_saves(self):
+        builder_script = (Path(__file__).resolve().parents[1] / "static" / "js" / "reactor_builder.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('const BUILDER_SAVE_TIMEOUT_MS = 60000;', builder_script)
+        self.assertIn('const BUILDER_LOCAL_DRAFT_KEY = "reactor_builder:draft:v1";', builder_script)
+        self.assertIn("function safeWriteLocalDraftBackup(payload)", builder_script)
+        self.assertIn("function maybeOfferLocalDraftRestore()", builder_script)
+        self.assertIn("Save timeout. The local draft backup was kept in this browser", builder_script)
+        self.assertIn("flushLocalDraftBackup();\n        event.preventDefault();", builder_script)
+
     def test_process_trends_selection_is_content_sized(self):
         stylesheet = (Path(__file__).resolve().parents[1] / "static" / "css" / "app.css").read_text(encoding="utf-8")
         selection_match = re.search(r"\.process-plot-selection\s*\{(?P<body>[^}]*)\}", stylesheet, re.DOTALL)

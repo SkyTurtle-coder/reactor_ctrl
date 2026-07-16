@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hmac
+import math
 import re
 from datetime import date, datetime, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
+from sqlalchemy.orm import load_only
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, verify_scoped_token
@@ -387,6 +389,8 @@ def _parse_float(value: Any, *, field_name: str, min_value: float | None = None,
         parsed = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Field '{field_name}' must be a number.") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"Field '{field_name}' must be a finite number.")
 
     if min_value is not None and parsed < min_value:
         raise ValueError(f"Field '{field_name}' must be >= {min_value}.")
@@ -817,8 +821,8 @@ def list_activity_logs():
 
 
 def _reactor_build_to_dict(item: ReactorBuild, *, include_definition: bool = True) -> dict[str, Any]:
-    definition = item.definition_json if isinstance(item.definition_json, dict) else {}
-    nodes = definition.get("nodes", []) if isinstance(definition, dict) else []
+    definition = item.definition_json if include_definition and isinstance(item.definition_json, dict) else {}
+    nodes = definition.get("nodes", []) if include_definition and isinstance(definition, dict) else None
     payload = {
         "reactor_build_id": item.reactor_build_id,
         "build_name": item.build_name,
@@ -829,7 +833,7 @@ def _reactor_build_to_dict(item: ReactorBuild, *, include_definition: bool = Tru
         "is_active": item.is_active,
         "created_at": _dt(item.created_at),
         "updated_at": _dt(item.updated_at),
-        "node_count": len(nodes) if isinstance(nodes, list) else 0,
+        "node_count": len(nodes) if isinstance(nodes, list) else None,
     }
     if include_definition:
         payload["definition_json"] = definition
@@ -1407,7 +1411,21 @@ def list_device_protocol_options():
 @api_bp.get("/reactor-builds")
 def list_reactor_builds():
     items = (
-        ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
+        ReactorBuild.query.options(
+            load_only(
+                ReactorBuild.reactor_build_id,
+                ReactorBuild.build_name,
+                ReactorBuild.build_date,
+                ReactorBuild.created_by,
+                ReactorBuild.updated_by,
+                ReactorBuild.notes,
+                ReactorBuild.is_active,
+                ReactorBuild.created_at,
+                ReactorBuild.updated_at,
+            )
+        )
+        .order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc())
+        .all()
     )
     return jsonify({"items": [_reactor_build_to_dict(item, include_definition=False) for item in items]})
 

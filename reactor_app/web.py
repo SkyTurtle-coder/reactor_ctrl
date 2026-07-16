@@ -10,7 +10,7 @@ from typing import Any
 
 from flask import Blueprint, current_app, jsonify, make_response, redirect, render_template, request, url_for
 from sqlalchemy import and_, func, or_, text
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from .actuator_profiles import list_actuator_profiles
 from .builder_auth import PROCESS_MANUAL_WRITE_SCOPE, REACTOR_BUILDER_WRITE_SCOPE, RECIPE_WRITE_SCOPE, create_scoped_token
@@ -512,7 +512,20 @@ def reactor_builder_view() -> str:
     display_targets: dict[str, dict[str, Any]] = {}
     try:
         saved_builds = (
-            ReactorBuild.query.order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc()).all()
+            ReactorBuild.query.options(
+                load_only(
+                    ReactorBuild.reactor_build_id,
+                    ReactorBuild.build_name,
+                    ReactorBuild.build_date,
+                    ReactorBuild.created_by,
+                    ReactorBuild.updated_by,
+                    ReactorBuild.is_active,
+                    ReactorBuild.created_at,
+                    ReactorBuild.updated_at,
+                )
+            )
+            .order_by(ReactorBuild.updated_at.desc(), ReactorBuild.reactor_build_id.desc())
+            .all()
         )
         current_build = db.session.get(ReactorBuild, build_id) if build_id else None
     except Exception as exc:
