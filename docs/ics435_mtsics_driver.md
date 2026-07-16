@@ -78,6 +78,25 @@ Die TCP-Zieladresse liegt wie bei anderen Geraeten in `device_server` und `devic
 }
 ```
 
+Fuer die aktuelle Laborwaage mit IP `192.168.55.29` kann diese Konfiguration
+idempotent ueber das Projekt-Skript angelegt oder aktualisiert werden:
+
+```bash
+python configure_ics435_scale.py --host 192.168.55.29 --probe
+```
+
+Das Skript verwendet standardmaessig:
+
+- `server_code`: `ICS435-01`
+- `connection_label`: `COM2 Ethernet`
+- `tcp_host`: `192.168.55.29`
+- `tcp_port`: `4305`
+- `device_type`: `scale`
+- `protocol`: `mettler_toledo_ics435`
+
+Falls die IP spaeter wechselt, bleibt die Builder-Zuordnung gleich; nur dieses
+Provisioning-Skript wird mit der neuen `--host`-Adresse erneut ausgefuehrt.
+
 Optionale `.env`-Werte:
 
 ```bash
