@@ -71,6 +71,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                         actual_rpm REAL,
                         torque_ncm REAL,
                         active_control_sensor TEXT,
+                        reported_extra TEXT,
                         last_reported_at TEXT,
                         queue_status TEXT NOT NULL DEFAULT 'idle',
                         last_error TEXT,
@@ -463,6 +464,64 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
             self.assertEqual(measurement.numeric_value, 12.34)
             self.assertEqual(float(measurement.quality_score), 1.0)
             self.assertEqual(measurement.raw_payload["stable"], True)
+
+    def test_scale_manual_state_caches_weight_without_a_live_device_read(self):
+        # Regression test for the tab-switch slowdown: the reconciler already
+        # reads the scale's weight every poll cycle for measurement
+        # persistence. It must ALSO cache that value on DeviceManualState so
+        # the Process view's periodic UI refresh can read a fast DB value
+        # instead of issuing its own live device command (which would
+        # contend with this same poll cycle for the per-device lock).
+        with self.app.app_context():
+            device = Device(
+                asset_serial="ICS435-CACHE-001",
+                manufacturer_serial="SN-ICS435-CACHE-001",
+                display_name="ICS435 Cache Test",
+                device_type="scale",
+                protocol="mettler_toledo_ics435",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            db.session.add(
+                DeviceManualState(
+                    device_id=device.device_id,
+                    queue_status="idle",
+                    desired_version=0,
+                    applied_version=0,
+                )
+            )
+            db.session.commit()
+
+            measured_at = datetime.now(timezone.utc)
+            telemetry = {
+                "weight": 12.34,
+                "weight_unit": "g",
+                "weight_stable": True,
+                "weight_quality_score": 1.0,
+                "weight_raw_payload": {"raw_response": "S S      12.34 g"},
+            }
+
+            with self.app.app_context():
+                device_manual_runtime._commit_scale_manual_state_success(
+                    self.app,
+                    device_id=device.device_id,
+                    telemetry=telemetry,
+                    measured_at=measured_at,
+                    watch_active=False,
+                    bg_interval=timedelta(seconds=1),
+                )
+                db.session.commit()
+
+                state = db.session.get(DeviceManualState, device.device_id)
+                self.assertIsNotNone(state.reported_extra)
+                self.assertEqual(state.reported_extra["kind"], "scale")
+                self.assertEqual(state.reported_extra["weight"], 12.34)
+                self.assertEqual(state.reported_extra["unit"], "g")
+                self.assertTrue(state.reported_extra["stable"])
+
+                snapshot = device_manual_runtime.manual_state_to_dict(state)
+                self.assertEqual(snapshot["reported_extra"]["weight"], 12.34)
 
     def test_cc230_discovery_and_measurement_persistence_only_include_active_temperature_channels(self):
         with self.app.app_context():

@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS device_manual_state (
   reported_setpoint_rpm INT NULL,
   actual_rpm DOUBLE NULL,
   torque_ncm DOUBLE NULL,
+  reported_extra JSON NULL,
   last_reported_at DATETIME(3) NULL,
   queue_status VARCHAR(16) NOT NULL DEFAULT 'idle',
   last_error TEXT NULL,

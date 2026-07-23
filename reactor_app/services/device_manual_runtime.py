@@ -741,6 +741,7 @@ def manual_state_to_dict(state: DeviceManualState | None) -> dict[str, Any] | No
             "updated_at": _datetime_isoformat(state.last_desired_at),
         },
         "reported_state": _telemetry_to_snapshot(state),
+        "reported_extra": state.reported_extra,
         "last_error": state.last_error,
         "next_poll_at": _datetime_isoformat(state.next_poll_at),
         "watch_expires_at": _datetime_isoformat(state.watch_expires_at),
@@ -1200,10 +1201,27 @@ def _commit_huber_manual_state_success(
     return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
 
 
+def _scale_reported_extra(telemetry: dict[str, Any], *, measured_at: datetime) -> dict[str, Any]:
+    weight = telemetry.get("weight")
+    try:
+        weight = None if weight is None else float(weight)
+    except (TypeError, ValueError):
+        weight = None
+    return {
+        "kind": "scale",
+        "weight": weight,
+        "unit": telemetry.get("weight_unit"),
+        "stable": bool(telemetry.get("weight_stable")),
+        "quality_score": telemetry.get("weight_quality_score"),
+        "measured_at": measured_at.isoformat(),
+    }
+
+
 def _commit_scale_manual_state_success(
     app: Flask,
     *,
     device_id: int,
+    telemetry: dict[str, Any],
     measured_at: datetime,
     watch_active: bool,
     bg_interval: timedelta,
@@ -1214,10 +1232,12 @@ def _commit_scale_manual_state_success(
         bg_interval=bg_interval,
         measured_at=measured_at,
     )
+    reported_extra = _scale_reported_extra(telemetry, measured_at=measured_at)
 
     def values_factory() -> dict[Any, Any]:
         return {
             DeviceManualState.last_reported_at: measured_at,
+            DeviceManualState.reported_extra: reported_extra,
             DeviceManualState.applied_version: case(
                 (DeviceManualState.desired_version == 0, 0),
                 else_=DeviceManualState.applied_version,
@@ -1231,6 +1251,7 @@ def _commit_scale_manual_state_success(
 
     def memory_update(state: DeviceManualState) -> None:
         state.last_reported_at = measured_at
+        state.reported_extra = reported_extra
         if state.desired_version == 0:
             state.applied_version = 0
         state.last_error = None
@@ -1692,6 +1713,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                 _commit_scale_manual_state_success(
                     app,
                     device_id=device_id,
+                    telemetry=telemetry,
                     measured_at=measured_at,
                     watch_active=watch_active,
                     bg_interval=bg_interval,

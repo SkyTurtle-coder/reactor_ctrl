@@ -192,6 +192,7 @@ class ActivityLogTests(unittest.TestCase):
                         actual_rpm REAL,
                         torque_ncm REAL,
                         active_control_sensor TEXT,
+                        reported_extra TEXT,
                         last_reported_at TEXT,
                         queue_status TEXT NOT NULL DEFAULT 'idle',
                         last_error TEXT,

@@ -304,11 +304,29 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('protocol === "mettler_toledo_ics435" || protocol === "ics435_mtsics"', source)
         self.assertIn("isIkaMotorTarget(node, target) || isHuberThermostatTarget(node, target) || isScaleTarget(node, target)", source)
         self.assertIn("async function loadScaleStateSnapshot(nodeId, options)", source)
-        self.assertIn('executeDeviceCommand(target, "read_weight", {}, { returnMeta: true, timeoutMs: 8000 })', source)
         self.assertIn("function submitScaleAction(commandName, label)", source)
         self.assertIn('submitScaleAction("tare", "Tare")', source)
         self.assertIn('submitScaleAction("clear_tare", "Clear tare")', source)
         self.assertIn('submitScaleAction("zero", "Zero")', source)
+
+        # Regression guard: the periodic/initial weight readout must be a
+        # cache-only DB read (GET /manual-state), never a live device command.
+        # A live read here would fire every 1.5 s while the panel is open and
+        # contend with the background ICS435 poller for the same per-device
+        # lock, blocking an HTTP worker thread for the round trip.
+        self.assertNotIn(
+            'executeDeviceCommand(target, "read_weight"',
+            source,
+            "loadScaleStateSnapshot must not issue a live read_weight command; "
+            "it should read DeviceManualState.reported_extra via GET /manual-state.",
+        )
+        self.assertIn(
+            'fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`',
+            source,
+        )
+        self.assertIn("const extra = payload?.state?.reported_extra || null;", source)
+        # Only the explicit Tare/Clear Tare/Zero actions may call the device.
+        self.assertIn('executeDeviceCommand(target, commandName, {}, { timeoutMs: 12000 })', source)
 
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
         repo_root = Path(__file__).resolve().parents[1]

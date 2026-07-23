@@ -3198,12 +3198,14 @@
             return;
         }
 
-        // Extend watch_expires_at so the reconciler keeps the manual-state row fresh
-        // while a browser has this scale panel open.
-        void fetch(
-            `/api/devices/${target.device_id}/manual-state?watch=1&requested_by=process_view`
-        ).catch(() => {});
-
+        // Reads the weight the background reconciler already polls (every
+        // ICS435_POLLER_INTERVAL_MS, independent of this panel being open) from
+        // DeviceManualState.reported_extra. This is a DB-only read — it must
+        // NOT issue a live device command here: the ICS435 poll cadence is far
+        // faster than other devices, and adding a second live read on every
+        // 1.5 s UI tick contends with the reconciler for the same per-device
+        // lock and blocks an HTTP worker thread for the round trip, which
+        // starves the small Gunicorn thread pool app-wide under load.
         const requestId = state.manualRequestId + 1;
         state.manualRequestId = requestId;
         state.isManualBusy = true;
@@ -3211,17 +3213,30 @@
             setManualStatus("Loading current weight...", "muted");
         }
 
+        const params = new URLSearchParams();
+        params.set("watch", settings.watch === false ? "0" : "1");
+        if (settings.refresh) {
+            params.set("refresh", "1");
+            if (settings.awaitMs) {
+                params.set("await_ms", String(settings.awaitMs));
+            }
+        }
+        params.set("requested_by", "process_view");
+
         try {
-            const metadata = await executeDeviceCommand(target, "read_weight", {}, { returnMeta: true, timeoutMs: 8000 });
+            const payload = await fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`, {
+                timeoutMs: 12000,
+                maxRetries: 1,
+            });
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
             }
-            const weightInfo = metadata?.weight || {};
+            const extra = payload?.state?.reported_extra || null;
             const telemetry = {
                 kind: "scale",
-                weight: optionalNumber(weightInfo.value),
-                unit: asString(weightInfo.unit, ""),
-                stable: weightInfo.stable == null ? null : Boolean(weightInfo.stable),
+                weight: extra && extra.weight != null ? optionalNumber(extra.weight) : null,
+                unit: asString(extra?.unit, ""),
+                stable: extra && extra.stable != null ? Boolean(extra.stable) : null,
             };
             updateManualLiveMetrics(telemetry);
             renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
@@ -3836,7 +3851,15 @@
         void executeDeviceCommand(target, commandName, {}, { timeoutMs: 12000 })
             .then(() => {
                 setManualStatus(`${label} completed.`, "success");
-                return loadScaleStateSnapshot(node.id, { skipStatus: true, quiet: true });
+                // Nudge the reconciler to poll sooner and wait briefly (bounded,
+                // server-side capped) for that cached value instead of issuing
+                // a second live device read from the browser.
+                return loadScaleStateSnapshot(node.id, {
+                    skipStatus: true,
+                    quiet: true,
+                    refresh: true,
+                    awaitMs: 1500,
+                });
             })
             .catch((error) => {
                 setManualStatus(error?.message || `${label} could not be completed.`, "error");
