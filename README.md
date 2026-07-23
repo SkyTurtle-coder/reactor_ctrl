@@ -386,12 +386,12 @@ Fuer die aktuell vorgesehene Waage kann die zentrale Device-Konfiguration ueber
 das Provisioning-Skript angelegt oder aktualisiert werden:
 
 ```bash
-python configure_ics435_scale.py --host 192.168.55.29 --probe
+python configure_ics435_scale.py --host 10.90.95.173 --probe
 ```
 
 Das Skript nutzt `API_AUTH_TOKEN` aus der Umgebung, falls `--api-token` nicht
 explizit gesetzt wird. Es legt standardmaessig `ICS435-01`, `COM2 Ethernet`,
-`192.168.55.29:4305` und das Device `ICS435 Balance` mit Protokoll
+`10.90.95.173:4305` und das Device `ICS435 Balance` mit Protokoll
 `mettler_toledo_ics435` an.
 
 Im Reactor Builder wird anschliessend nicht die IP eingetragen, sondern:

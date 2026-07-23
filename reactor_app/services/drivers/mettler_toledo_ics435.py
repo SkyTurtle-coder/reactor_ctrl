@@ -316,8 +316,26 @@ class _MTSicsSession:
         self._rx_buffer = bytearray()
         self.skipped_lines: list[str] = []
 
+    def _drain_stale_input(self) -> None:
+        # A fresh session's rx buffer starts empty, so bytes left on the wire
+        # from a prior command's over-read (e.g. an unsolicited I4 boot
+        # telegram sent right after a weight response) would otherwise sit
+        # unread until they collide with the next command's real response.
+        # Best-effort only: harmless no-op for transports without this method
+        # (e.g. the fake transport used in unit tests).
+        drain = getattr(self.transport, "drain_input", None)
+        if not callable(drain):
+            return
+        try:
+            drained = drain(max_bytes=self.max_response_bytes, idle_timeout_s=0.02)
+            if drained and self.log_raw_telegrams:
+                LOGGER.debug("MT-SICS drained %d stale input byte(s) before command: %r", len(drained), drained)
+        except Exception:
+            LOGGER.debug("MT-SICS input drain failed; continuing with command send.", exc_info=True)
+
     def send_command(self, command: str) -> bytes:
         command_text = _coerce_command(command)
+        self._drain_stale_input()
         payload = command_text.encode("ascii") + _CRLF
         if self.log_raw_telegrams:
             LOGGER.debug("MT-SICS send: %r", payload)

@@ -1,4 +1,5 @@
 import unittest
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -411,6 +412,66 @@ class DeviceRuntimeTelemetryUpdateTests(unittest.TestCase):
             self.assertEqual(transport.close_calls, 0)
         finally:
             device_runtime._PERSISTENT_TRANSPORTS.clear()
+
+    def test_persistent_transport_rebind_happens_inside_device_lock(self):
+        # Regression test: bind_runtime_control() mutates shared state (the
+        # cancellation token) on a cached persistent transport. If that
+        # rebind happened before the per-device lock was acquired, it could
+        # race with another thread's in-flight send/recv on the same
+        # transport. It must only ever happen while the lock is held.
+        session = _FakeExecuteCommandSession()
+        driver = _FakePersistentDriver()
+        transport = _FakePersistentTransport()
+        lock_depth = {"count": 0}
+        bound_while_locked: list[bool] = []
+
+        original_bind = transport.bind_runtime_control
+
+        def recording_bind(*, cancellation_token=None):
+            bound_while_locked.append(lock_depth["count"] > 0)
+            return original_bind(cancellation_token=cancellation_token)
+
+        transport.bind_runtime_control = recording_bind
+
+        @contextmanager
+        def fake_lock(device_id, *, timeout_s=5.0):
+            lock_depth["count"] += 1
+            try:
+                yield
+            finally:
+                lock_depth["count"] -= 1
+
+        connection = SimpleNamespace(
+            connection_id=42,
+            is_enabled=True,
+            transport_type="tcp_socket",
+            tcp_host="127.0.0.1",
+            tcp_port=4305,
+        )
+        binding = SimpleNamespace(device_id=7, connection_id=42, connection=connection)
+        device = SimpleNamespace(device_id=7, protocol="persistent_fake", current_binding=binding)
+
+        device_runtime._PERSISTENT_TRANSPORTS.clear()
+        try:
+            with patch.object(device_runtime, "db", SimpleNamespace(session=session)):
+                with patch.object(device_runtime, "get_driver", return_value=driver):
+                    with patch.object(device_runtime, "build_transport", return_value=transport):
+                        with patch.object(device_runtime, "_device_command_lock", fake_lock):
+                            for _ in range(2):
+                                device_runtime.execute_device_command(
+                                    device,
+                                    command_name="read_weight",
+                                    payload={"response_timeout_ms": 1200},
+                                    requested_by="test",
+                                )
+        finally:
+            device_runtime._PERSISTENT_TRANSPORTS.clear()
+
+        self.assertTrue(bound_while_locked, "bind_runtime_control() was never invoked on the cached transport.")
+        self.assertTrue(
+            all(bound_while_locked),
+            f"bind_runtime_control() ran outside the per-device lock: {bound_while_locked!r}",
+        )
 
 
 # ---------------------------------------------------------------------------

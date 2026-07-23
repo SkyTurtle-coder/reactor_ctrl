@@ -9,7 +9,7 @@ import urllib.request
 from typing import Any
 
 
-DEFAULT_HOST = "192.168.55.29"
+DEFAULT_HOST = "10.90.95.173"
 DEFAULT_TCP_PORT = 4305
 DEFAULT_SERVER_CODE = "ICS435-01"
 DEFAULT_CONNECTION_LABEL = "COM2 Ethernet"

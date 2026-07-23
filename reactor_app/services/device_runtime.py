@@ -1964,16 +1964,6 @@ def execute_device_command(
 
     transport_obj = None
     persistent_transport_key: tuple[Any, ...] | None = None
-    if driver.uses_transport:
-        try:
-            transport_obj, persistent_transport_key = _build_command_transport(
-                driver,
-                connection,
-                effective_payload,
-                cancellation_token=cancellation_token,
-            )
-        except TransportTypeNotSupportedError as exc:
-            raise DeviceCommandError(str(exc), status_code=400) from exc
 
     request = DeviceCommandRequest(
         command_name=command_name,
@@ -1992,7 +1982,20 @@ def execute_device_command(
         with lock_context:
             _raise_if_interrupted(cancellation_token, location="device_runtime.pre_send")
             if driver.uses_transport:
-                assert transport_obj is not None
+                # Built/rebound while holding the per-device lock: a cached
+                # persistent transport's bind_runtime_control() mutates shared
+                # state (e.g. the cancellation token) on the transport object,
+                # which must not race with another thread's in-flight send/recv
+                # on that same transport.
+                try:
+                    transport_obj, persistent_transport_key = _build_command_transport(
+                        driver,
+                        connection,
+                        effective_payload,
+                        cancellation_token=cancellation_token,
+                    )
+                except TransportTypeNotSupportedError as exc:
+                    raise DeviceCommandError(str(exc), status_code=400) from exc
                 if persistent_transport_key is not None:
                     transport_obj.connect()
                     _raise_if_interrupted(cancellation_token, location="device_runtime.pre_driver_execute")

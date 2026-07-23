@@ -287,6 +287,29 @@ class ProcessViewTemplateTests(unittest.TestCase):
         )
         self.assertEqual([channel["channel_code"] for channel in channels], ["weight"])
 
+    def test_process_view_exposes_scale_manual_actions(self):
+        response = self.client.get("/process")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+
+        self.assertIn("process-manual-scale-actions", html)
+        self.assertIn("process-manual-tare-button", html)
+        self.assertIn("process-manual-clear-tare-button", html)
+        self.assertIn("process-manual-zero-button", html)
+
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("function isScaleTarget(node, target)", source)
+        self.assertIn('protocol === "mettler_toledo_ics435" || protocol === "ics435_mtsics"', source)
+        self.assertIn("isIkaMotorTarget(node, target) || isHuberThermostatTarget(node, target) || isScaleTarget(node, target)", source)
+        self.assertIn("async function loadScaleStateSnapshot(nodeId, options)", source)
+        self.assertIn('executeDeviceCommand(target, "read_weight", {}, { returnMeta: true, timeoutMs: 8000 })', source)
+        self.assertIn("function submitScaleAction(commandName, label)", source)
+        self.assertIn('submitScaleAction("tare", "Tare")', source)
+        self.assertIn('submitScaleAction("clear_tare", "Clear tare")', source)
+        self.assertIn('submitScaleAction("zero", "Zero")', source)
+
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
         repo_root = Path(__file__).resolve().parents[1]
         process_template = (repo_root / "templates" / "process.html").read_text(encoding="utf-8")

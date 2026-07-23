@@ -1656,6 +1656,16 @@ h2 {
     min-height: 3rem;
 }
 
+.process-manual-scale-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+}
+
+.process-manual-scale-actions.is-hidden {
+    display: none;
+}
+
 .process-manual-state-field,
 .process-manual-speed-field,
 .process-manual-sensor-field {

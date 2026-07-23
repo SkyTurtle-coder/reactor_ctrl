@@ -14,10 +14,10 @@ class ConfigureIcs435ScaleTests(unittest.TestCase):
         device_payload = ics435_config._device_payload(args)
 
         self.assertEqual(server_payload["server_code"], "ICS435-01")
-        self.assertEqual(server_payload["host"], "192.168.55.29")
+        self.assertEqual(server_payload["host"], "10.90.95.173")
         self.assertEqual(server_payload["serial_standard"], "ethernet")
         self.assertEqual(connection_payload["connection_label"], "COM2 Ethernet")
-        self.assertEqual(connection_payload["tcp_host"], "192.168.55.29")
+        self.assertEqual(connection_payload["tcp_host"], "10.90.95.173")
         self.assertEqual(connection_payload["tcp_port"], 4305)
         self.assertEqual(device_payload["asset_serial"], "ICS435-01")
         self.assertEqual(device_payload["device_type"], "scale")
@@ -69,7 +69,7 @@ class ConfigureIcs435ScaleTests(unittest.TestCase):
             call["payload"] for call in calls
             if call["path"] == "/api/device-servers" and call["method"] == "POST"
         )
-        self.assertEqual(server_payload["host"], "192.168.55.29")
+        self.assertEqual(server_payload["host"], "10.90.95.173")
         self.assertEqual(server_payload["vendor"], "Mettler Toledo")
         self.assertEqual(server_payload["model"], "ICS435")
         self.assertEqual(server_payload["port_count"], 1)
@@ -78,7 +78,7 @@ class ConfigureIcs435ScaleTests(unittest.TestCase):
             call["payload"] for call in calls
             if call["path"] == "/api/device-connections" and call["method"] == "POST"
         )
-        self.assertEqual(connection_payload["tcp_host"], "192.168.55.29")
+        self.assertEqual(connection_payload["tcp_host"], "10.90.95.173")
         self.assertEqual(connection_payload["tcp_port"], 4305)
         self.assertEqual(connection_payload["transport_type"], "tcp_socket")
 

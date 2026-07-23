@@ -46,6 +46,10 @@
     const manualSensorField = document.getElementById("process-manual-sensor-field");
     const manualSensorInput = document.getElementById("process-manual-sensor-input");
     const manualSubmitButton = document.getElementById("process-manual-submit-button");
+    const manualScaleActions = document.getElementById("process-manual-scale-actions");
+    const manualTareButton = document.getElementById("process-manual-tare-button");
+    const manualClearTareButton = document.getElementById("process-manual-clear-tare-button");
+    const manualZeroButton = document.getElementById("process-manual-zero-button");
     const manualPrimaryMetricLabel = document.getElementById("process-manual-primary-metric-label");
     const manualSecondaryMetricLabel = document.getElementById("process-manual-secondary-metric-label");
     const manualActualRpm = document.getElementById("process-manual-actual-rpm");
@@ -2799,8 +2803,17 @@
         return protocol === "huber_cc230" && symbolId === "hc_system";
     }
 
+    function isScaleTarget(node, target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
+        return (
+            (protocol === "mettler_toledo_ics435" || protocol === "ics435_mtsics")
+            && (symbolId === "scale" || symbolId === "qi" || symbolId === "qic")
+        );
+    }
+
     function isSupportedManualTarget(node, target) {
-        return isIkaMotorTarget(node, target) || isHuberThermostatTarget(node, target);
+        return isIkaMotorTarget(node, target) || isHuberThermostatTarget(node, target) || isScaleTarget(node, target);
     }
 
 
@@ -2821,6 +2834,15 @@
         }
         if (manualSubmitButton) {
             manualSubmitButton.disabled = !allow;
+        }
+        if (manualTareButton) {
+            manualTareButton.disabled = !allow;
+        }
+        if (manualClearTareButton) {
+            manualClearTareButton.disabled = !allow;
+        }
+        if (manualZeroButton) {
+            manualZeroButton.disabled = !allow;
         }
         syncManualModeToggle();
     }
@@ -2853,6 +2875,25 @@
         if (!enabled) {
             return;
         }
+
+        if (isScaleTarget(node, target)) {
+            manualSettingsForm?.classList.add("is-hidden");
+            manualScaleActions?.classList.remove("is-hidden");
+            manualSensorField?.classList.add("is-hidden");
+            if (manualDeviceHeading) {
+                manualDeviceHeading.textContent = "ICS435 Scale";
+            }
+            if (manualPrimaryMetricLabel) {
+                manualPrimaryMetricLabel.textContent = "Weight";
+            }
+            if (manualSecondaryMetricLabel) {
+                manualSecondaryMetricLabel.textContent = "Status";
+            }
+            return;
+        }
+
+        manualSettingsForm?.classList.remove("is-hidden");
+        manualScaleActions?.classList.add("is-hidden");
 
         if (isHuberThermostatTarget(node, target)) {
             const limits = huberSetpointLimits(target);
@@ -2978,6 +3019,20 @@
             }
             if (manualTorqueNcm) {
                 manualTorqueNcm.textContent = secondaryParts.join(" | ") || "-";
+            }
+            return;
+        }
+
+        if (telemetry?.kind === "scale") {
+            if (manualActualRpm) {
+                manualActualRpm.textContent = telemetry.weight == null
+                    ? "-"
+                    : formatRoundedMetric(Number(telemetry.weight), asString(telemetry.unit, ""), 3);
+            }
+            if (manualTorqueNcm) {
+                manualTorqueNcm.textContent = telemetry.stable == null
+                    ? "-"
+                    : (telemetry.stable ? "Stable" : "Dynamic");
             }
             return;
         }
@@ -3135,6 +3190,58 @@
         }
     }
 
+    async function loadScaleStateSnapshot(nodeId, options) {
+        const settings = options || {};
+        const node = getNodeById(nodeId);
+        const target = manualTargets[nodeId] || null;
+        if (!node || !target || !target.is_resolved || !target.device_id || !isScaleTarget(node, target)) {
+            return;
+        }
+
+        // Extend watch_expires_at so the reconciler keeps the manual-state row fresh
+        // while a browser has this scale panel open.
+        void fetch(
+            `/api/devices/${target.device_id}/manual-state?watch=1&requested_by=process_view`
+        ).catch(() => {});
+
+        const requestId = state.manualRequestId + 1;
+        state.manualRequestId = requestId;
+        state.isManualBusy = true;
+        if (!settings.quiet) {
+            setManualStatus("Loading current weight...", "muted");
+        }
+
+        try {
+            const metadata = await executeDeviceCommand(target, "read_weight", {}, { returnMeta: true, timeoutMs: 8000 });
+            if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+                return;
+            }
+            const weightInfo = metadata?.weight || {};
+            const telemetry = {
+                kind: "scale",
+                weight: optionalNumber(weightInfo.value),
+                unit: asString(weightInfo.unit, ""),
+                stable: weightInfo.stable == null ? null : Boolean(weightInfo.stable),
+            };
+            updateManualLiveMetrics(telemetry);
+            renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
+            if (!settings.skipStatus) {
+                setManualStatus("Weight refreshed.", settings.quiet ? "muted" : "success");
+            }
+        } catch (error) {
+            if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
+                return;
+            }
+            if (!settings.skipStatus) {
+                setManualStatus(error?.message || "Current weight could not be loaded.", "error");
+            }
+        } finally {
+            if (requestId === state.manualRequestId && state.selectedNodeId === nodeId) {
+                state.isManualBusy = false;
+            }
+        }
+    }
+
     function applyManualStateSnapshot(nodeId, target, snapshot, options) {
         const settings = options || {};
         const currentNode = getNodeById(nodeId);
@@ -3179,6 +3286,10 @@
         const target = manualTargets[nodeId] || null;
         if (isHuberThermostatTarget(node, target)) {
             await loadHuberStateSnapshot(nodeId, settings);
+            return;
+        }
+        if (isScaleTarget(node, target)) {
+            await loadScaleStateSnapshot(nodeId, settings);
             return;
         }
         if (!canLoadIkaSettings(node, target)) {
@@ -3700,6 +3811,48 @@
             });
     });
 
+    function submitScaleAction(commandName, label) {
+        const node = getNodeById(state.selectedNodeId);
+        const target = selectedTarget();
+        if (!node || !target || !isScaleTarget(node, target)) {
+            setManualStatus("Select a mapped scale first.", "error");
+            return;
+        }
+        if (state.isSending) {
+            setManualStatus("Please wait until the current device request is finished.", "muted");
+            return;
+        }
+        if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
+            setManualStatus("No valid manual-control token is available for this page.", "error");
+            return;
+        }
+
+        state.manualRequestId += 1;
+        state.isManualBusy = false;
+        state.isSending = true;
+        syncManualControlsEnabled(true);
+        setManualStatus(`Sending ${label}...`, "muted");
+
+        void executeDeviceCommand(target, commandName, {}, { timeoutMs: 12000 })
+            .then(() => {
+                setManualStatus(`${label} completed.`, "success");
+                return loadScaleStateSnapshot(node.id, { skipStatus: true, quiet: true });
+            })
+            .catch((error) => {
+                setManualStatus(error?.message || `${label} could not be completed.`, "error");
+            })
+            .finally(() => {
+                state.isSending = false;
+                const currentNode = getNodeById(state.selectedNodeId);
+                const currentTarget = selectedTarget();
+                syncManualControlsEnabled(Boolean(currentTarget?.device_id) && isSupportedManualTarget(currentNode, currentTarget));
+            });
+    }
+
+    manualTareButton?.addEventListener("click", () => submitScaleAction("tare", "Tare"));
+    manualClearTareButton?.addEventListener("click", () => submitScaleAction("clear_tare", "Clear tare"));
+    manualZeroButton?.addEventListener("click", () => submitScaleAction("zero", "Zero"));
+
     processSourceToggle?.addEventListener("click", (event) => {
         const button = event.target?.closest?.("[data-mode]");
         if (!button) {
@@ -3762,6 +3915,10 @@
         const node = getNodeById(nodeId);
         const target = selectedTarget();
         if (isHuberThermostatTarget(node, target) && target?.device_id) {
+            void loadManualStateSnapshot(nodeId, { quiet: true, skipStatus: true });
+            return;
+        }
+        if (isScaleTarget(node, target) && target?.device_id) {
             void loadManualStateSnapshot(nodeId, { quiet: true, skipStatus: true });
             return;
         }
