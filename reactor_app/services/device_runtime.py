@@ -7,10 +7,11 @@ import os
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, TypeVar
 from uuid import uuid4
 
+from flask import current_app
 from sqlalchemy import inspect as sa_inspect, text
 from sqlalchemy.exc import OperationalError, PendingRollbackError
 
@@ -1597,6 +1598,34 @@ def _create_measurement_record(
     return measurement
 
 
+# Throttle for the automatic "persist weight from driver result" mechanic
+# below: it fires for every dispatched read_weight/read_live_telemetry
+# command, and the background reconciler polls the ICS435 every 500-1000 ms
+# (far more often than any other device's history persistence). Only
+# poller-sourced reads are throttled here — an explicit/manual read (source
+# "event", e.g. a user pressing refresh) is always recorded. Safe under the
+# single-worker architecture already relied on elsewhere in this module
+# (see _PERSISTENT_TRANSPORTS).
+_SCALE_MEASUREMENT_PERSIST_STATE: dict[int, datetime] = {}
+_SCALE_MEASUREMENT_PERSIST_GUARD = threading.Lock()
+
+
+def _should_persist_poller_scale_measurement(device_id: int) -> bool:
+    try:
+        interval_seconds = max(1, int(current_app.config.get("ICS435_MEASUREMENT_PERSIST_INTERVAL_SECONDS", 5)))
+    except RuntimeError:
+        # No Flask app context (e.g. a unit test calling the driver directly).
+        interval_seconds = 5
+    interval = timedelta(seconds=interval_seconds)
+    now = datetime.now(timezone.utc)
+    with _SCALE_MEASUREMENT_PERSIST_GUARD:
+        last_persisted_at = _SCALE_MEASUREMENT_PERSIST_STATE.get(device_id)
+        if last_persisted_at is not None and now - last_persisted_at < interval:
+            return False
+        _SCALE_MEASUREMENT_PERSIST_STATE[device_id] = now
+        return True
+
+
 def _result_measurement_spec(
     *,
     device: Device,
@@ -1627,6 +1656,8 @@ def _result_measurement_spec(
         stable = bool(weight.get("stable"))
         unit = str(weight.get("unit") or "").strip()
         command_source = str(getattr(command, "command_source", "") or "").strip().lower()
+        if command_source == "poller" and not _should_persist_poller_scale_measurement(device.device_id):
+            return None
         return {
             "channel_code": "weight",
             "display_name": "Weight",

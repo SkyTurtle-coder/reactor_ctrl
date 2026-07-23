@@ -328,6 +328,26 @@ class ProcessViewTemplateTests(unittest.TestCase):
         # Only the explicit Tare/Clear Tare/Zero actions may call the device.
         self.assertIn('executeDeviceCommand(target, commandName, {}, { timeoutMs: 12000 })', source)
 
+    def test_process_view_script_hardens_polling_against_freezes_and_pileup(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        # The periodic scale/IKA manual-state read is DB-only; it must not
+        # use the same multi-second timeout/retry budget as real device
+        # commands, since a hung request there shares state.isManualBusy and
+        # would freeze the live weight readout for the whole panel.
+        self.assertIn(
+            "const requestTimeoutMs = settings.refresh ? (Number(settings.awaitMs) || 0) + 2000 : 3000;",
+            source,
+        )
+        self.assertIn("timeoutMs: settings.refresh ? 5000 : 3000,", source)
+
+        # loadProcessProgram must not pile up overlapping requests when the
+        # backend is briefly slow.
+        self.assertIn("isProgramPolling: false,", source)
+        self.assertIn("programPollRequestId: 0,", source)
+        self.assertIn("if (settings.quiet && state.isProgramPolling) {", source)
+
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
         repo_root = Path(__file__).resolve().parents[1]
         process_template = (repo_root / "templates" / "process.html").read_text(encoding="utf-8")

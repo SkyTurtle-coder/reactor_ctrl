@@ -42,6 +42,18 @@ _MANUAL_RECIPE_SEQUENCE_LOCK = threading.RLock()
 _MANUAL_CLAIM_PORT_ORDER_CACHE: dict[int, bool] = {}
 _UNCHANGED = object()
 
+# In-memory live snapshot of the most recent scale telemetry, keyed by
+# device_id. This is the fast path for GET /manual-state: it is updated
+# immediately after every reconciler poll (no DB round trip), so the UI's
+# live weight readout does not depend on the reconciler's own DB commit
+# cadence (which is bounded below by the lease claim/release writes required
+# for correct scheduling, and must not be skipped for that reason). The DB
+# copy in DeviceManualState.reported_extra remains the throttled,
+# restart-durable fallback. Safe under the single-worker/single-reconciler
+# architecture already relied on elsewhere (see device_runtime._PERSISTENT_TRANSPORTS).
+_SCALE_LIVE_SNAPSHOTS: dict[int, dict[str, Any]] = {}
+_SCALE_LIVE_SNAPSHOTS_GUARD = threading.Lock()
+
 # Channel definitions for IKA telemetry that are persisted as measurements
 # on every reconciler poll cycle. channel_code values are part of the
 # measurement model and are used by both the Process plot and the Data view.
@@ -729,6 +741,13 @@ def manual_state_to_dict(state: DeviceManualState | None) -> dict[str, Any] | No
     if state is None:
         return None
 
+    # Prefer the in-memory live snapshot over the DB column: it is updated
+    # immediately after every reconciler poll, ahead of (and independent of)
+    # the DB commit, so it is always at least as fresh. Falls back to the DB
+    # value for a cold process (no poll has completed since the last restart).
+    live_snapshot = get_scale_live_snapshot(state.device_id)
+    reported_extra = live_snapshot if live_snapshot is not None else state.reported_extra
+
     return {
         "device_id": state.device_id,
         "queue_status": str(state.queue_status or "idle"),
@@ -741,7 +760,7 @@ def manual_state_to_dict(state: DeviceManualState | None) -> dict[str, Any] | No
             "updated_at": _datetime_isoformat(state.last_desired_at),
         },
         "reported_state": _telemetry_to_snapshot(state),
-        "reported_extra": state.reported_extra,
+        "reported_extra": reported_extra,
         "last_error": state.last_error,
         "next_poll_at": _datetime_isoformat(state.next_poll_at),
         "watch_expires_at": _datetime_isoformat(state.watch_expires_at),
@@ -1214,14 +1233,44 @@ def _scale_reported_extra(telemetry: dict[str, Any], *, measured_at: datetime) -
         "stable": bool(telemetry.get("weight_stable")),
         "quality_score": telemetry.get("weight_quality_score"),
         "measured_at": measured_at.isoformat(),
+        "communication_status": "ok",
     }
+
+
+def _update_scale_live_snapshot(device_id: int, reported_extra: dict[str, Any]) -> dict[str, Any]:
+    with _SCALE_LIVE_SNAPSHOTS_GUARD:
+        previous = _SCALE_LIVE_SNAPSHOTS.get(device_id)
+        sequence = int(previous.get("sequence", 0)) + 1 if previous else 1
+        snapshot = {**reported_extra, "sequence": sequence}
+        _SCALE_LIVE_SNAPSHOTS[device_id] = snapshot
+        return dict(snapshot)
+
+
+def _mark_scale_live_snapshot_error(device_id: int, *, message: str) -> None:
+    with _SCALE_LIVE_SNAPSHOTS_GUARD:
+        previous = _SCALE_LIVE_SNAPSHOTS.get(device_id)
+        if previous is None:
+            return
+        sequence = int(previous.get("sequence", 0)) + 1
+        _SCALE_LIVE_SNAPSHOTS[device_id] = {
+            **previous,
+            "sequence": sequence,
+            "communication_status": "error",
+            "communication_error": message,
+        }
+
+
+def get_scale_live_snapshot(device_id: int) -> dict[str, Any] | None:
+    with _SCALE_LIVE_SNAPSHOTS_GUARD:
+        snapshot = _SCALE_LIVE_SNAPSHOTS.get(device_id)
+        return dict(snapshot) if snapshot is not None else None
 
 
 def _commit_scale_manual_state_success(
     app: Flask,
     *,
     device_id: int,
-    telemetry: dict[str, Any],
+    reported_extra: dict[str, Any],
     measured_at: datetime,
     watch_active: bool,
     bg_interval: timedelta,
@@ -1232,7 +1281,6 @@ def _commit_scale_manual_state_success(
         bg_interval=bg_interval,
         measured_at=measured_at,
     )
-    reported_extra = _scale_reported_extra(telemetry, measured_at=measured_at)
 
     def values_factory() -> dict[Any, Any]:
         return {
@@ -1466,34 +1514,6 @@ def _persist_huber_telemetry_as_measurements_best_effort(
         )
 
 
-def _persist_scale_telemetry_as_measurements_best_effort(
-    app: Flask,
-    device: Device,
-    telemetry: dict[str, Any],
-    measured_at: datetime,
-) -> None:
-    session = db.session
-    if not all(hasattr(session, attr) for attr in ("query", "add", "flush", "commit", "rollback")):
-        return
-
-    try:
-        def operation() -> None:
-            _persist_scale_telemetry_as_measurements(device, telemetry, measured_at)
-            db.session.commit()
-
-        _run_with_transient_db_retry(operation, retry_duplicate_key=True)
-    except Exception:
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
-        app.logger.warning(
-            "Measurement persistence failed for ICS435 device %s; keeping live state update and retrying history on the next poll.",
-            device.device_id,
-            exc_info=True,
-        )
-
-
 def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
     desired_is_on = bool(state.desired_is_on)
     desired_speed = max(0, int(state.desired_speed or 0))
@@ -1710,15 +1730,30 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                     raise RuntimeError("Queued manual-state writes are not supported for ICS435 scale devices.")
                 telemetry = _read_scale_status(app, device)
                 measured_at = _now_utc()
+                reported_extra = _scale_reported_extra(telemetry, measured_at=measured_at)
+                # Update the in-memory live snapshot FIRST, before any DB
+                # write: GET /manual-state reads this directly, so the UI's
+                # live weight readout does not wait on (or get slowed down
+                # by) the DB commit below. This is what keeps the display
+                # near-real-time independent of DB write/fsync latency.
+                _update_scale_live_snapshot(device_id, reported_extra)
+
+                # Measurement-history persistence is NOT done here: dispatching
+                # the read_live_telemetry command above already went through
+                # device_runtime.execute_device_command, whose generic
+                # "persist weight from driver result" mechanic
+                # (_result_measurement_spec in device_runtime.py) already wrote
+                # (and, for poller-sourced reads, throttles) the measurement
+                # history row. Calling _persist_scale_telemetry_as_measurements
+                # here as well would create a second, duplicate row per poll.
                 _commit_scale_manual_state_success(
                     app,
                     device_id=device_id,
-                    telemetry=telemetry,
+                    reported_extra=reported_extra,
                     measured_at=measured_at,
                     watch_active=watch_active,
                     bg_interval=bg_interval,
                 )
-                _persist_scale_telemetry_as_measurements_best_effort(app, device, telemetry, measured_at)
                 return
 
             if desired_pending:
@@ -1800,6 +1835,11 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         retry_interval = _manual_poll_interval(app) if watch_active else (
             _scale_poll_interval(app) if is_scale else _background_poll_interval(app)
         )
+        if is_scale:
+            # Keep the last known weight visible but flag it as stale/errored
+            # rather than silently freezing — the UI can then show "value
+            # stale" / "connection lost" instead of an unexplained stop.
+            _mark_scale_live_snapshot_error(device_id, message=recipe_program_error or fallback_error)
         _commit_manual_state_release(
             device_id,
             status="error",

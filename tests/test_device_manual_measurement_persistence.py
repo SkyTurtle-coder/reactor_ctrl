@@ -501,12 +501,13 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 "weight_quality_score": 1.0,
                 "weight_raw_payload": {"raw_response": "S S      12.34 g"},
             }
+            reported_extra = device_manual_runtime._scale_reported_extra(telemetry, measured_at=measured_at)
 
             with self.app.app_context():
                 device_manual_runtime._commit_scale_manual_state_success(
                     self.app,
                     device_id=device.device_id,
-                    telemetry=telemetry,
+                    reported_extra=reported_extra,
                     measured_at=measured_at,
                     watch_active=False,
                     bg_interval=timedelta(seconds=1),

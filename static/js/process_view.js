@@ -71,6 +71,7 @@
     const PROCESS_VIEW_STORAGE_KEY = "reactor_ctrl.processView.v3";
     const manualToggleInitiallyDisabled = Boolean(manualToggleButton?.disabled);
     const MANUAL_LIVE_POLL_MS = 1500;
+    const SCALE_STALE_AFTER_MS = 4000;
     const PROCESS_PROGRAM_POLL_MS = 1200;
     const PROCESS_PLOT_REFRESH_MS = 1000;
     const PROCESS_PLOT_ERROR_BACKOFF_MS = 15000;
@@ -2430,11 +2431,28 @@
 
     async function loadProcessProgram(options) {
         const settings = options || {};
+        // Overlap guard for the periodic poll tick: if a previous quiet poll
+        // is still in flight (e.g. the backend is briefly slow), skip this
+        // tick rather than piling up a second concurrent request. Explicit,
+        // non-quiet calls (e.g. right after start/stop) always run.
+        if (settings.quiet && state.isProgramPolling) {
+            return;
+        }
+
+        const requestId = state.programPollRequestId + 1;
+        state.programPollRequestId = requestId;
+        if (settings.quiet) {
+            state.isProgramPolling = true;
+        }
+
         try {
             const payload = await fetchJson("/api/process-program", {
-                timeoutMs: 10000,
-                maxRetries: settings.quiet ? 1 : 0,
+                timeoutMs: settings.quiet ? 3000 : 10000,
+                maxRetries: 0,
             });
+            if (requestId !== state.programPollRequestId) {
+                return;
+            }
             state.programData = payload?.program || null;
             if (state.programData && asString(state.programData.status, "idle") === "running" && state.manualMode) {
                 setManualMode(false);
@@ -2443,8 +2461,15 @@
             syncManualModeToggle();
             renderNodes();
         } catch (error) {
+            if (requestId !== state.programPollRequestId) {
+                return;
+            }
             if (!settings.quiet) {
                 setProgramStatus(error?.message || "Recipe program status could not be loaded.", "error");
+            }
+        } finally {
+            if (requestId === state.programPollRequestId) {
+                state.isProgramPolling = false;
             }
         }
     }
@@ -3030,9 +3055,18 @@
                     : formatRoundedMetric(Number(telemetry.weight), asString(telemetry.unit, ""), 3);
             }
             if (manualTorqueNcm) {
-                manualTorqueNcm.textContent = telemetry.stable == null
-                    ? "-"
-                    : (telemetry.stable ? "Stable" : "Dynamic");
+                // Never blocks on a slow/failed poll: the last known weight
+                // above stays visible, and this label instead explains why it
+                // might not be fresh, rather than the panel silently freezing.
+                if (telemetry.communicationStatus === "error") {
+                    manualTorqueNcm.textContent = "Connection lost";
+                } else {
+                    const measuredAtMs = telemetry.measuredAt ? Date.parse(telemetry.measuredAt) : NaN;
+                    const ageMs = Number.isFinite(measuredAtMs) ? Date.now() - measuredAtMs : NaN;
+                    const isStale = Number.isFinite(ageMs) && ageMs > SCALE_STALE_AFTER_MS;
+                    const stabilityText = telemetry.stable == null ? "-" : (telemetry.stable ? "Stable" : "Dynamic");
+                    manualTorqueNcm.textContent = isStale ? `${stabilityText} (stale)` : stabilityText;
+                }
             }
             return;
         }
@@ -3223,10 +3257,20 @@
         }
         params.set("requested_by", "process_view");
 
+        // This endpoint is DB-only (no device I/O), so it should normally
+        // resolve in well under 300 ms. A hung request here shares
+        // state.isManualBusy with the rest of the panel, so a generous
+        // timeout/retry (as used for real device commands elsewhere) would
+        // freeze the live weight readout for up to tens of seconds — exactly
+        // the "display stops updating" symptom. Keep the periodic tick's
+        // budget tight; the refresh-triggered call (post Tare/Zero) gets a
+        // little more room to cover its bounded server-side await_ms wait.
+        const requestTimeoutMs = settings.refresh ? (Number(settings.awaitMs) || 0) + 2000 : 3000;
+
         try {
             const payload = await fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`, {
-                timeoutMs: 12000,
-                maxRetries: 1,
+                timeoutMs: requestTimeoutMs,
+                maxRetries: settings.refresh ? 1 : 0,
             });
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
@@ -3237,6 +3281,8 @@
                 weight: extra && extra.weight != null ? optionalNumber(extra.weight) : null,
                 unit: asString(extra?.unit, ""),
                 stable: extra && extra.stable != null ? Boolean(extra.stable) : null,
+                communicationStatus: asString(extra?.communication_status, "ok"),
+                measuredAt: extra?.measured_at || null,
             };
             updateManualLiveMetrics(telemetry);
             renderOperatorControls(node, target, { preserveInputs: shouldPreserveManualInputs(nodeId) });
@@ -3325,10 +3371,14 @@
         }
         params.set("requested_by", "process_view");
 
+        // Same reasoning as the scale's manual-state read above: this is a
+        // DB-only endpoint sharing state.isManualBusy, so keep the periodic
+        // tick's budget tight rather than the multi-second timeout used for
+        // real device commands elsewhere.
         try {
             const payload = await fetchJson(`/api/devices/${target.device_id}/manual-state?${params.toString()}`, {
-                timeoutMs: 12000,
-                maxRetries: 1,
+                timeoutMs: settings.refresh ? 5000 : 3000,
+                maxRetries: settings.refresh ? 1 : 0,
             });
             if (requestId !== state.manualRequestId || state.selectedNodeId !== nodeId) {
                 return;
@@ -3582,6 +3632,8 @@
         manualRequestId: 0,
         programData: null,
         isProgramBusy: false,
+        isProgramPolling: false,
+        programPollRequestId: 0,
     };
 
     if (state.selectedNodeId) {

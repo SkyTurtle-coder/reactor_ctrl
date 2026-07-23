@@ -108,11 +108,19 @@ ICS435_MAX_RETRIES=1
 ICS435_RETRY_DELAY_MS=250
 ICS435_WEIGHT_COMMAND=SI
 ICS435_LOG_RAW_TELEGRAMS=false
+ICS435_MEASUREMENT_PERSIST_INTERVAL_SECONDS=5
 ```
 
 ## Polling und Messwerte
 
 Der Manual-Reconciler seedet aktive ICS435-Geraete automatisch und pollt sie mit `CommandPriority.POLLING`. Pending Polls werden von wichtigeren Befehlen verdrangt. Bei aktivem Device-Lock wird Polling uebersprungen oder spaeter wieder versucht.
+
+Der aktuelle Messwert wird bei jedem Poll (`ICS435_POLLER_INTERVAL_MS`, Default 1000 ms) sofort in einem
+In-Memory-Snapshot pro Geraet aktualisiert (kein DB-Zugriff). `GET /manual-state` liest diesen Snapshot direkt
+und faellt nur ohne aktiven Snapshot (z. B. direkt nach einem Prozessneustart) auf die zuletzt in
+`device_manual_state.reported_extra` persistierte DB-Kopie zurueck. Ein fehlgeschlagener Poll ueberschreibt den
+Snapshot nicht mit leeren Werten, sondern markiert ihn ueber `communication_status: "error"` als veraltet, waehrend
+der zuletzt bekannte Gewichtswert sichtbar bleibt.
 
 Persistierter Measurement-Channel:
 
@@ -122,6 +130,11 @@ Persistierter Measurement-Channel:
 - `unit`: Einheit aus der Waagenantwort
 - `quality_score`: `1.0` fuer stabil, `0.5` fuer dynamisch
 - `raw_payload`: Rohantwort, Stabilitaet, Einheit und Driver-Metadaten
+
+Die Messwert-Historie wird unabhaengig vom Poll-Takt gedrosselt: Hintergrund-Polls (`command_source=poller`)
+schreiben hoechstens alle `ICS435_MEASUREMENT_PERSIST_INTERVAL_SECONDS` (Default 5 s) eine neue Zeile in
+`measurement`; explizite Befehle (z. B. ein manueller Read ueber die API) werden immer persistiert. Das verhindert
+unnoetige DB-Schreiblast bei einem 500-1000 ms Poll-Takt, ohne die Live-Anzeige zu verlangsamen.
 
 ## Verbindungsmanagement
 

@@ -89,6 +89,11 @@ class Config:
     ICS435_RETRY_DELAY_MS = _env_int("ICS435_RETRY_DELAY_MS", 250)
     ICS435_WEIGHT_COMMAND = os.getenv("ICS435_WEIGHT_COMMAND", "SI")
     ICS435_LOG_RAW_TELEGRAMS = _env_bool("ICS435_LOG_RAW_TELEGRAMS", False)
+    # The live reported_extra cache still updates on every ICS435_POLLER_INTERVAL_MS
+    # poll (cheap, single-row UPDATE). Writing a full measurement-history row on
+    # every one of those polls (up to ~2/s) is unnecessary DB write volume, so
+    # history persistence is throttled to this interval independently.
+    ICS435_MEASUREMENT_PERSIST_INTERVAL_SECONDS = _env_int("ICS435_MEASUREMENT_PERSIST_INTERVAL_SECONDS", 5)
     MEASUREMENT_RETENTION_ENABLED = _env_bool("MEASUREMENT_RETENTION_ENABLED", False)
     # 0 keeps all SQL measurements. Set MEASUREMENT_RETENTION_DAYS=30 to restore
     # the previous 30-day cleanup window.
