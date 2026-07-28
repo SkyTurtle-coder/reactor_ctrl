@@ -831,6 +831,20 @@ def _persist_runtime_status(
     status: str,
     payload: dict[str, Any],
 ) -> None:
+    if status in {RuntimeStatus.SKIPPED, RuntimeStatus.PREEMPTED} and int(item.command.priority) >= int(
+        CommandPriority.POLLING
+    ):
+        # A higher-priority command (recipe/manual/safety) took the device
+        # lock ahead of this poll. This is expected under load and must not
+        # be treated as a lost poll: the reconciler simply reschedules and
+        # resumes on its next cycle, so log at debug to avoid spam.
+        logger.debug(
+            "Polling command skipped/preempted device_id=%s type=%s reason=%s — "
+            "poller will resume automatically on its next cycle.",
+            item.command.device_id,
+            item.command.command_type,
+            (payload or {}).get("message"),
+        )
     with app.app_context():
         try:
             row = _control_command_row(item.control_command_id, request_uuid=item.command.command_id)

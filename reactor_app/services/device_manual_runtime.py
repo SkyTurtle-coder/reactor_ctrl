@@ -24,8 +24,10 @@ from ..models import (
     DeviceManualState,
     Measurement,
     MeasurementChannel,
+    ReactorBuild,
     RecipeProgramState,
 )
+from ..process_targets import resolve_process_device_targets
 from .command_dispatcher import dispatch_device_command, is_runtime_interrupted_error
 from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_runtime import DeviceCommandError, describe_device_command_error, is_device_busy_error
@@ -41,6 +43,15 @@ _DUPLICATE_KEY_ERROR_CODES = {1062}
 _MANUAL_RECIPE_SEQUENCE_LOCK = threading.RLock()
 _MANUAL_CLAIM_PORT_ORDER_CACHE: dict[int, bool] = {}
 _UNCHANGED = object()
+
+# Cache for the flowsheet-wide device scope (see _active_flowsheet_device_ids
+# below).  Resolving it re-reads every Device row plus its channels/bindings,
+# which is too heavy to redo on every reconciler tick (every ~500 ms, or back
+# to back with no sleep at all while devices are being claimed).  Keyed by
+# reactor_build_id so a recipe change (new build) invalidates immediately.
+_FLOWSHEET_DEVICE_IDS_CACHE_TTL_SECONDS = 5.0
+_flowsheet_device_ids_cache: dict[int, tuple[float, frozenset[int]]] = {}
+_flowsheet_device_ids_last_logged: dict[int, frozenset[int]] = {}
 
 # In-memory live snapshot of the most recent scale telemetry, keyed by
 # device_id. This is the fast path for GET /manual-state: it is updated
@@ -352,6 +363,111 @@ def _active_recipe_program_device_ids() -> set[int] | None:
             continue
         if device_id > 0:
             device_ids.add(device_id)
+    return device_ids
+
+
+def _resolve_flowsheet_device_ids(reactor_build: ReactorBuild) -> set[int]:
+    """Resolve every measurable/controllable device on *reactor_build*.
+
+    Unlike a recipe's ``bindings`` (only the actors a recipe step actually
+    references), this covers every actuator and sensor node the flowsheet
+    resolves to a bound device — the full device scope that must keep being
+    polled for as long as this flowsheet is in use, independent of which
+    subset of it the running recipe happens to control.
+    """
+    targets = resolve_process_device_targets(reactor_build, categories={"actuators", "sensors"})
+    return {
+        int(target["device_id"])
+        for target in targets.values()
+        if target.get("is_resolved") and target.get("device_id") is not None
+    }
+
+
+def _active_flowsheet_device_ids() -> set[int] | None:
+    """Return the device scope for background polling while a recipe runs.
+
+    Returns ``None`` when no recipe is running (background polling then
+    covers every active supported device, as before).  When a recipe *is*
+    running, returns every device on the recipe's flowsheet that resolves to
+    an actuator or sensor — NOT just the devices the recipe steps happen to
+    bind (see ``_active_recipe_program_device_ids``). This is what keeps
+    flowsheet-only sensors (e.g. a scale with no recipe step) polled and
+    recorded for the full duration of the recipe: the recipe governs which
+    actuators receive setpoints, but it must never narrow which devices are
+    measured.
+    """
+    try:
+        state = db.session.get(RecipeProgramState, _RECIPE_PROGRAM_STATE_ID)
+    except Exception:
+        return None
+    if state is None or str(state.status or "").strip().lower() != _RECIPE_PROGRAM_RUNNING_STATUS:
+        return None
+
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    raw_reactor_build_id = snapshot.get("reactor_build_id")
+    try:
+        reactor_build_id = int(raw_reactor_build_id)
+    except (TypeError, ValueError):
+        reactor_build_id = None
+
+    if reactor_build_id is None:
+        LOGGER.warning(
+            "Active recipe program has no reactor_build_id in its snapshot; "
+            "falling back to recipe-only device scope for background polling."
+        )
+        return _active_recipe_program_device_ids()
+
+    now_monotonic = time.monotonic()
+    cached = _flowsheet_device_ids_cache.get(reactor_build_id)
+    if cached is not None and now_monotonic - cached[0] < _FLOWSHEET_DEVICE_IDS_CACHE_TTL_SECONDS:
+        return set(cached[1])
+
+    try:
+        reactor_build = db.session.get(ReactorBuild, reactor_build_id)
+        if reactor_build is None:
+            raise RuntimeError(f"ReactorBuild {reactor_build_id} could not be loaded.")
+        device_ids = _resolve_flowsheet_device_ids(reactor_build)
+    except Exception:
+        LOGGER.warning(
+            "Failed to resolve flowsheet device scope for reactor_build_id=%s; "
+            "falling back to recipe-only device scope for background polling.",
+            reactor_build_id,
+            exc_info=True,
+        )
+        return _active_recipe_program_device_ids()
+
+    if not device_ids:
+        # An empty flowsheet resolution is more likely a transient mapping
+        # problem than an intentionally device-less flowsheet — fall back
+        # rather than silently stop polling everything.
+        LOGGER.warning(
+            "Flowsheet for reactor_build_id=%s resolved zero measurable devices; "
+            "falling back to recipe-only device scope for background polling.",
+            reactor_build_id,
+        )
+        return _active_recipe_program_device_ids()
+
+    _flowsheet_device_ids_cache.clear()
+    frozen_device_ids = frozenset(device_ids)
+    _flowsheet_device_ids_cache[reactor_build_id] = (now_monotonic, frozen_device_ids)
+    if _flowsheet_device_ids_last_logged.get(reactor_build_id) != frozen_device_ids:
+        # Only log at INFO when the resolved scope actually changes (e.g. on
+        # recipe start, or if the flowsheet's device bindings change mid-run)
+        # so a long-running recipe does not spam the log every cache refresh.
+        _flowsheet_device_ids_last_logged.clear()
+        _flowsheet_device_ids_last_logged[reactor_build_id] = frozen_device_ids
+        LOGGER.info(
+            "Active flowsheet (reactor_build_id=%s) resolved %d measurable device(s) for background polling: %s",
+            reactor_build_id,
+            len(device_ids),
+            sorted(device_ids),
+        )
+    else:
+        LOGGER.debug(
+            "Active flowsheet (reactor_build_id=%s) device scope unchanged: %s",
+            reactor_build_id,
+            sorted(device_ids),
+        )
     return device_ids
 
 
@@ -1359,6 +1475,12 @@ def _persist_telemetry_as_measurements(
     for spec in specs:
         value = telemetry.get(spec["key"])
         if value is None:
+            LOGGER.debug(
+                "Telemetry value for channel_code=%r on device %s was None; "
+                "discarding this measurement (not persisted).",
+                spec["channel_code"],
+                device.device_id,
+            )
             continue
 
         channel = channels.get(spec["channel_code"])
@@ -1586,15 +1708,18 @@ def _ensure_manual_states_for_active_devices(app: Flask) -> None:
     concurrent Gunicorn worker inserting the same row does not roll back all
     other devices.
     """
-    active_recipe_device_ids = _active_recipe_program_device_ids()
+    # Scoped to the active flowsheet (not the recipe's device subset) so a
+    # flowsheet sensor with no recipe step still gets its DeviceManualState
+    # row and measurement channels seeded while a recipe is running.
+    active_flowsheet_device_ids = _active_flowsheet_device_ids()
     active_devices_query = db.session.query(Device).filter(
         Device.protocol.in_(_BACKGROUND_POLL_PROTOCOLS),
         Device.is_active.is_(True),
     )
-    if active_recipe_device_ids is not None:
-        if not active_recipe_device_ids:
+    if active_flowsheet_device_ids is not None:
+        if not active_flowsheet_device_ids:
             return
-        active_devices_query = active_devices_query.filter(Device.device_id.in_(active_recipe_device_ids))
+        active_devices_query = active_devices_query.filter(Device.device_id.in_(active_flowsheet_device_ids))
     active_devices = active_devices_query.all()
     seeded_states = 0
     seeded_channels = 0
@@ -1855,7 +1980,13 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     # Background telemetry cutoff: poll even without an active UI session.
     bg_cutoff = now - _background_poll_interval(app)
     scale_bg_cutoff = now - _scale_poll_interval(app)
-    active_recipe_device_ids = _active_recipe_program_device_ids()
+    # Device scope: while a recipe runs, this is every measurable device on
+    # its flowsheet (not just the devices the recipe's steps bind) — see
+    # _active_flowsheet_device_ids for why that distinction matters.
+    active_flowsheet_device_ids = _active_flowsheet_device_ids()
+    # Priority ordering only: devices the recipe is actively driving are
+    # serviced before other flowsheet devices, but never excluded from being
+    # polled at all.
     active_recipe_priority_order = _active_recipe_device_priority_order(now)
     include_port_order = _manual_claim_port_order_available()
     selected_columns = [
@@ -1897,7 +2028,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                             DeviceManualState.watch_expires_at.is_not(None),
                             DeviceManualState.watch_expires_at > now,
                         ),
-                        Device.device_id.in_(active_recipe_device_ids or []),
+                        Device.device_id.in_(active_flowsheet_device_ids or []),
                     ),
                     or_(
                         and_(
@@ -1929,15 +2060,19 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
             .outerjoin(DeviceBindingCurrent, DeviceBindingCurrent.device_id == DeviceManualState.device_id)
             .outerjoin(DeviceConnection, DeviceConnection.connection_id == DeviceBindingCurrent.connection_id)
         )
-    if active_recipe_device_ids is not None:
-        if not active_recipe_device_ids:
+    if active_flowsheet_device_ids is not None:
+        if not active_flowsheet_device_ids:
             return None
-        # Devices in an active recipe always take priority.  Non-recipe devices
-        # with an active UI watch are also allowed so their live telemetry
-        # continues to be stored even while the recipe program is running.
+        # While a recipe runs, background polling is scoped to the active
+        # flowsheet's devices (actuators AND sensors) rather than to the
+        # narrower set of devices the recipe's steps happen to bind.  This is
+        # what keeps a flowsheet-only sensor (e.g. a scale with no recipe
+        # step) polled and recorded for the whole duration of the recipe.
+        # Non-flowsheet devices with an active UI watch are also allowed so
+        # their live telemetry keeps flowing even while a recipe runs.
         candidate_query = candidate_query.filter(
             or_(
-                DeviceManualState.device_id.in_(active_recipe_device_ids),
+                DeviceManualState.device_id.in_(active_flowsheet_device_ids),
                 and_(
                     DeviceManualState.watch_expires_at.is_not(None),
                     DeviceManualState.watch_expires_at > now,
@@ -1963,7 +2098,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
         key=lambda row: _manual_claim_candidate_sort_key(
             row,
             active_recipe_priority_order=active_recipe_priority_order,
-            active_recipe=active_recipe_device_ids is not None,
+            active_recipe=active_flowsheet_device_ids is not None,
         ),
     )
 
