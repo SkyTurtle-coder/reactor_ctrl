@@ -22,14 +22,25 @@
     const programTitle = document.getElementById("process-program-title");
     const programSubtitle = document.getElementById("process-program-subtitle");
     const programStatusBadge = document.getElementById("process-program-status-badge");
+    const programStepCountBadge = document.getElementById("process-program-step-count-badge");
     const programStartButton = document.getElementById("process-program-start-button");
+    const programPauseButton = document.getElementById("process-program-pause-button");
+    const programResumeButton = document.getElementById("process-program-resume-button");
     const programStopButton = document.getElementById("process-program-stop-button");
-    const programRecipeName = document.getElementById("process-program-recipe-name");
     const programBuildName = document.getElementById("process-program-build-name");
+    const programStartedAtLabel = document.getElementById("process-program-started-at-label");
+    const programEstimatedEndLabel = document.getElementById("process-program-estimated-end-label");
     const programStepLabel = document.getElementById("process-program-step-label");
     const programTimeLabel = document.getElementById("process-program-time-label");
+    const programProgressBar = document.getElementById("process-program-progress-bar");
     const programProgressFill = document.getElementById("process-program-progress-fill");
     const programProgressLabel = document.getElementById("process-program-progress-label");
+    const programTotalFractionLabel = document.getElementById("process-program-total-fraction-label");
+    const programTotalProgressBar = document.getElementById("process-program-total-progress-bar");
+    const programTotalProgressFill = document.getElementById("process-program-total-progress-fill");
+    const programTotalStatusLabel = document.getElementById("process-program-total-status-label");
+    const programTotalRemainingLabel = document.getElementById("process-program-total-remaining-label");
+    const programLiveRegion = document.getElementById("process-program-live-region");
     const programTargetList = document.getElementById("process-program-target-list");
     const programStatus = document.getElementById("process-program-status");
     const programStopDialog = document.getElementById("process-program-stop-dialog");
@@ -73,6 +84,7 @@
     const MANUAL_LIVE_POLL_MS = 1500;
     const SCALE_STALE_AFTER_MS = 4000;
     const PROCESS_PROGRAM_POLL_MS = 1200;
+    const PROCESS_PROGRAM_TICK_MS = 1000;
     const PROCESS_PLOT_REFRESH_MS = 1000;
     const PROCESS_PLOT_ERROR_BACKOFF_MS = 15000;
     const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;
@@ -2193,6 +2205,9 @@
         if (normalized === "running") {
             return "badge-warning";
         }
+        if (normalized === "paused") {
+            return "badge-info";
+        }
         if (normalized === "completed") {
             return "badge-success";
         }
@@ -2258,6 +2273,227 @@
             .join("");
     }
 
+    // Every recipe step in this system has a fixed, known duration
+    // (delta_time, in minutes) - there is no condition-based step type
+    // (e.g. "wait until temperature reached"). The total/remaining/progress
+    // values below are therefore always exact, never an estimate. This is
+    // computed generically from the backend's recipe_* fields rather than
+    // hardcoded, so it keeps working if a step type without a fixed
+    // duration is ever introduced (the backend would then need to start
+    // setting recipe_duration_is_estimated, which this code already reads).
+    const PROCESS_TIME_ZONE = "Europe/Zurich";
+
+    function formatZurichDateTime(isoString) {
+        if (!isoString) {
+            return "-";
+        }
+        const parsed = new Date(isoString);
+        if (Number.isNaN(parsed.getTime())) {
+            return "-";
+        }
+        try {
+            return parsed.toLocaleString("en-GB", {
+                timeZone: PROCESS_TIME_ZONE,
+                day: "2-digit",
+                month: "2-digit",
+                year: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+            });
+        } catch (error) {
+            return parsed.toLocaleString();
+        }
+    }
+
+    function selectedRecipePlannedSeconds() {
+        const steps = Array.isArray(selectedRecipeData?.steps) ? selectedRecipeData.steps : [];
+        return steps.reduce((total, step) => total + Math.max(0, asNumber(step?.delta_time, 0)) * 60, 0);
+    }
+
+    function programElapsedSinceSyncSeconds() {
+        if (!state.programSyncedAt) {
+            return 0;
+        }
+        return Math.max(0, (Date.now() - state.programSyncedAt) / 1000);
+    }
+
+    // Pure calculation of every displayed step/recipe time value, given the
+    // last known server payload and how much wall-clock time has passed
+    // since it was fetched. Called both right after a poll (elapsed ~= 0)
+    // and every second from the local render tick (elapsed grows between
+    // polls) so the countdown is smooth without polling every second.
+    function programTimeSnapshot(program) {
+        const statusValue = asString(program?.status, "idle");
+        const isRunning = statusValue === "running";
+        const elapsedSinceSyncS = isRunning ? programElapsedSinceSyncSeconds() : 0;
+
+        const stepDurationSeconds = asNumber(program?.step_duration_seconds, 0);
+        const stepRemainingSeconds = isRunning
+            ? Math.max(0, asNumber(program?.step_remaining_seconds, 0) - elapsedSinceSyncS)
+            : Math.max(0, asNumber(program?.step_remaining_seconds, 0));
+        const stepElapsedSeconds = stepDurationSeconds > 0
+            ? clamp(stepDurationSeconds - stepRemainingSeconds, 0, stepDurationSeconds)
+            : 0;
+        const stepProgressPercent = stepDurationSeconds > 0
+            ? Math.round(clamp(stepElapsedSeconds / stepDurationSeconds, 0, 1) * 100)
+            : (statusValue === "completed" ? 100 : 0);
+
+        const usesFallbackPlannedTotal = !program || statusValue === "idle";
+        let recipeTotalSeconds = asNumber(program?.recipe_total_seconds, 0);
+        let recipeRemainingSeconds = Math.max(0, asNumber(program?.recipe_remaining_seconds, 0));
+        let recipeElapsedSeconds = Math.max(0, asNumber(program?.recipe_elapsed_seconds, 0));
+
+        if (usesFallbackPlannedTotal) {
+            // Nothing has ever run yet for this program row: fall back to
+            // the *selected* (not-yet-started) recipe's own planned total
+            // so "not started" still shows a duration instead of nothing.
+            recipeTotalSeconds = selectedRecipePlannedSeconds();
+            recipeRemainingSeconds = recipeTotalSeconds;
+            recipeElapsedSeconds = 0;
+        } else if (isRunning) {
+            recipeRemainingSeconds = Math.max(0, recipeRemainingSeconds - elapsedSinceSyncS);
+            recipeElapsedSeconds = recipeTotalSeconds > 0
+                ? clamp(recipeTotalSeconds - recipeRemainingSeconds, 0, recipeTotalSeconds)
+                : recipeElapsedSeconds + elapsedSinceSyncS;
+        }
+
+        const recipeTotalKnown = usesFallbackPlannedTotal ? recipeTotalSeconds > 0 : recipeTotalSeconds > 0 || statusValue === "completed";
+        const recipeProgressPercent = recipeTotalKnown
+            ? (recipeTotalSeconds > 0 ? Math.round(clamp(recipeElapsedSeconds / recipeTotalSeconds, 0, 1) * 100) : 100)
+            : null;
+
+        return {
+            statusValue,
+            isRunning,
+            usesFallbackPlannedTotal,
+            stepDurationSeconds,
+            stepElapsedSeconds,
+            stepRemainingSeconds,
+            stepProgressPercent,
+            recipeTotalSeconds,
+            recipeElapsedSeconds,
+            recipeRemainingSeconds,
+            recipeTotalKnown,
+            recipeProgressPercent,
+        };
+    }
+
+    function renderProgramTimeBlocks(program) {
+        if (!programCard) {
+            return;
+        }
+        const snapshot = programTimeSnapshot(program);
+        const { statusValue, isRunning, usesFallbackPlannedTotal } = snapshot;
+        const isPaused = statusValue === "paused";
+
+        if (programTimeLabel) {
+            programTimeLabel.textContent = (isRunning || isPaused)
+                ? `${formatDurationLabel(snapshot.stepElapsedSeconds)} / ${formatDurationLabel(snapshot.stepDurationSeconds)}`
+                : "-";
+        }
+        if (programProgressFill) {
+            programProgressFill.style.width = `${snapshot.stepProgressPercent}%`;
+        }
+        if (programProgressBar) {
+            programProgressBar.setAttribute("aria-valuenow", String(snapshot.stepProgressPercent));
+        }
+
+        if (programTotalFractionLabel) {
+            programTotalFractionLabel.textContent = snapshot.recipeTotalKnown
+                ? `${formatDurationLabel(snapshot.recipeElapsedSeconds)} / ${formatDurationLabel(snapshot.recipeTotalSeconds)}`
+                : "-";
+        }
+        if (programTotalProgressFill) {
+            programTotalProgressFill.style.width = `${snapshot.recipeProgressPercent ?? 0}%`;
+        }
+        if (programTotalProgressBar) {
+            programTotalProgressBar.setAttribute("aria-valuenow", String(snapshot.recipeProgressPercent ?? 0));
+        }
+
+        let totalStatusText;
+        let totalDetailText;
+        if (usesFallbackPlannedTotal) {
+            totalStatusText = "Total duration";
+            totalDetailText = snapshot.recipeTotalKnown ? formatDurationLabel(snapshot.recipeTotalSeconds) : "-";
+        } else if (isRunning) {
+            totalStatusText = "Total recipe";
+            totalDetailText = snapshot.recipeTotalKnown
+                ? `${formatDurationLabel(snapshot.recipeRemainingSeconds)} remaining`
+                : "Remaining time not determinable.";
+        } else if (isPaused) {
+            totalStatusText = "Paused";
+            totalDetailText = snapshot.recipeTotalKnown
+                ? `${formatDurationLabel(snapshot.recipeRemainingSeconds)} remaining`
+                : "Remaining time not determinable.";
+        } else if (statusValue === "completed") {
+            totalStatusText = "Recipe completed";
+            totalDetailText = `Total run time: ${formatDurationLabel(snapshot.recipeElapsedSeconds)}`;
+        } else if (statusValue === "stopped") {
+            totalStatusText = "Recipe aborted";
+            totalDetailText = `Run time until abort: ${formatDurationLabel(snapshot.recipeElapsedSeconds)}`;
+        } else if (statusValue === "error") {
+            totalStatusText = "Recipe stopped (error)";
+            totalDetailText = `Run time until stop: ${formatDurationLabel(snapshot.recipeElapsedSeconds)}`;
+        } else {
+            totalStatusText = "Total duration";
+            totalDetailText = snapshot.recipeTotalKnown ? formatDurationLabel(snapshot.recipeTotalSeconds) : "-";
+        }
+        if (programTotalStatusLabel) {
+            programTotalStatusLabel.textContent = totalStatusText;
+        }
+        if (programTotalRemainingLabel) {
+            programTotalRemainingLabel.textContent = totalDetailText;
+        }
+
+        if (programEstimatedEndLabel) {
+            programEstimatedEndLabel.textContent = (isRunning && program?.recipe_estimated_end_at)
+                ? formatZurichDateTime(program.recipe_estimated_end_at)
+                : "-";
+        }
+        if (programStartedAtLabel) {
+            programStartedAtLabel.textContent = program?.recipe_started_at
+                ? formatZurichDateTime(program.recipe_started_at)
+                : "-";
+        }
+    }
+
+    function announceProgramLiveRegion(program) {
+        if (!programLiveRegion) {
+            return;
+        }
+        const statusValue = asString(program?.status, "idle");
+        const stepIndex = program?.active_step_index ?? null;
+        const announceKey = `${statusValue}:${stepIndex}`;
+        if (state.programAnnouncedKey === announceKey) {
+            return;
+        }
+        state.programAnnouncedKey = announceKey;
+
+        if (statusValue === "paused") {
+            programLiveRegion.textContent = "Recipe program paused.";
+        } else if (statusValue === "running" && program?.active_step_number) {
+            programLiveRegion.textContent = `Step ${program.active_step_number} of ${program.total_steps || "?"} started.`;
+        } else if (statusValue === "completed") {
+            programLiveRegion.textContent = "Recipe program completed.";
+        } else if (statusValue === "stopped") {
+            programLiveRegion.textContent = "Recipe program stopped.";
+        } else if (statusValue === "error") {
+            programLiveRegion.textContent = "Recipe program ended with an error.";
+        } else {
+            programLiveRegion.textContent = "";
+        }
+    }
+
+    // Local 1 Hz render tick: recomputes the countdown/progress display from
+    // the last synced payload (see loadProcessProgram) without hitting the
+    // network. Keeps the countdown visually smooth between the ~1.2 s polls.
+    function tickProgramTimeDisplays() {
+        if (!programCard || programCard.hidden || document.hidden) {
+            return;
+        }
+        renderProgramTimeBlocks(state.programData);
+    }
+
     function navigateToProcessSelection(mode, selectedId) {
         const normalizedMode = mode === "recipe" ? "recipe" : "build";
         const params = new URLSearchParams();
@@ -2316,8 +2552,10 @@
         const selectedBuildName = asString(buildData?.build_name, "");
         const programStatusValue = asString(program?.status, "idle");
         const isProgramRunning = programStatusValue === "running";
-        const sameRecipeRunning = isProgramRunning && Number(program?.recipe_id) === state.selectedRecipeId;
-        const otherRecipeRunning = isProgramRunning && Number(program?.recipe_id) !== state.selectedRecipeId;
+        const isProgramPaused = programStatusValue === "paused";
+        const isProgramActive = isProgramRunning || isProgramPaused;
+        const sameRecipeActive = isProgramActive && Number(program?.recipe_id) === state.selectedRecipeId;
+        const otherRecipeActive = isProgramActive && Number(program?.recipe_id) !== state.selectedRecipeId;
 
         if (programTitle) {
             programTitle.textContent = summary?.title || "No recipe selected";
@@ -2331,9 +2569,6 @@
                 programSubtitle.textContent = "Select a recipe to load its flowsheet and start the program.";
             }
         }
-        if (programRecipeName) {
-            programRecipeName.textContent = summary?.title || "-";
-        }
         if (programBuildName) {
             programBuildName.textContent = selectedBuildName || "-";
         }
@@ -2341,9 +2576,17 @@
             programStatusBadge.textContent = programStatusValue;
             programStatusBadge.className = `badge ${programStatusBadgeClass(programStatusValue)}`;
         }
+        if (programStepCountBadge) {
+            const showStepCount = isProgramActive && program?.active_step_number && program?.total_steps;
+            programStepCountBadge.hidden = !showStepCount;
+            programStepCountBadge.classList.toggle("is-hidden", !showStepCount);
+            if (showStepCount) {
+                programStepCountBadge.textContent = `Step ${program.active_step_number} of ${program.total_steps}`;
+            }
+        }
 
         if (programStepLabel) {
-            if (isProgramRunning && program?.active_step_number) {
+            if (isProgramActive && program?.active_step_number) {
                 const task = asString(program?.active_step?.task, "");
                 const actor = formatProgramStepActors(program);
                 programStepLabel.textContent = `#${program.active_step_number}${task ? ` | ${task}` : actor ? ` | ${actor}` : ""}`;
@@ -2358,30 +2601,22 @@
             }
         }
 
-        if (programTimeLabel) {
-            programTimeLabel.textContent = isProgramRunning
-                ? formatDurationLabel(asNumber(program?.step_remaining_seconds, 0))
-                : "-";
-        }
-
-        if (programProgressFill) {
-            const progressPercent = isProgramRunning
-                ? Math.round(clamp(asNumber(program?.step_progress, 0), 0, 1) * 100)
-                : programStatusValue === "completed"
-                    ? 100
-                    : 0;
-            programProgressFill.style.width = `${progressPercent}%`;
-        }
+        renderProgramTimeBlocks(program);
+        announceProgramLiveRegion(program);
 
         if (programProgressLabel) {
-            if (sameRecipeRunning) {
+            if (isProgramPaused && Number(program?.recipe_id) === state.selectedRecipeId) {
+                programProgressLabel.textContent = "Paused.";
+            } else if (sameRecipeActive) {
                 const actor = formatProgramStepActors(program);
                 const task = asString(program?.active_step?.task, "");
                 programProgressLabel.textContent = task
                     ? `${task}${actor ? ` | ${actor}` : ""}`
                     : actor || "Recipe program running.";
-            } else if (otherRecipeRunning) {
-                programProgressLabel.textContent = `Another recipe is running: ${asString(program?.recipe_title, "active program")}.`;
+            } else if (otherRecipeActive) {
+                programProgressLabel.textContent = isProgramPaused
+                    ? `Another recipe is paused: ${asString(program?.recipe_title, "active program")}.`
+                    : `Another recipe is running: ${asString(program?.recipe_title, "active program")}.`;
             } else if (programStatusValue === "completed") {
                 programProgressLabel.textContent = "Program completed.";
             } else if (programStatusValue === "stopped") {
@@ -2395,11 +2630,15 @@
 
         renderProgramTargets(program);
 
-        if (sameRecipeRunning) {
+        if (isProgramPaused && Number(program?.recipe_id) === state.selectedRecipeId) {
+            setProgramStatus("Recipe program is paused. Resume to continue, or stop to abort the sequence.", "muted");
+        } else if (sameRecipeActive) {
             setProgramStatus("Recipe program is running. Stop it at any time if you need to abort the sequence.", "muted");
-        } else if (otherRecipeRunning) {
+        } else if (otherRecipeActive) {
             setProgramStatus(
-                `Another recipe program is currently running (${asString(program?.recipe_title, "active recipe")}). Stop it before starting a different one.`,
+                isProgramPaused
+                    ? `Another recipe program is currently paused (${asString(program?.recipe_title, "active recipe")}). Resume or stop it before starting a different one.`
+                    : `Another recipe program is currently running (${asString(program?.recipe_title, "active recipe")}). Stop it before starting a different one.`,
                 "error",
             );
         } else if (programStatusValue === "completed") {
@@ -2421,11 +2660,21 @@
                 !state.selectedRecipeId ||
                 !activeBuildId ||
                 state.isProgramBusy ||
-                sameRecipeRunning ||
-                otherRecipeRunning;
+                sameRecipeActive ||
+                otherRecipeActive;
+        }
+        if (programPauseButton) {
+            programPauseButton.hidden = isProgramPaused;
+            programPauseButton.classList.toggle("is-hidden", isProgramPaused);
+            programPauseButton.disabled = !isProgramRunning || state.isProgramBusy;
+        }
+        if (programResumeButton) {
+            programResumeButton.hidden = !isProgramPaused;
+            programResumeButton.classList.toggle("is-hidden", !isProgramPaused);
+            programResumeButton.disabled = !isProgramPaused || state.isProgramBusy;
         }
         if (programStopButton) {
-            programStopButton.disabled = !isProgramRunning || state.isProgramBusy;
+            programStopButton.disabled = !isProgramActive || state.isProgramBusy;
         }
     }
 
@@ -2454,6 +2703,7 @@
                 return;
             }
             state.programData = payload?.program || null;
+            state.programSyncedAt = Date.now();
             if (state.programData && asString(state.programData.status, "idle") === "running" && state.manualMode) {
                 setManualMode(false);
             }
@@ -2505,6 +2755,7 @@
                 }),
             });
             state.programData = payload?.program || null;
+            state.programSyncedAt = Date.now();
         } catch (error) {
             startError = error?.message || "Recipe program could not be started.";
         } finally {
@@ -2588,6 +2839,7 @@
             } else {
                 state.programData = normalizeStoppedProgramPayload(stoppedProgram);
             }
+            state.programSyncedAt = Date.now();
         } catch (error) {
             stopError = error?.message || "Recipe program could not be stopped.";
         } finally {
@@ -2599,6 +2851,84 @@
 
         if (stopError) {
             setProgramStatus(stopError, "error");
+        }
+    }
+
+    async function pauseActiveRecipeProgram() {
+        if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
+            setProgramStatus("No valid process token is available for this page.", "error");
+            return;
+        }
+
+        state.isProgramBusy = true;
+        updateProgramCard();
+        setProgramStatus("Pausing recipe program...", "muted");
+
+        const headers = { "Content-Type": "application/json" };
+        if (metaData.manualWriteToken) {
+            headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
+        }
+
+        let pauseError = null;
+        try {
+            const payload = await fetchJson("/api/process-program/pause", {
+                method: "POST",
+                headers,
+                timeoutMs: 12000,
+                body: JSON.stringify({ requested_by: "process_recipe" }),
+            });
+            state.programData = payload?.program || null;
+            state.programSyncedAt = Date.now();
+        } catch (error) {
+            pauseError = error?.message || "Recipe program could not be paused.";
+        } finally {
+            state.isProgramBusy = false;
+            updateProgramCard();
+            syncManualModeToggle();
+            renderNodes();
+        }
+
+        if (pauseError) {
+            setProgramStatus(pauseError, "error");
+        }
+    }
+
+    async function resumeActiveRecipeProgram() {
+        if (metaData.apiAuthRequired && !metaData.manualWriteToken) {
+            setProgramStatus("No valid process token is available for this page.", "error");
+            return;
+        }
+
+        state.isProgramBusy = true;
+        updateProgramCard();
+        setProgramStatus("Resuming recipe program...", "muted");
+
+        const headers = { "Content-Type": "application/json" };
+        if (metaData.manualWriteToken) {
+            headers["X-Process-Manual-Token"] = metaData.manualWriteToken;
+        }
+
+        let resumeError = null;
+        try {
+            const payload = await fetchJson("/api/process-program/resume", {
+                method: "POST",
+                headers,
+                timeoutMs: 12000,
+                body: JSON.stringify({ requested_by: "process_recipe" }),
+            });
+            state.programData = payload?.program || null;
+            state.programSyncedAt = Date.now();
+        } catch (error) {
+            resumeError = error?.message || "Recipe program could not be resumed.";
+        } finally {
+            state.isProgramBusy = false;
+            updateProgramCard();
+            syncManualModeToggle();
+            renderNodes();
+        }
+
+        if (resumeError) {
+            setProgramStatus(resumeError, "error");
         }
     }
 
@@ -3634,6 +3964,8 @@
         isProgramBusy: false,
         isProgramPolling: false,
         programPollRequestId: 0,
+        programSyncedAt: 0,
+        programAnnouncedKey: "",
     };
 
     if (state.selectedNodeId) {
@@ -3975,6 +4307,14 @@
         void startSelectedRecipeProgram();
     });
 
+    programPauseButton?.addEventListener("click", () => {
+        void pauseActiveRecipeProgram();
+    });
+
+    programResumeButton?.addEventListener("click", () => {
+        void resumeActiveRecipeProgram();
+    });
+
     programStopButton?.addEventListener("click", () => {
         void stopActiveRecipeProgram();
     });
@@ -4036,6 +4376,13 @@
         }
         void loadProcessProgram({ quiet: true });
     }, PROCESS_PROGRAM_POLL_MS);
+
+    // Local, network-free render tick: keeps the step/recipe countdown and
+    // progress bars visually smooth at 1 Hz between the ~1.2 s server polls
+    // above. It only re-derives numbers from the last synced payload
+    // (programTimeSnapshot) and never fetches — loadProcessProgram remains
+    // the single source of truth/synchronization point.
+    window.setInterval(tickProgramTimeDisplays, PROCESS_PROGRAM_TICK_MS);
 
     if (manualToggleButton) {
         manualToggleButton.setAttribute("aria-pressed", String(state.manualMode));

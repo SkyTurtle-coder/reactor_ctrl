@@ -43,9 +43,11 @@ from .services import (
     list_supported_protocol_options,
     list_supported_protocols,
     manual_state_to_dict,
+    pause_recipe_program,
     probe_tcp_socket,
     queue_manual_state_update,
     recipe_program_state_to_dict,
+    resume_recipe_program,
     start_recipe_program,
     stop_recipe_program,
     wait_for_manual_state_refresh,
@@ -214,7 +216,7 @@ def _is_process_manual_request() -> bool:
     if request.method != "POST":
         return False
     path = request.path.rstrip("/")
-    return re.fullmatch(r"/api/(devices/\d+/(commands|manual-state)|process-program/(start|stop))", path) is not None
+    return re.fullmatch(r"/api/(devices/\d+/(commands|manual-state)|process-program/(start|stop|pause|resume))", path) is not None
 
 
 def _is_recipe_write_request() -> bool:
@@ -2943,3 +2945,45 @@ def stop_process_program():
     if not ok:
         return error_response
     return jsonify({"program": recipe_program_state_to_dict(item)}), 202
+
+
+@api_bp.post("/process-program/pause")
+def pause_process_program():
+    try:
+        body = _load_json_payload()
+        requested_by = _normalize_requested_by(body.get("requested_by"), default="process_recipe")
+        if _extract_process_manual_token() is not None:
+            requested_by = "process_recipe"
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    try:
+        item = pause_recipe_program(current_app, requested_by=requested_by)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify({"program": recipe_program_state_to_dict(item)})
+
+
+@api_bp.post("/process-program/resume")
+def resume_process_program():
+    try:
+        body = _load_json_payload()
+        requested_by = _normalize_requested_by(body.get("requested_by"), default="process_recipe")
+        if _extract_process_manual_token() is not None:
+            requested_by = "process_recipe"
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    try:
+        item = resume_recipe_program(current_app, requested_by=requested_by)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    ok, error_response = _commit()
+    if not ok:
+        return error_response
+    return jsonify({"program": recipe_program_state_to_dict(item)})

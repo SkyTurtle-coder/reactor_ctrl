@@ -661,12 +661,21 @@ html[data-theme="dark"] .brand-logo {
 .process-program-card-copy {
     display: grid;
     gap: 0.3rem;
+    min-width: 0;
+}
+
+.process-program-title-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
 }
 
 .process-program-card-title {
     margin: 0;
     font-size: 1.35rem;
     line-height: 1.08;
+    overflow-wrap: anywhere;
 }
 
 .process-program-card-text {
@@ -718,9 +727,45 @@ html[data-theme="dark"] .brand-logo {
     text-transform: uppercase;
 }
 
-.process-program-progress-block {
+.process-program-time-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    align-items: start;
+}
+
+.process-program-time-block {
     display: grid;
     gap: 0.45rem;
+    min-width: 0;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+}
+
+.process-program-time-block-total {
+    border-color: rgba(37, 99, 235, 0.28);
+}
+
+.process-program-time-block-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.process-program-time-block-label {
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.process-program-time-block-header strong {
+    overflow-wrap: anywhere;
+    text-align: right;
 }
 
 .process-program-progress-bar {
@@ -740,6 +785,10 @@ html[data-theme="dark"] .brand-logo {
     transition: width 220ms ease;
 }
 
+.process-program-progress-bar-total .process-program-progress-fill {
+    background: linear-gradient(90deg, #60a5fa, #2563eb);
+}
+
 .process-program-progress-meta {
     display: flex;
     align-items: center;
@@ -747,6 +796,21 @@ html[data-theme="dark"] .brand-logo {
     gap: 0.75rem;
     color: var(--muted);
     font-size: 0.9rem;
+}
+
+.process-program-details {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    padding: 0 0.85rem;
+}
+
+.process-program-details-summary {
+    padding: 0.6rem 0;
+}
+
+.process-program-details .ui-collapsible-panel-inner {
+    padding-bottom: 0.85rem;
 }
 
 .process-program-targets {
@@ -1348,6 +1412,16 @@ h2 {
     grid-template-columns: minmax(0, 1fr);
     gap: 1rem;
     align-items: start;
+}
+
+/* A grid item's automatic minimum size is based on its content's
+   min-content size unless overridden - without this, a flowsheet canvas
+   wider than the viewport (process-flowsheet-surface) pushes the whole
+   page wider instead of scrolling within process-flowsheet-wrap's own
+   overflow:auto, causing a page-level horizontal scrollbar on narrow
+   screens regardless of grid-template-columns: minmax(0, 1fr) above. */
+.process-viewer-card {
+    min-width: 0;
 }
 
 .process-plot-panel + .process-manual-card,
@@ -2683,6 +2757,20 @@ kbd {
     display: none !important;
 }
 
+/* Visible to screen readers (e.g. an aria-live status region) without
+   taking up layout space or being visible on screen. */
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
 .error-text {
     color: var(--danger);
 }
@@ -2728,6 +2816,8 @@ html[data-theme="dark"] .card,
 html[data-theme="dark"] .process-toolbar,
 html[data-theme="dark"] .process-source-toggle,
 html[data-theme="dark"] .process-program-meta-item,
+html[data-theme="dark"] .process-program-time-block,
+html[data-theme="dark"] .process-program-details,
 html[data-theme="dark"] .process-program-target-chip,
 html[data-theme="dark"] .process-plot-selector-card,
 html[data-theme="dark"] .process-plot-chart-card,
@@ -3033,6 +3123,10 @@ html[data-theme="dark"] textarea {
     .process-toolbar-brand,
     .process-program-toolbar {
         justify-content: flex-start;
+    }
+
+    .process-program-time-grid {
+        grid-template-columns: 1fr;
     }
 
     .process-header,

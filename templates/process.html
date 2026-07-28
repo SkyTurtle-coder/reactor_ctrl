@@ -94,10 +94,13 @@
 <section class="card process-program-card" id="process-program-card" {% if process_selection_mode != 'recipe' %}hidden{% endif %}>
     <div class="card-header process-program-card-header">
         <div class="process-program-card-copy">
-            <span class="section-label">Recipe Program</span>
-            <h2 class="process-program-card-title" id="process-program-title">
-                {{ selected_recipe.title if selected_recipe else "No recipe selected" }}
-            </h2>
+            <div class="process-program-title-row">
+                <h2 class="process-program-card-title" id="process-program-title">
+                    {{ selected_recipe.title if selected_recipe else "No recipe selected" }}
+                </h2>
+                <span class="badge badge-muted" id="process-program-status-badge">idle</span>
+                <span class="badge badge-muted is-hidden" id="process-program-step-count-badge"></span>
+            </div>
             <p class="process-program-card-text" id="process-program-subtitle">
                 {% if selected_build %}
                 Flowsheet: {{ selected_build.build_name }}
@@ -107,13 +110,14 @@
             </p>
         </div>
         <div class="process-program-toolbar">
-            <span class="badge badge-muted" id="process-program-status-badge">idle</span>
             <button
                 class="btn btn-primary"
                 id="process-program-start-button"
                 type="button"
                 {% if not selected_recipe or not selected_build %}disabled{% endif %}
             >Start Program</button>
+            <button class="btn" id="process-program-pause-button" type="button" disabled>Pause</button>
+            <button class="btn btn-primary is-hidden" id="process-program-resume-button" type="button" disabled>Resume</button>
             <button class="btn" id="process-program-stop-button" type="button" disabled>Stop Program</button>
         </div>
     </div>
@@ -121,33 +125,80 @@
     <p id="process-program-status" class="process-program-status-text muted" aria-live="polite"></p>
 
     <div class="card-body process-program-body">
-        <div class="process-program-grid">
-            <div class="process-program-meta-item">
-                <span class="process-program-meta-label">Recipe</span>
-                <strong id="process-program-recipe-name">{{ selected_recipe.title if selected_recipe else "-" }}</strong>
-            </div>
-            <div class="process-program-meta-item">
-                <span class="process-program-meta-label">Flowsheet</span>
-                <strong id="process-program-build-name">{{ selected_build.build_name if selected_build else "-" }}</strong>
-            </div>
-            <div class="process-program-meta-item">
-                <span class="process-program-meta-label">Current Step</span>
-                <strong id="process-program-step-label">-</strong>
-            </div>
-            <div class="process-program-meta-item">
-                <span class="process-program-meta-label">Remaining</span>
-                <strong id="process-program-time-label">-</strong>
-            </div>
+        <div class="process-program-time-grid">
+            <section class="process-program-time-block" id="process-program-step-block">
+                <div class="process-program-time-block-header">
+                    <span class="process-program-time-block-label">Current Step</span>
+                    <strong id="process-program-step-label">-</strong>
+                </div>
+                <div
+                    class="process-program-progress-bar"
+                    id="process-program-progress-bar"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                    aria-label="Current step progress"
+                >
+                    <span class="process-program-progress-fill" id="process-program-progress-fill"></span>
+                </div>
+                <div class="process-program-progress-meta">
+                    <span id="process-program-progress-label">Ready to start.</span>
+                    <span id="process-program-time-label">-</span>
+                </div>
+            </section>
+
+            <section class="process-program-time-block process-program-time-block-total" id="process-program-total-block">
+                <div class="process-program-time-block-header">
+                    <span class="process-program-time-block-label">Total Recipe</span>
+                    <strong id="process-program-total-fraction-label">-</strong>
+                </div>
+                <div
+                    class="process-program-progress-bar process-program-progress-bar-total"
+                    id="process-program-total-progress-bar"
+                    role="progressbar"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow="0"
+                    aria-label="Overall recipe progress"
+                >
+                    <span class="process-program-progress-fill" id="process-program-total-progress-fill"></span>
+                </div>
+                <div class="process-program-progress-meta">
+                    <span id="process-program-total-status-label">Ready to start.</span>
+                    <span id="process-program-total-remaining-label">-</span>
+                </div>
+            </section>
         </div>
 
-        <div class="process-program-progress-block">
-            <div class="process-program-progress-bar" aria-hidden="true">
-                <span class="process-program-progress-fill" id="process-program-progress-fill"></span>
+        <p class="visually-hidden" id="process-program-live-region" aria-live="polite"></p>
+
+        <details class="process-program-details ui-collapsible-details" id="process-program-details">
+            <summary class="process-program-details-summary ui-collapsible-summary">
+                <span class="section-label">Details</span>
+                <span class="ui-collapsible-chevron" aria-hidden="true">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M8 2L4 6L8 10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </span>
+            </summary>
+            <div class="ui-collapsible-panel">
+                <div class="process-program-grid ui-collapsible-panel-inner">
+                    <div class="process-program-meta-item">
+                        <span class="process-program-meta-label">Flowsheet</span>
+                        <strong id="process-program-build-name">{{ selected_build.build_name if selected_build else "-" }}</strong>
+                    </div>
+                    <div class="process-program-meta-item">
+                        <span class="process-program-meta-label">Started</span>
+                        <strong id="process-program-started-at-label">-</strong>
+                    </div>
+                    <div class="process-program-meta-item">
+                        <span class="process-program-meta-label">Expected end</span>
+                        <strong id="process-program-estimated-end-label">-</strong>
+                    </div>
+                </div>
             </div>
-            <div class="process-program-progress-meta">
-                <span id="process-program-progress-label">Ready to start.</span>
-            </div>
-        </div>
+        </details>
 
         <section class="process-program-targets">
             <div class="process-program-targets-header">

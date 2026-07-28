@@ -142,6 +142,7 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                         finished_at TEXT,
                         last_progress_at TEXT,
                         stop_requested INTEGER NOT NULL DEFAULT 0,
+                        paused_at TEXT,
                         last_error TEXT,
                         lease_owner TEXT,
                         lease_expires_at TEXT,

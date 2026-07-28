@@ -357,6 +357,7 @@ CREATE TABLE IF NOT EXISTS recipe_program_state (
   finished_at DATETIME(3) NULL,
   last_progress_at DATETIME(3) NULL,
   stop_requested TINYINT(1) NOT NULL DEFAULT 0,
+  paused_at DATETIME(3) NULL,
   last_error TEXT NULL,
   lease_owner VARCHAR(64) NULL,
   lease_expires_at DATETIME(3) NULL,
@@ -367,6 +368,7 @@ CREATE TABLE IF NOT EXISTS recipe_program_state (
   KEY idx_recipe_program_state_recipe (recipe_id),
   KEY idx_recipe_program_state_build (reactor_build_id),
   KEY idx_recipe_program_state_lease (lease_expires_at),
+  KEY idx_recipe_program_state_paused_at (paused_at),
   CONSTRAINT fk_recipe_program_state_recipe
     FOREIGN KEY (recipe_id) REFERENCES recipe (recipe_id)
     ON UPDATE CASCADE

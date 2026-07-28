@@ -30,6 +30,7 @@ class RecipeProgramState(db.Model):
     finished_at = db.Column(db.DateTime(timezone=True))
     last_progress_at = db.Column(db.DateTime(timezone=True))
     stop_requested = db.Column(db.Boolean, nullable=False, server_default=db.text("0"))
+    paused_at = db.Column(db.DateTime(timezone=True), index=True)
     last_error = db.Column(db.Text)
     lease_owner = db.Column(db.String(64), index=True)
     lease_expires_at = db.Column(db.DateTime(timezone=True), index=True)

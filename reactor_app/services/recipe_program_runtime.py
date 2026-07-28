@@ -40,6 +40,7 @@ from .runtime_status import RuntimeStatus
 _WORKER_EXTENSION_KEY = "recipe_program_reconciler_thread"
 _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
+_STATUS_PAUSED = "paused"
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
 
@@ -485,6 +486,21 @@ def _evaluate_program_timeline(
     segment_started_at = _as_utc_datetime(step_started_at) or current_time
     index = max(0, int(active_step_index or 0))
 
+    # Every recipe step in the current data model has a fixed, known
+    # delta_time (minutes) — there is no condition-based ("wait until
+    # temperature reached") step type. Total planned duration is therefore
+    # always exactly the sum of each step's planned duration, and — because
+    # the reconciler only ever advances a step once its full planned
+    # duration has elapsed (see the loop below) — "planned time" and
+    # "actual elapsed time" are identical by construction for every fully
+    # completed step. elapsed_planned_seconds tracks that running sum so
+    # callers can derive recipe-wide elapsed/remaining time without
+    # re-deriving it from wall-clock timestamps (which would have to
+    # separately account for paused intervals).
+    step_durations = [max(0.0, round(float(step.get("delta_time") or 0.0) * 60.0, 3)) for step in normalized_steps]
+    total_planned_seconds = round(sum(step_durations), 3)
+    elapsed_planned_seconds = round(sum(step_durations[:index]), 3)
+
     previous_targets: dict[str, dict[str, float]] = {}
     for completed_step in normalized_steps[:index]:
         previous_targets = _step_actor_target(previous_targets, completed_step)
@@ -493,7 +509,7 @@ def _evaluate_program_timeline(
         step = normalized_steps[index]
         next_targets = _step_actor_target(previous_targets, step)
         actors = [actor for actor in _step_actor_ids(step) if actor in next_targets or actor in previous_targets]
-        duration_seconds = max(0.0, round(float(step.get("delta_time") or 0.0) * 60.0, 3))
+        duration_seconds = step_durations[index]
         elapsed_seconds = max(0.0, (current_time - segment_started_at).total_seconds())
 
         if duration_seconds <= 0:
@@ -518,9 +534,12 @@ def _evaluate_program_timeline(
                 "target_targets": next_targets,
                 "current_targets": current_targets,
                 "total_steps": len(normalized_steps),
+                "total_planned_seconds": total_planned_seconds,
+                "elapsed_planned_seconds": round(elapsed_planned_seconds + elapsed_seconds, 3),
             }
 
         previous_targets = next_targets
+        elapsed_planned_seconds = round(elapsed_planned_seconds + duration_seconds, 3)
         index += 1
         segment_started_at = segment_started_at + timedelta(seconds=duration_seconds)
 
@@ -538,6 +557,8 @@ def _evaluate_program_timeline(
         "target_targets": previous_targets,
         "current_targets": previous_targets,
         "total_steps": len(normalized_steps),
+        "total_planned_seconds": total_planned_seconds,
+        "elapsed_planned_seconds": total_planned_seconds,
     }
 
 
@@ -873,6 +894,7 @@ def _default_program_payload() -> dict[str, Any]:
         "last_progress_at": None,
         "last_error": "",
         "stop_requested": False,
+        "paused_at": None,
         "total_steps": 0,
         "active_step_index": None,
         "active_step_number": None,
@@ -885,6 +907,13 @@ def _default_program_payload() -> dict[str, Any]:
         "step_progress": 0.0,
         "current_targets": [],
         "bindings": [],
+        "recipe_started_at": None,
+        "recipe_total_seconds": 0.0,
+        "recipe_elapsed_seconds": 0.0,
+        "recipe_remaining_seconds": 0.0,
+        "recipe_progress_percent": None,
+        "recipe_estimated_end_at": None,
+        "recipe_duration_is_estimated": False,
     }
 
 
@@ -1031,6 +1060,28 @@ def _evaluation_payload(
     return payload
 
 
+def _effective_evaluation_now(state: RecipeProgramState, *, now: datetime | None = None) -> datetime:
+    """Return the timestamp the timeline should be evaluated "as of".
+
+    While the program is paused or has already reached a terminal status,
+    the timeline must not keep advancing just because real wall-clock time
+    keeps passing — it needs to be frozen at the moment the program actually
+    stopped progressing (paused_at / finished_at), otherwise every derived
+    step/recipe time and progress value would keep drifting after the fact.
+    """
+    current = _as_utc_datetime(now) or _now_utc()
+    status = str(state.status or "").strip().lower()
+    if status == _STATUS_PAUSED:
+        paused_at = _as_utc_datetime(state.paused_at)
+        if paused_at is not None:
+            return paused_at
+    if status in _TERMINAL_STATUSES:
+        finished_at = _as_utc_datetime(state.finished_at)
+        if finished_at is not None:
+            return finished_at
+    return current
+
+
 def _evaluate_state_snapshot(state: RecipeProgramState, *, now: datetime | None = None) -> dict[str, Any]:
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     steps = snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else []
@@ -1038,8 +1089,59 @@ def _evaluate_state_snapshot(state: RecipeProgramState, *, now: datetime | None 
         steps,
         active_step_index=int(state.active_step_index or 0),
         step_started_at=state.step_started_at,
-        now=now or _now_utc(),
+        now=_effective_evaluation_now(state, now=now),
     )
+
+
+def _recipe_total_time_payload(
+    item: RecipeProgramState,
+    evaluation: dict[str, Any],
+    *,
+    status: str,
+    effective_now: datetime,
+) -> dict[str, Any]:
+    """Compute the recipe-wide (not just current-step) time/progress fields.
+
+    Every step in the current recipe data model carries a fixed, known
+    delta_time — there is no condition-based step type (temperature/weight
+    reached, user confirmation, ...) in this engine today — so the total
+    duration is always exactly known and recipe_duration_is_estimated is
+    always False. This is computed generically (from the timeline's
+    total_planned_seconds/elapsed_planned_seconds) rather than hardcoded, so
+    it keeps working correctly if the step model ever changes.
+    """
+    total_seconds = max(0.0, float(evaluation.get("total_planned_seconds") or 0.0))
+    if status == "completed":
+        elapsed_seconds = total_seconds
+    else:
+        elapsed_seconds = max(0.0, float(evaluation.get("elapsed_planned_seconds") or 0.0))
+    if total_seconds > 0:
+        elapsed_seconds = min(elapsed_seconds, total_seconds)
+    remaining_seconds = max(0.0, total_seconds - elapsed_seconds)
+
+    if total_seconds > 0:
+        progress_percent = round(max(0.0, min(1.0, elapsed_seconds / total_seconds)) * 100.0, 2)
+    elif status == "completed":
+        progress_percent = 100.0
+    else:
+        # Nothing planned (e.g. an empty recipe) and not completed: a percent
+        # value here would be meaningless rather than merely imprecise.
+        progress_percent = None
+
+    estimated_end_at = None
+    if status == _LEASE_STATUS_RUNNING and total_seconds > 0:
+        estimated_end_at = effective_now + timedelta(seconds=remaining_seconds)
+
+    return {
+        "recipe_started_at": _datetime_isoformat(item.started_at),
+        "recipe_total_seconds": round(total_seconds, 3),
+        "recipe_elapsed_seconds": round(elapsed_seconds, 3),
+        "recipe_remaining_seconds": round(remaining_seconds, 3),
+        "recipe_progress_percent": progress_percent,
+        "recipe_estimated_end_at": _datetime_isoformat(estimated_end_at),
+        "recipe_duration_is_estimated": False,
+        "paused_at": _datetime_isoformat(item.paused_at) if status == _STATUS_PAUSED else None,
+    }
 
 
 def _find_open_program_run() -> RecipeProgramRun | None:
@@ -1152,13 +1254,17 @@ def recipe_program_state_to_dict(item: RecipeProgramState | None) -> dict[str, A
     payload["bindings"] = deepcopy(snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else [])
 
     steps = snapshot.get("steps") if isinstance(snapshot.get("steps"), list) else []
+    effective_now = _effective_evaluation_now(item)
     evaluation = _evaluate_program_timeline(
         steps,
         active_step_index=int(item.active_step_index or 0),
         step_started_at=item.step_started_at,
-        now=_now_utc(),
+        now=effective_now,
     )
     payload["total_steps"] = int(evaluation.get("total_steps") or 0)
+    payload.update(
+        _recipe_total_time_payload(item, evaluation, status=payload["status"], effective_now=effective_now)
+    )
 
     if payload["status"] in _TERMINAL_STATUSES:
         payload["active_step_index"] = None
@@ -1244,8 +1350,11 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
         pass
 
     state = _ensure_program_state()
-    if str(state.status or "") == _LEASE_STATUS_RUNNING:
+    current_status = str(state.status or "").strip().lower()
+    if current_status == _LEASE_STATUS_RUNNING:
         raise ValueError("Another recipe program is already running. Stop it before starting a new one.")
+    if current_status == _STATUS_PAUSED:
+        raise ValueError("Another recipe program is paused. Resume or stop it before starting a new one.")
 
     now = _now_utc()
     initial_evaluation = _evaluate_program_timeline(
@@ -1752,6 +1861,105 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
                 "error": error_message,
                 "applied_targets": _applied_targets_payload(safe_targets),
             } if error_message else {"applied_targets": _applied_targets_payload(safe_targets)},
+        )
+    db.session.flush()
+    return state
+
+
+def _lock_program_state_row_for_update() -> None:
+    """Best-effort row lock mirroring start_recipe_program's TOCTOU guard.
+
+    Without this, two concurrent pause/resume requests (or a pause racing a
+    resume) could both read the same pre-transition status and both proceed.
+    """
+    try:
+        dialect = str(getattr(getattr(db.session, "get_bind", lambda: None)(), "dialect", None) or "")
+        if "mysql" in str(dialect).lower() or "mariadb" in str(dialect).lower():
+            db.session.execute(
+                text(
+                    "SELECT recipe_program_state_id FROM recipe_program_state "
+                    "WHERE recipe_program_state_id = :sid FOR UPDATE"
+                ),
+                {"sid": _PROGRAM_STATE_ID},
+            )
+    except Exception:
+        pass
+
+
+def pause_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
+    """Pause a running recipe program.
+
+    Pausing only changes recipe_program_state.status/paused_at. It does not
+    touch device commands, the safe-state, or any queue/lock — the
+    reconciler's own claim query only ever picks up rows with
+    status == 'running' (see _claim_program_state), so setting status to
+    'paused' is by itself enough to make it stop advancing the step
+    timeline and stop applying new targets from the next tick onward.
+    Actuators are left exactly as they were last commanded; nothing is
+    cancelled or reset to a safe state, so resuming can continue seamlessly.
+    """
+    app.logger.info("Recipe program pause requested by '%s'.", requested_by)
+    _lock_program_state_row_for_update()
+
+    state = _ensure_program_state()
+    if str(state.status or "").strip().lower() != _LEASE_STATUS_RUNNING:
+        raise ValueError("The recipe program is not running.")
+
+    now = _now_utc()
+    run = _ensure_open_program_run(state)
+    state.status = _STATUS_PAUSED
+    state.paused_at = now
+    state.requested_by = requested_by
+    state.last_progress_at = now
+    # Release the lease immediately: an in-flight reconciler tick re-checks
+    # lease_owner/status right before applying targets or advancing the step
+    # index (_program_claim_allows_target_application), so clearing it here
+    # makes that tick safely no-op instead of racing this transition.
+    state.lease_owner = None
+    state.lease_expires_at = None
+    if run is not None:
+        run.status = _STATUS_PAUSED
+        run.last_progress_at = now
+        _record_program_event(run, "paused", state=state, evaluation=_evaluate_state_snapshot(state, now=now))
+    db.session.flush()
+    return state
+
+
+def resume_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
+    """Resume a paused recipe program from exactly where it left off.
+
+    Shifts step_started_at forward by the time spent paused so that the
+    paused interval is not counted as elapsed step (or recipe) time — the
+    same mechanism _evaluate_program_timeline already uses when a step
+    completes and the next one's clock starts from an offset time.
+    """
+    app.logger.info("Recipe program resume requested by '%s'.", requested_by)
+    _lock_program_state_row_for_update()
+
+    state = _ensure_program_state()
+    if str(state.status or "").strip().lower() != _STATUS_PAUSED:
+        raise ValueError("The recipe program is not paused.")
+
+    now = _now_utc()
+    paused_at = _as_utc_datetime(state.paused_at) or now
+    pause_duration_seconds = max(0.0, (now - paused_at).total_seconds())
+    step_started_at = _as_utc_datetime(state.step_started_at)
+    if step_started_at is not None:
+        state.step_started_at = step_started_at + timedelta(seconds=pause_duration_seconds)
+    state.paused_at = None
+    state.status = _LEASE_STATUS_RUNNING
+    state.requested_by = requested_by
+    state.last_progress_at = now
+    run = _ensure_open_program_run(state)
+    if run is not None:
+        run.status = _LEASE_STATUS_RUNNING
+        run.last_progress_at = now
+        _record_program_event(
+            run,
+            "resumed",
+            state=state,
+            evaluation=_evaluate_state_snapshot(state, now=now),
+            payload={"paused_seconds": round(pause_duration_seconds, 3)},
         )
     db.session.flush()
     return state

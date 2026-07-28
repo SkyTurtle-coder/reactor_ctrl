@@ -255,10 +255,12 @@ class ProcessViewTemplateTests(unittest.TestCase):
 
         self.assertIn('@api_bp.get("/devices/<int:device_id>/manual-state")', source)
         self.assertIn('@api_bp.post("/devices/<int:device_id>/manual-state")', source)
-        self.assertIn('process-program/(start|stop)', source)
+        self.assertIn('process-program/(start|stop|pause|resume)', source)
         self.assertIn('@api_bp.get("/process-program")', source)
         self.assertIn('@api_bp.post("/process-program/start")', source)
         self.assertIn('@api_bp.post("/process-program/stop")', source)
+        self.assertIn('@api_bp.post("/process-program/pause")', source)
+        self.assertIn('@api_bp.post("/process-program/resume")', source)
 
     def test_process_view_server_adds_expected_ika_measurement_channels(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "web.py").read_text(encoding="utf-8")
