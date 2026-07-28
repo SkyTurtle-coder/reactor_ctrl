@@ -121,6 +121,11 @@ _OPTIONAL_COLUMN_SPECS: tuple[tuple[str, str, str], ...] = (
         "cancel_requested_at",
         "DATETIME(3) NULL",
     ),
+    (
+        "recipe_program_state",
+        "paused_at",
+        "DATETIME(3) NULL",
+    ),
 )
 
 _ACTIVITY_LOG_INDEX_SPECS = (
