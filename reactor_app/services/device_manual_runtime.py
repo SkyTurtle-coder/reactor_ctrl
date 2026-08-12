@@ -73,7 +73,7 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "actual_rpm",   "channel_code": "ika_actual_rpm",   "display_name": "Actual RPM",   "unit": "rpm"},
     {"key": "torque_ncm",   "channel_code": "ika_torque_ncm",   "display_name": "Torque",        "unit": "Ncm"},
 )
-_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230"}
+_HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_ministat_cc"}
 _SCALE_PROTOCOLS = {"mettler_toledo_ics435", "ics435_mtsics"}
 _BACKGROUND_POLL_PROTOCOLS = ("ika_eurostar_60", *_HUBER_PROTOCOLS, *_SCALE_PROTOCOLS)
 # Background polling must finish well within the execution_timeout_s for POLLING
@@ -87,6 +87,7 @@ _BACKGROUND_POLL_PROTOCOLS = ("ika_eurostar_60", *_HUBER_PROTOCOLS, *_SCALE_PROT
 # Pathological all-timeout cases are bounded by the POLLING execution_timeout_s
 # (10 s) via the CancellationToken rather than by the per-query timeout.
 _CC230_POLL_RESPONSE_TIMEOUT_MS = 2500
+_MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS = 1200
 _UNISTAT_POLL_RESPONSE_TIMEOUT_MS = 800
 _HUBER_TELEMETRY_CHANNELS: tuple[dict, ...] = (
     {"key": "setpoint_C", "channel_code": "setpoint_C", "display_name": "Setpoint", "unit": "degC"},
@@ -336,6 +337,10 @@ def _is_huber_device(device: Device | None) -> bool:
 
 def _is_cc230_device(device: Device | None) -> bool:
     return str(getattr(device, "protocol", "") or "").strip().lower() == "huber_cc230"
+
+
+def _is_ministat_cc_device(device: Device | None) -> bool:
+    return str(getattr(device, "protocol", "") or "").strip().lower() == "huber_ministat_cc"
 
 
 def _is_scale_device(device: Device | None) -> bool:
@@ -1125,6 +1130,8 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
         # The driver still performs short fallback reads internally, but we avoid
         # five separate queue/lock/DB round-trips for a single telemetry refresh.
         poll_payload = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
+    elif _is_ministat_cc_device(device):
+        poll_payload = {"response_timeout_ms": _MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS}
     else:
         poll_payload = {"response_timeout_ms": _UNISTAT_POLL_RESPONSE_TIMEOUT_MS}
 

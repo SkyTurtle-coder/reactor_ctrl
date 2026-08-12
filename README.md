@@ -320,6 +320,22 @@ python configure_moxa_nport.py `
   --probe
 ```
 
+Huber Ministat cc / Compatible-Control per PP auf `MOXA-01 / Port 4` binden:
+
+```powershell
+python configure_moxa_nport.py `
+  --base-url http://127.0.0.1:5000 `
+  --api-token <token> `
+  --host 10.90.95.178 `
+  --server-code MOXA-01 `
+  --display-name "Moxa NPort 5610-8-DT" `
+  --device-preset huber_ministat_cc `
+  --only-port 4 `
+  --bind-device `
+  --device-display-name "Huber Ministat cc" `
+  --probe
+```
+
 Falls nur ein einzelner Huber-Port getestet werden soll, zuerst die Moxa-Weboberflaeche fuer diesen Port auf `TCP Server`, `RS-232`, `9600 / 8N1`, `Flow control = None` setzen. Danach kann ohne Datenbank/API ein Lesetest gemacht werden:
 
 ```powershell
@@ -327,6 +343,15 @@ python run_huber_smoke_test.py --host 10.90.95.178 --port 4001 --command get_int
 ```
 
 Der Smoke-Test sendet nur ein PB-Lesekommando, z. B. `{M01****<CR><LF>`, und erwartet eine Antwort wie `{S0109C4<CR><LF>`. `09C4` entspricht `25.00 C`.
+
+Fuer den Ministat cc auf Port 4 den PP-Modus verwenden:
+
+```powershell
+python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_error
+python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_internal_temp
+```
+
+Der PP-Test sendet z. B. `FSW?<CR><LF>` oder `TI?<CR><LF>` und erwartet Antworten wie `0<CR><LF>` bzw. `TI +02499<CR><LF>`.
 
 Unterstuetzte Huber-Kommandos im App-Treiber:
 

@@ -12,6 +12,7 @@ import unittest
 from reactor_app.services.drivers import DeviceCapability
 from reactor_app.services.drivers.base import DeviceDriver
 from reactor_app.services.drivers.huber_cc230 import HuberCC230Driver
+from reactor_app.services.drivers.huber_ministat_cc import HuberMinistatCCDriver
 from reactor_app.services.drivers.huber_unistat import HuberUnistatDriver
 from reactor_app.services.drivers.ika_eurostar import IkaEurostarDriver
 from reactor_app.services.transports.factory import build_transport
@@ -265,6 +266,32 @@ class HuberCC230DriverCapabilityTests(unittest.TestCase):
 
     def test_legacy_driver_does_not_include_recipe_mode(self):
         self.assertNotIn(DeviceCapability.SUPPORTS_RECIPE_MODE, self.caps)
+
+    def test_does_not_include_stirring(self):
+        self.assertNotIn(DeviceCapability.CAN_STIR, self.caps)
+
+
+# ---------------------------------------------------------------------------
+# HuberMinistatCCDriver capabilities
+# ---------------------------------------------------------------------------
+
+class HuberMinistatCCDriverCapabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.caps = HuberMinistatCCDriver().get_capabilities()
+
+    def test_returns_frozenset(self):
+        self.assertIsInstance(self.caps, frozenset)
+
+    def test_includes_thermal_control(self):
+        self.assertIn(DeviceCapability.CAN_HEAT, self.caps)
+        self.assertIn(DeviceCapability.CAN_COOL, self.caps)
+        self.assertIn(DeviceCapability.CAN_SET_TEMPERATURE, self.caps)
+        self.assertIn(DeviceCapability.CAN_MEASURE_TEMPERATURE, self.caps)
+
+    def test_includes_feedback_manual_and_recipe_mode(self):
+        self.assertIn(DeviceCapability.HAS_FEEDBACK, self.caps)
+        self.assertIn(DeviceCapability.SUPPORTS_MANUAL_MODE, self.caps)
+        self.assertIn(DeviceCapability.SUPPORTS_RECIPE_MODE, self.caps)
 
     def test_does_not_include_stirring(self):
         self.assertNotIn(DeviceCapability.CAN_STIR, self.caps)

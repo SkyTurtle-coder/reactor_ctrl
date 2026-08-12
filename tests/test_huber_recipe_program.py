@@ -136,6 +136,24 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertNotIn("rpm", snapshot["steps"][0])
         self.assertNotIn("pressure", snapshot["steps"][1])
 
+    def test_ministat_cc_temperature_actor_is_allowed_in_recipe_snapshot(self):
+        recipe = self._recipe([self._huber_step("Set cold", 0, -10, status_on=True)])
+        binding = {
+            **self._binding(),
+            "device_display_name": "Huber Ministat cc",
+            "protocol": "huber_ministat_cc",
+        }
+
+        with patch.object(
+            recipe_program_runtime,
+            "_build_target_lookup",
+            return_value={"Huber_01": binding},
+        ):
+            snapshot = recipe_program_runtime._program_snapshot_for_recipe(recipe, self._build())
+
+        self.assertEqual(snapshot["bindings"][0]["protocol"], "huber_ministat_cc")
+        self.assertEqual(snapshot["bindings"][0]["profile_id"], "hc_system_temperature")
+
     def test_huber_recipe_actor_rejects_rpm_values(self):
         recipe = self._recipe(
             [

@@ -504,6 +504,31 @@ class ReadHuberStatusTests(unittest.TestCase):
         self.assertEqual(kwargs["priority"], device_manual_runtime.CommandPriority.POLLING)
         self.assertEqual(kwargs["source"], device_manual_runtime.CommandSource.POLLER)
 
+    def test_ministat_cc_live_status_uses_pp_poll_timeout(self):
+        device = Device(
+            device_id=6,
+            asset_serial="HC-6",
+            display_name="Ministat",
+            device_type="actuator",
+            protocol="huber_ministat_cc",
+        )
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return {"setpoint_C": 22.5, "actual_temp_C": 22.1, "external_temp_C": None}
+
+        with patch.object(device_manual_runtime, "_run_logged_driver_command", fake_run):
+            telemetry = device_manual_runtime._read_huber_status(device)
+
+        self.assertEqual(telemetry, {"setpoint_C": 22.5, "actual_temp_C": 22.1, "external_temp_C": None})
+        self.assertEqual(len(calls), 1)
+        args, kwargs = calls[0]
+        self.assertEqual(args[1], "read_live_telemetry")
+        self.assertEqual(args[2], {"response_timeout_ms": device_manual_runtime._MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS})
+        self.assertEqual(kwargs["priority"], device_manual_runtime.CommandPriority.POLLING)
+        self.assertEqual(kwargs["source"], device_manual_runtime.CommandSource.POLLER)
+
 
 class ApplyDesiredIkaStateTests(unittest.TestCase):
     """_apply_desired_ika_state must verify setpoint acceptance after START."""

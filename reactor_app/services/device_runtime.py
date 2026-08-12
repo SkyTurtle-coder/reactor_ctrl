@@ -54,7 +54,9 @@ _DB_RETRY_ATTEMPTS = 3
 _DB_RETRY_BACKOFF_S = 0.05
 _SESSION_TRANSIENT_DB_ERROR_FLAG = "reactor_ctrl_last_transient_db_error"
 _PERSISTENCE_ERROR_KIND = "persistence"
-_HUBER_PROTOCOL_NAMES: frozenset[str] = frozenset({"huber_unistat_430", "huber_pilot_one", "huber_cc230"})
+_HUBER_PROTOCOL_NAMES: frozenset[str] = frozenset(
+    {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_ministat_cc"}
+)
 _SCALE_PROTOCOL_NAMES: frozenset[str] = frozenset({"mettler_toledo_ics435", "ics435_mtsics"})
 
 _T = TypeVar("_T")

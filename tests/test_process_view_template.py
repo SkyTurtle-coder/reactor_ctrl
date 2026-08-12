@@ -181,6 +181,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function huberSetpointLimits(target)", source)
         self.assertIn("return { min: -40, max: 150 };", source)
         self.assertIn('protocol === "huber_cc230"', source)
+        self.assertIn('protocol === "huber_ministat_cc"', source)
         self.assertIn("function isCC230ThermostatTarget(node, target)", source)
         self.assertIn('document.getElementById("process-manual-sensor-input")', source)
         self.assertIn('"select_external_sensor"', source)

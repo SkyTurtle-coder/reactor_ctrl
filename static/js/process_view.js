@@ -3149,6 +3149,7 @@
             protocol === "huber_unistat_430"
             || protocol === "huber_pilot_one"
             || protocol === "huber_cc230"
+            || protocol === "huber_ministat_cc"
         ) && symbolId === "hc_system";
     }
 
