@@ -17,7 +17,7 @@ _DEFAULT_MIN_SETPOINT_C = -40.0
 _DEFAULT_MAX_SETPOINT_C = 150.0
 _SETPOINT_READBACK_TOLERANCE_C = 0.05
 _MISSING_EXTERNAL_SENSOR_TEMP_C = -151.0
-_MISSING_EXTERNAL_SENSOR_TOLERANCE_C = 0.005
+_MISSING_EXTERNAL_SENSOR_THRESHOLD_C = -150.0
 _DRAIN_IDLE_TIMEOUT_S = 0.08
 _MAX_STALE_RESPONSES = 3
 _NUMBER_RE = re.compile(r"([+-])?\s*(\d+(?:[.,]\d+)?)")
@@ -98,7 +98,10 @@ def _format_pp_temperature(value_celsius: float) -> str:
 def _is_missing_external_sensor_temp(value: float | None) -> bool:
     if value is None:
         return False
-    return abs(float(value) - _MISSING_EXTERNAL_SENSOR_TEMP_C) <= _MISSING_EXTERNAL_SENSOR_TOLERANCE_C
+    # Huber PP manuals document -151.00 degC for a missing Pt100. The real
+    # Ministat currently returns -151.11, so treat the whole impossible band as
+    # "not connected" instead of persisting it as a physical temperature.
+    return float(value) <= _MISSING_EXTERNAL_SENSOR_THRESHOLD_C
 
 
 def _is_echo_response(response_text: str | None, sent_command: str) -> bool:
@@ -118,6 +121,19 @@ def _status_payload(raw_status: int) -> dict[str, Any]:
         "remote_control_active": None,
         "status_available": True,
     }
+
+
+def _unknown_status_payload(error: Exception | None = None) -> dict[str, Any]:
+    payload = {
+        "raw": None,
+        "temperature_control_active": None,
+        "circulation_active": None,
+        "remote_control_active": None,
+        "status_available": False,
+    }
+    if error is not None:
+        payload["communication_error"] = str(error)
+    return payload
 
 
 class HuberMinistatCCClient:
@@ -206,11 +222,19 @@ class HuberMinistatCCClient:
         return self.read_internal_temperature()
 
     def read_status(self) -> dict[str, Any]:
-        raw_status = _integer_from_pp_response(self.send_command("CA?").response_text)
-        return _status_payload(raw_status)
+        try:
+            raw_status = _integer_from_pp_response(self.send_command("CA?").response_text)
+            return _status_payload(raw_status)
+        except (DriverError, OSError, socket.timeout) as exc:
+            LOGGER.info("Ministat CC CA? did not return a usable response; reporting status as unavailable.")
+            return _unknown_status_payload(exc)
 
     def read_error(self) -> str:
-        return _normalize_response_text(self.send_command("FSW?").response_text)
+        try:
+            return _normalize_response_text(self.send_command("FSW?").response_text)
+        except (OSError, socket.timeout) as exc:
+            LOGGER.info("Ministat CC FSW? did not return a usable response; ignoring optional fault readout.")
+            return ""
 
     def enable_remote(self) -> bool:
         # PP commands are accepted as master/slave serial commands. The public PP

@@ -101,6 +101,17 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
         self.assertTrue(stopped.metadata["value"])
         self.assertEqual(stop_transport.sent, [b"CA@ 00000\r\n"])
 
+    def test_optional_status_and_error_commands_do_not_fail_on_timeout(self):
+        status, status_transport = self.execute("get_status", responses=[socket.timeout])
+        self.assertFalse(status.metadata["value"]["status_available"])
+        self.assertIsNone(status.metadata["value"]["temperature_control_active"])
+        self.assertIn("communication_error", status.metadata["value"])
+        self.assertEqual(status_transport.sent, [b"CA?\r\n"])
+
+        error, error_transport = self.execute("get_error", responses=[socket.timeout])
+        self.assertEqual(error.metadata["value"], "")
+        self.assertEqual(error_transport.sent, [b"FSW?\r\n"])
+
     def test_write_setpoint_uses_pp_setpoint_write_and_verifies_readback(self):
         result, transport = self.execute(
             "set_setpoint",
@@ -146,7 +157,7 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
             responses=[
                 b"SP +02500\r\n",
                 b"TI +02499\r\n",
-                b"TE -15100\r\n",
+                b"TE -15111\r\n",
                 b"CA +00001\r\n",
             ],
         )
