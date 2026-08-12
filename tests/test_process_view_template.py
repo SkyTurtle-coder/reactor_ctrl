@@ -210,6 +210,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;", source)
         self.assertIn("const PROCESS_PLOT_WATCH_RENEW_MS = 10000;", source)
         self.assertIn("const PROCESS_PLOT_STALE_REFRESH_COOLDOWN_MS = 15000;", source)
+        self.assertIn("const PROCESS_PLOT_STALE_REFRESH_AWAIT_MS = 1200;", source)
         self.assertIn('document.getElementById("process-plot-window-value")', source)
         self.assertIn('document.getElementById("process-plot-window-unit")', source)
         self.assertIn('params.set("since_seconds", String(rangeOption.sinceSeconds));', source)
@@ -257,7 +258,7 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertNotIn("function syncRuntimePlotTelemetry(nodeId, telemetry, timestampMs)", source)
         self.assertNotIn("function loadRuntimePlotSnapshot(nodeId, options)", source)
         self.assertNotIn("ensureRuntimePlotSamples", source)
-        self.assertIn("const seriesItems = storedSeries;", source)
+        self.assertIn("applyPlotSnapshotFallbacks(selectedOptions, storedSeriesById, snapshotsByDeviceId)", source)
         self.assertIn("No data in this window", source)
 
     def test_process_view_plot_extends_manual_state_watches(self):
@@ -265,8 +266,14 @@ class ProcessViewTemplateTests(unittest.TestCase):
         source = script_path.read_text(encoding="utf-8")
 
         self.assertIn("async function extendPlotMeasurementWatches(selectedOptions, options)", source)
+        self.assertIn("async function loadPlotManualStateSnapshots(selectedOptions, options)", source)
+        self.assertIn("function plotLivePointFromManualState(option, manualStatePayload)", source)
+        self.assertIn("function applyPlotSnapshotFallbacks(selectedOptions, storedSeriesById, snapshotsByDeviceId)", source)
+        self.assertIn("function plotWindowIncludingSeriesPoints(plotWindow, seriesItems, rangeOption)", source)
         self.assertIn('params.set("requested_by", "process_plot");', source)
+        self.assertIn('params.set("requested_by", "process_plot_snapshot");', source)
         self.assertIn('params.set("refresh", "1");', source)
+        self.assertIn('params.set("await_ms", String(awaitMs));', source)
         self.assertIn("void extendPlotMeasurementWatches(selectedOptions);", source)
         self.assertIn("refreshDeviceIds: staleOrMissingSeries.map((series) => series.deviceId),", source)
         self.assertIn("plotWatchRenewDueByDeviceId: {},", source)

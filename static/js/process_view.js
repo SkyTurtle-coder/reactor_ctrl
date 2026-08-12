@@ -91,6 +91,7 @@
     const PROCESS_PLOT_STALE_AFTER_MS = 60000;
     const PROCESS_PLOT_WATCH_RENEW_MS = 10000;
     const PROCESS_PLOT_STALE_REFRESH_COOLDOWN_MS = 15000;
+    const PROCESS_PLOT_STALE_REFRESH_AWAIT_MS = 1200;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const PROCESS_DISPLAY_REFRESH_MS = 1500;
     const PROCESS_DISPLAY_ERROR_BACKOFF_MS = 15000;
@@ -1964,6 +1965,60 @@
         }));
     }
 
+    async function loadPlotManualStateSnapshots(selectedOptions, options) {
+        const settings = options || {};
+        const nowMs = Date.now();
+        const refreshDeviceIds = new Set(
+            (Array.isArray(settings.refreshDeviceIds) ? settings.refreshDeviceIds : [])
+                .map((deviceId) => Number(deviceId))
+                .filter((deviceId) => Number.isInteger(deviceId) && deviceId > 0),
+        );
+        const deviceIds = Array.from(new Set(
+            (Array.isArray(selectedOptions) ? selectedOptions : [])
+                .filter(canWatchPlotMeasurementOption)
+                .map((option) => Number(option.deviceId)),
+        ));
+        const snapshots = new Map();
+        const awaitMs = Math.max(0, Math.min(5000, Math.round(Number(settings.awaitMs) || 0)));
+        await Promise.all(deviceIds.map(async (deviceId) => {
+            const key = String(deviceId);
+            const shouldRefresh = refreshDeviceIds.has(deviceId);
+            if (shouldRefresh) {
+                const nextRefreshMs = Number(state.plotWatchRefreshDueByDeviceId[key] || 0);
+                if (nowMs < nextRefreshMs) {
+                    return;
+                }
+                state.plotWatchRefreshDueByDeviceId[key] = nowMs + PROCESS_PLOT_STALE_REFRESH_COOLDOWN_MS;
+            }
+            const params = new URLSearchParams();
+            params.set("watch", shouldRefresh ? "1" : "0");
+            params.set("requested_by", "process_plot_snapshot");
+            if (shouldRefresh) {
+                params.set("refresh", "1");
+                if (awaitMs > 0) {
+                    params.set("await_ms", String(awaitMs));
+                }
+            }
+            try {
+                const payload = await fetchJson(`/api/devices/${deviceId}/manual-state?${params.toString()}`, {
+                    timeoutMs: shouldRefresh ? awaitMs + 2500 : 3000,
+                    maxRetries: 0,
+                });
+                snapshots.set(deviceId, payload);
+                if (shouldRefresh) {
+                    state.plotWatchRenewDueByDeviceId[key] = nowMs + PROCESS_PLOT_WATCH_RENEW_MS;
+                }
+            } catch (_error) {
+                if (shouldRefresh) {
+                    const retryMs = nowMs + PROCESS_PLOT_ERROR_BACKOFF_MS;
+                    state.plotWatchRefreshDueByDeviceId[key] = retryMs;
+                    state.plotWatchRenewDueByDeviceId[key] = retryMs;
+                }
+            }
+        }));
+        return snapshots;
+    }
+
     function timestampMs(value) {
         if (!value) {
             return null;
@@ -2046,6 +2101,71 @@
             unit,
             extra.measured_at || snapshot?.reported_state?.updated_at,
         );
+    }
+
+    function plotLivePointFromManualState(option, manualStatePayload) {
+        const liveValue = displayLiveValueFromManualState(option, manualStatePayload);
+        if (!liveValue || liveValue.status !== "ok") {
+            return null;
+        }
+        const measuredAtMs = timestampMs(liveValue.measured_at);
+        const numericValue = asNumber(liveValue.value, null);
+        if (!Number.isFinite(measuredAtMs) || !Number.isFinite(numericValue)) {
+            return null;
+        }
+        return {
+            x: measuredAtMs,
+            y: numericValue,
+            unit: asString(liveValue.unit, option.unit),
+            source: "manual_state_snapshot",
+        };
+    }
+
+    function applyPlotSnapshotFallbacks(selectedOptions, storedSeriesById, snapshotsByDeviceId) {
+        return selectedOptions.map((option) => {
+            const series = storedSeriesById.get(option.id) || { ...option, latestMeasurementMs: null, points: [] };
+            const livePoint = plotLivePointFromManualState(option, snapshotsByDeviceId.get(option.deviceId));
+            if (!livePoint) {
+                return series;
+            }
+            const latestStoredMs = Number.isFinite(series?.latestMeasurementMs)
+                ? series.latestMeasurementMs
+                : (series?.points?.[series.points.length - 1]?.x ?? null);
+            if (Number.isFinite(latestStoredMs) && livePoint.x < latestStoredMs - 500) {
+                return series;
+            }
+            const points = (Array.isArray(series.points) ? series.points : [])
+                .filter((point) => Math.abs(Number(point?.x) - livePoint.x) > 500)
+                .concat([{ x: livePoint.x, y: livePoint.y, source: livePoint.source }])
+                .sort((left, right) => left.x - right.x);
+            return {
+                ...series,
+                unit: livePoint.unit || series.unit,
+                latestMeasurementMs: livePoint.x,
+                points,
+                hasLiveSnapshotPoint: true,
+            };
+        });
+    }
+
+    function plotWindowIncludingSeriesPoints(plotWindow, seriesItems, rangeOption) {
+        const latestPointMs = Math.max(
+            ...seriesItems
+                .flatMap((series) => Array.isArray(series?.points) ? series.points : [])
+                .map((point) => Number(point?.x))
+                .filter(Number.isFinite),
+        );
+        const currentEndMs = Number(plotWindow?.endMs);
+        if (!Number.isFinite(latestPointMs) || !Number.isFinite(currentEndMs) || latestPointMs <= currentEndMs) {
+            return plotWindow;
+        }
+        const windowMs = Math.max(1, Number(rangeOption?.sinceSeconds || 0)) * 1000;
+        return {
+            ...plotWindow,
+            endMs: latestPointMs,
+            startMs: latestPointMs - windowMs,
+            requestedAtMs: latestPointMs,
+        };
     }
 
     async function applyDisplaySnapshotFallbacks(selectedOptions, liveValues) {
@@ -2277,6 +2397,7 @@
         }
 
         try {
+            const snapshotPromise = loadPlotManualStateSnapshots(selectedOptions);
             void extendPlotMeasurementWatches(selectedOptions);
             const params = new URLSearchParams();
             const seenSeriesKeys = new Set();
@@ -2300,7 +2421,7 @@
                 return;
             }
 
-            const plotWindow = normalizePlotWindow(payload, requestedWindowEndIso, rangeOption);
+            let plotWindow = normalizePlotWindow(payload, requestedWindowEndIso, rangeOption);
             const storedSeriesById = new Map();
             const payloadSeries = Array.isArray(payload?.series) ? payload.series : [];
             const payloadSeriesByKey = new Map(
@@ -2318,16 +2439,36 @@
                 const payloadSeriesItem = payloadSeriesByKey.get(plotSeriesRequestKey(option)) || { items: [] };
                 storedSeriesById.set(option.id, normalizePlotMeasurements(option, payloadSeriesItem));
             }
-            const storedSeries = selectedOptions.map(
-                (option) => storedSeriesById.get(option.id) || { ...option, points: [] },
-            );
-            const seriesItems = storedSeries;
+            const snapshotsByDeviceId = await snapshotPromise;
+            if (requestId !== state.plotRequestId) {
+                return;
+            }
+            let seriesItems = applyPlotSnapshotFallbacks(selectedOptions, storedSeriesById, snapshotsByDeviceId);
+
+            let staleOrMissingSeries = seriesItems.filter((series) => {
+                const freshness = plotSeriesFreshness(series, plotWindow);
+                return freshness.status === "stale" || freshness.status === "no-data";
+            });
+            if (staleOrMissingSeries.length) {
+                const refreshedSnapshotsByDeviceId = await loadPlotManualStateSnapshots(selectedOptions, {
+                    refreshDeviceIds: staleOrMissingSeries.map((series) => series.deviceId),
+                    awaitMs: PROCESS_PLOT_STALE_REFRESH_AWAIT_MS,
+                });
+                if (requestId !== state.plotRequestId) {
+                    return;
+                }
+                for (const [deviceId, snapshot] of refreshedSnapshotsByDeviceId.entries()) {
+                    snapshotsByDeviceId.set(deviceId, snapshot);
+                }
+                seriesItems = applyPlotSnapshotFallbacks(selectedOptions, storedSeriesById, snapshotsByDeviceId);
+            }
+            plotWindow = plotWindowIncludingSeriesPoints(plotWindow, seriesItems, rangeOption);
             state.plotSeriesData = seriesItems;
             state.plotWindow = plotWindow;
             renderPlotCharts(seriesItems, plotWindow);
 
             const populatedSeries = seriesItems.filter((series) => series.points.length > 0).length;
-            const staleOrMissingSeries = seriesItems.filter((series) => {
+            staleOrMissingSeries = seriesItems.filter((series) => {
                 const freshness = plotSeriesFreshness(series, plotWindow);
                 return freshness.status === "stale" || freshness.status === "no-data";
             });

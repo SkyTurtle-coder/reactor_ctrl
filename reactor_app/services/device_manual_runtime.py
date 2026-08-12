@@ -1139,7 +1139,10 @@ def _read_huber_status(device: Device) -> dict[str, Any]:
         # five separate queue/lock/DB round-trips for a single telemetry refresh.
         poll_payload = {"response_timeout_ms": _CC230_POLL_RESPONSE_TIMEOUT_MS}
     elif _is_ministat_cc_device(device):
-        poll_payload = {"response_timeout_ms": _MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS}
+        poll_payload = {
+            "response_timeout_ms": _MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS,
+            "include_status": False,
+        }
     else:
         poll_payload = {"response_timeout_ms": _UNISTAT_POLL_RESPONSE_TIMEOUT_MS}
 

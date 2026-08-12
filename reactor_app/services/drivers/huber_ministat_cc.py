@@ -429,7 +429,7 @@ class HuberMinistatCCClient:
             "setpoint_c": self.read_setpoint(),
         }
 
-    def read_live_telemetry(self) -> dict[str, Any]:
+    def read_live_telemetry(self, *, include_status: bool = True) -> dict[str, Any]:
         def _safe_read(channel_name: str, reader) -> Any:
             try:
                 return reader()
@@ -442,7 +442,7 @@ class HuberMinistatCCClient:
         external_temp = _safe_read("external_temp_C", self.read_external_temperature)
         if _is_missing_external_sensor_temp(external_temp):
             external_temp = None
-        status = _safe_read("status", self.read_status)
+        status = _safe_read("status", self.read_status) if include_status else None
 
         telemetry = {
             "setpoint_C": None if setpoint is None else float(setpoint),
@@ -555,7 +555,9 @@ class HuberMinistatCCDriver(DeviceDriver):
         elif command_name in {"get_error", "read_error", "get_fault_status", "read_fault_status"}:
             value = client.read_error()
         elif command_name in {"read_live_telemetry", "get_live_telemetry"}:
-            value = client.read_live_telemetry()
+            value = client.read_live_telemetry(
+                include_status=_coerce_bool(payload.get("include_status"), field_name="payload.include_status", default=True)
+            )
         elif command_name == "healthcheck":
             value = client.healthcheck()
         else:

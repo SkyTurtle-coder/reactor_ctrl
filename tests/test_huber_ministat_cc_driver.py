@@ -219,6 +219,27 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
         )
         self.assertEqual(transport.sent, [b"SP?\r\n", b"TI?\r\n", b"TE?\r\n", b"TEMP?\r\n"])
 
+    def test_read_live_telemetry_can_skip_optional_status_read(self):
+        result, transport = self.execute(
+            "read_live_telemetry",
+            payload={"include_status": False},
+            responses=[
+                b"SP +02500\r\n",
+                b"TI +02499\r\n",
+                b"TE +02345\r\n",
+            ],
+        )
+
+        self.assertEqual(
+            result.metadata["value"],
+            {
+                "setpoint_C": 25.0,
+                "actual_temp_C": 24.99,
+                "external_temp_C": 23.45,
+            },
+        )
+        self.assertEqual(transport.sent, [b"SP?\r\n", b"TI?\r\n", b"TE?\r\n"])
+
     def test_error_status_uses_fsw_query(self):
         result, transport = self.execute("get_error", responses=[b"0\r\n"])
         self.assertEqual(result.metadata["value"], "0")

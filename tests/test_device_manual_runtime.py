@@ -543,7 +543,13 @@ class ReadHuberStatusTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         args, kwargs = calls[0]
         self.assertEqual(args[1], "read_live_telemetry")
-        self.assertEqual(args[2], {"response_timeout_ms": device_manual_runtime._MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS})
+        self.assertEqual(
+            args[2],
+            {
+                "response_timeout_ms": device_manual_runtime._MINISTAT_CC_POLL_RESPONSE_TIMEOUT_MS,
+                "include_status": False,
+            },
+        )
         self.assertEqual(kwargs["priority"], device_manual_runtime.CommandPriority.POLLING)
         self.assertEqual(kwargs["source"], device_manual_runtime.CommandSource.POLLER)
 
