@@ -129,6 +129,8 @@ _PROCESS_MANUAL_ALLOWED_DRIVER_PAYLOAD_FIELDS = {
     "temperature_c",
     "min_setpoint_c",
     "max_setpoint_c",
+    "verify_control_response",
+    "allow_unverified_control",
     "response_timeout_ms",
     "write_timeout_ms",
     "connect_timeout_ms",
@@ -445,7 +447,12 @@ def _validate_process_manual_command_payload(command_name: str, payload: dict[st
             sanitized["weight_command"] = _clean_string(sanitized.get("weight_command"), field_name="payload.weight_command")
             if sanitized["weight_command"] is not None and str(sanitized["weight_command"]).strip().upper() not in {"SI", "S"}:
                 raise ValueError("Field 'payload.weight_command' must be either 'SI' or 'S'.")
-        for field_name in ("reconnect", "log_raw_telegrams"):
+        for field_name in (
+            "reconnect",
+            "log_raw_telegrams",
+            "verify_control_response",
+            "allow_unverified_control",
+        ):
             if field_name in sanitized:
                 sanitized[field_name] = _parse_bool(sanitized[field_name], field_name=f"payload.{field_name}")
 

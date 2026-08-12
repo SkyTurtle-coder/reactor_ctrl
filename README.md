@@ -352,7 +352,7 @@ python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --c
 python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_status
 ```
 
-Der PP-Test sendet z. B. `TI?<CR><LF>`, `SP?<CR><LF>` oder `TEMP?<CR><LF>` und erwartet Antworten wie `TI +02499<CR><LF>`, `SP +00000<CR><LF>` bzw. `INTERN<CR><LF>`. `FSW?` und `CA?` sind optionale Status-/Fehlerkommandos; bei der getesteten Ministat-CC-Firmware antworten sie nicht, deshalb behandelt der App-Treiber diese Abfragen als optional.
+Der PP-Test sendet z. B. `TI?<CR><LF>`, `SP?<CR><LF>` oder `TEMP?<CR><LF>` und erwartet Antworten wie `TI +02499<CR><LF>`, `SP +00000<CR><LF>` bzw. `INTERN<CR><LF>`. `FSW?` und `CA?` sind optionale Status-/Fehlerkommandos; bei der getesteten Ministat-CC-Firmware antworten sie nicht, deshalb behandelt der App-Treiber diese Abfragen als optional. `start`/`stop` senden `CA@ 00001` bzw. `CA@ 00000` standardmaessig als Write-only-Befehl und melden `control_sync_status=unverified`, damit der Manual Mode nach erfolgreicher Sollwertuebernahme nicht auf eine nicht vorhandene `CA@`-Antwort wartet.
 
 Unterstuetzte Huber-Ministat-cc-Kommandos im App-Treiber:
 

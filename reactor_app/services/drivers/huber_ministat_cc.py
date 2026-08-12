@@ -46,6 +46,14 @@ class MinistatCCSetpointResult:
     attempts: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class MinistatCCControlResult:
+    requested_active: bool
+    confirmed_active: bool | None
+    control_sync_status: str
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+
+
 def _coerce_float(value: Any, *, field_name: str, default: float | None = None) -> float:
     if value in (None, ""):
         if default is None:
@@ -55,6 +63,19 @@ def _coerce_float(value: Any, *, field_name: str, default: float | None = None) 
         return float(value)
     except (TypeError, ValueError) as exc:
         raise DriverValidationError(f"Field '{field_name}' must be numeric.") from exc
+
+
+def _coerce_bool(value: Any, *, field_name: str, default: bool = False) -> bool:
+    if value in (None, ""):
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise DriverValidationError(f"Field '{field_name}' must be boolean.")
 
 
 def _normalize_response_text(text: str | None) -> str:
@@ -188,7 +209,13 @@ class HuberMinistatCCClient:
             LOGGER.debug("Ministat CC input drain failed; continuing.", exc_info=True)
             return b""
 
-    def send_command(self, command: str, expect_response: bool = True) -> MinistatCCCommandResponse:
+    def send_command(
+        self,
+        command: str,
+        expect_response: bool = True,
+        *,
+        tolerate_no_response: bool = False,
+    ) -> MinistatCCCommandResponse:
         command_text = str(command or "").strip()
         if not command_text:
             raise DriverValidationError("Ministat CC command must not be empty.")
@@ -204,7 +231,19 @@ class HuberMinistatCCClient:
         if expect_response:
             last_response: MinistatCCCommandResponse | None = None
             for _ in range(_MAX_STALE_RESPONSES + 1):
-                response_bytes = self.transport.receive_until(b"\n", max_bytes=self.max_response_bytes)
+                try:
+                    response_bytes = self.transport.receive_until(b"\n", max_bytes=self.max_response_bytes)
+                except socket.timeout:
+                    if not tolerate_no_response:
+                        raise
+                    response = MinistatCCCommandResponse(
+                        command=command_text,
+                        request_bytes=request_bytes,
+                        response_text=None,
+                        response_bytes=b"",
+                    )
+                    self.history.append(response)
+                    return response
                 response_text = response_bytes.decode(self.encoding, errors="replace").strip()
                 LOGGER.debug("Ministat CC recv: %r", response_text)
                 response = MinistatCCCommandResponse(
@@ -326,13 +365,62 @@ class HuberMinistatCCClient:
             attempts=[attempt],
         )
 
-    def start(self) -> bool:
-        response = self.send_command("CA@ 00001")
-        return _integer_from_pp_response(response.response_text) in _STATUS_ACTIVE_VALUES
+    def _write_control_active(
+        self,
+        active: bool,
+        *,
+        verify_response: bool = False,
+        allow_unverified: bool = True,
+    ) -> MinistatCCControlResult:
+        command = f"CA@ {'00001' if active else '00000'}"
+        response = self.send_command(
+            command,
+            expect_response=bool(verify_response),
+            tolerate_no_response=bool(allow_unverified),
+        )
+        if not response.response_text:
+            return MinistatCCControlResult(
+                requested_active=bool(active),
+                confirmed_active=None,
+                control_sync_status="unverified",
+                attempts=[
+                    {
+                        "command": command,
+                        "readback_active": None,
+                        "response_text": None,
+                        "response_required": bool(verify_response),
+                    }
+                ],
+            )
 
-    def stop(self) -> bool:
-        response = self.send_command("CA@ 00000")
-        return _integer_from_pp_response(response.response_text) == 0
+        confirmed = _integer_from_pp_response(response.response_text) in _STATUS_ACTIVE_VALUES
+        return MinistatCCControlResult(
+            requested_active=bool(active),
+            confirmed_active=confirmed,
+            control_sync_status="verified",
+            attempts=[
+                {
+                    "command": command,
+                    "readback_active": confirmed,
+                    "response_text": response.response_text,
+                    "response_required": bool(verify_response),
+                }
+            ],
+        )
+
+    def start(self, *, verify_response: bool = False, allow_unverified: bool = True) -> MinistatCCControlResult:
+        return self._write_control_active(
+            True,
+            verify_response=verify_response,
+            allow_unverified=allow_unverified,
+        )
+
+    def stop(self, *, verify_response: bool = False, allow_unverified: bool = True) -> MinistatCCControlResult:
+        return self._write_control_active(
+            False,
+            verify_response=verify_response,
+            allow_unverified=allow_unverified,
+        )
 
     def healthcheck(self) -> dict[str, Any]:
         return {
@@ -420,9 +508,31 @@ class HuberMinistatCCDriver(DeviceDriver):
         elif command_name in {"enable_local", "local"}:
             value = client.enable_local()
         elif command_name in {"start", "start_device", "start_control"}:
-            value = client.start()
+            value = client.start(
+                verify_response=_coerce_bool(
+                    payload.get("verify_control_response"),
+                    field_name="payload.verify_control_response",
+                    default=False,
+                ),
+                allow_unverified=_coerce_bool(
+                    payload.get("allow_unverified_control"),
+                    field_name="payload.allow_unverified_control",
+                    default=True,
+                ),
+            )
         elif command_name in {"stop", "stop_device", "stop_control"}:
-            value = client.stop()
+            value = client.stop(
+                verify_response=_coerce_bool(
+                    payload.get("verify_control_response"),
+                    field_name="payload.verify_control_response",
+                    default=False,
+                ),
+                allow_unverified=_coerce_bool(
+                    payload.get("allow_unverified_control"),
+                    field_name="payload.allow_unverified_control",
+                    default=True,
+                ),
+            )
         elif command_name in {"get_status", "read_status"}:
             value = client.read_status()
         elif command_name in {"get_setpoint", "read_setpoint"}:
@@ -479,12 +589,20 @@ class HuberMinistatCCDriver(DeviceDriver):
                 "setpoint_attempts": value.attempts,
             }
             value = value.requested_value
+        if isinstance(value, MinistatCCControlResult):
+            extra = {
+                "requested_control_active": value.requested_active,
+                "confirmed_control_active": value.confirmed_active,
+                "control_sync_status": value.control_sync_status,
+                "control_attempts": value.attempts,
+            }
+            value = value.confirmed_active if value.confirmed_active is not None else value.requested_active
         if active_control_sensor is not None:
             extra["active_control_sensor"] = active_control_sensor
 
         return DeviceCommandResult(
             acknowledged=True,
-            response_text="" if last is None else last.response_text,
+            response_text="" if last is None or last.response_text is None else last.response_text,
             response_hex="" if last is None or not last.response_bytes else last.response_bytes.hex(),
             metadata={
                 "driver": "huber_ministat_cc",

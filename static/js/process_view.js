@@ -3159,6 +3159,12 @@
         return protocol === "huber_cc230" && symbolId === "hc_system";
     }
 
+    function isMinistatCCThermostatTarget(node, target) {
+        const protocol = normalizedProtocolName(target?.protocol);
+        const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
+        return protocol === "huber_ministat_cc" && symbolId === "hc_system";
+    }
+
     function isScaleTarget(node, target) {
         const protocol = normalizedProtocolName(target?.protocol);
         const symbolId = asString(node?.symbol_id, "").trim().toLowerCase();
@@ -3511,16 +3517,21 @@
             }
 
             const setpointC = optionalNumber(setpointValue);
-            const isOn = statusValue && typeof statusValue === "object"
-                ? Boolean(statusValue.temperature_control_active)
+            const rawControlActive = statusValue && typeof statusValue === "object"
+                ? statusValue.temperature_control_active
                 : null;
+            const isOn = rawControlActive == null ? null : Boolean(rawControlActive);
+            const activeControlSensor = statusValue && typeof statusValue === "object"
+                ? asString(statusValue.active_control_sensor, "")
+                : "";
+            const controlSensor = activeControlSensor || asString(node.control?.config?.control_sensor, "internal");
             node.control = {
                 profile_id: node.control?.profile_id || "hc_system_temperature",
                 config: {
                     ...(node.control?.config || {}),
                     target_temp: setpointC ?? asNumber(node.control?.config?.target_temp, 25),
                     is_on: isOn == null ? Boolean(node.control?.config?.is_on) : isOn,
-                    control_sensor: asString(node.control?.config?.control_sensor, "internal"),
+                    control_sensor: controlSensor,
                 },
             };
 
@@ -3532,7 +3543,7 @@
                 errorText,
                 warningText,
                 isOn,
-                activeControlSensor: asString(node.control?.config?.control_sensor, "internal"),
+                activeControlSensor: controlSensor,
             };
             updateManualLiveMetrics(telemetry);
             updateManualDeviceStatus(target, telemetry);
@@ -4094,7 +4105,22 @@
                 );
                 const confirmedSetpointC = optionalNumber(setpointMeta?.verified_setpoint) ?? setpointC;
                 const syncStatus = String(setpointMeta?.setpoint_sync_status || "unknown");
-                await executeDeviceCommand(target, nextState ? "start" : "stop", {}, { timeoutMs: 12000 });
+                let controlMeta = null;
+                let controlWarning = "";
+                try {
+                    controlMeta = await executeDeviceCommand(
+                        target,
+                        nextState ? "start" : "stop",
+                        {},
+                        { timeoutMs: 12000, returnMeta: true },
+                    );
+                } catch (error) {
+                    if (!isMinistatCCThermostatTarget(node, target)) {
+                        throw error;
+                    }
+                    controlWarning = "start/stop command was sent but not confirmed";
+                }
+                const controlSyncStatus = String(controlMeta?.control_sync_status || "");
                 node.control = {
                     profile_id: node.control?.profile_id || "hc_system_temperature",
                     config: {
@@ -4114,7 +4140,13 @@
                 if (syncStatus === "unverified") {
                     statusMsg += " (setpoint sent but readback timed out — command may not have been accepted)";
                 }
-                setManualStatus(statusMsg + ".", syncStatus === "unverified" ? "warning" : "success");
+                if (controlSyncStatus === "unverified" || controlWarning) {
+                    statusMsg += " (start/stop sent without device confirmation)";
+                }
+                setManualStatus(
+                    statusMsg + ".",
+                    syncStatus === "unverified" || controlSyncStatus === "unverified" || controlWarning ? "warning" : "success",
+                );
             })()
                 .catch((error) => {
                     setManualStatus(error?.message || "Thermostat settings could not be applied.", "error");

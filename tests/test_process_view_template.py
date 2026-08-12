@@ -183,12 +183,18 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn('protocol === "huber_cc230"', source)
         self.assertIn('protocol === "huber_ministat_cc"', source)
         self.assertIn("function isCC230ThermostatTarget(node, target)", source)
+        self.assertIn("function isMinistatCCThermostatTarget(node, target)", source)
         self.assertIn('document.getElementById("process-manual-sensor-input")', source)
         self.assertIn('"select_external_sensor"', source)
         self.assertIn('"select_internal_sensor"', source)
         self.assertIn("manualSpeedInput.min = String(limits.min);", source)
         self.assertIn("manualSpeedInput.max = String(limits.max);", source)
         self.assertIn("{ temp_c: setpointC, min_setpoint_c: limits.min, max_setpoint_c: limits.max }", source)
+        self.assertIn('{ timeoutMs: 12000, returnMeta: true }', source)
+        self.assertIn('controlSyncStatus === "unverified"', source)
+        self.assertIn("start/stop sent without device confirmation", source)
+        self.assertIn("const controlSensor = activeControlSensor ||", source)
+        self.assertIn("const isOn = rawControlActive == null ? null : Boolean(rawControlActive);", source)
 
     def test_process_view_script_supports_dynamic_plot_series(self):
         script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"

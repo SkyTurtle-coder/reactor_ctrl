@@ -101,14 +101,47 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
         self.assertTrue(status.metadata["value"]["circulation_active"])
         self.assertEqual(status_transport.sent, [b"TEMP?\r\n", b"CA?\r\n"])
 
-    def test_start_and_stop_use_ca_commands(self):
-        started, start_transport = self.execute("start", responses=[b"CA +00001\r\n"])
+    def test_start_and_stop_send_ca_without_waiting_for_optional_response(self):
+        started, start_transport = self.execute("start")
         self.assertTrue(started.metadata["value"])
+        self.assertEqual(started.metadata["requested_control_active"], True)
+        self.assertIsNone(started.metadata["confirmed_control_active"])
+        self.assertEqual(started.metadata["control_sync_status"], "unverified")
+        self.assertEqual(start_transport.sent, [b"CA@ 00001\r\n"])
+        self.assertEqual(started.response_text, "")
+
+        stopped, stop_transport = self.execute("stop")
+        self.assertFalse(stopped.metadata["value"])
+        self.assertEqual(stopped.metadata["requested_control_active"], False)
+        self.assertIsNone(stopped.metadata["confirmed_control_active"])
+        self.assertEqual(stopped.metadata["control_sync_status"], "unverified")
+        self.assertEqual(stop_transport.sent, [b"CA@ 00000\r\n"])
+        self.assertEqual(stopped.response_text, "")
+
+    def test_start_can_verify_ca_response_when_requested(self):
+        started, start_transport = self.execute(
+            "start",
+            payload={"verify_control_response": True},
+            responses=[b"CA +00001\r\n"],
+        )
+
+        self.assertTrue(started.metadata["value"])
+        self.assertEqual(started.metadata["requested_control_active"], True)
+        self.assertEqual(started.metadata["confirmed_control_active"], True)
+        self.assertEqual(started.metadata["control_sync_status"], "verified")
         self.assertEqual(start_transport.sent, [b"CA@ 00001\r\n"])
 
-        stopped, stop_transport = self.execute("stop", responses=[b"CA +00000\r\n"])
-        self.assertTrue(stopped.metadata["value"])
-        self.assertEqual(stop_transport.sent, [b"CA@ 00000\r\n"])
+    def test_start_verification_can_fall_back_to_unverified_on_timeout(self):
+        started, start_transport = self.execute(
+            "start",
+            payload={"verify_control_response": True, "allow_unverified_control": True},
+            responses=[socket.timeout],
+        )
+
+        self.assertTrue(started.metadata["value"])
+        self.assertIsNone(started.metadata["confirmed_control_active"])
+        self.assertEqual(started.metadata["control_sync_status"], "unverified")
+        self.assertEqual(start_transport.sent, [b"CA@ 00001\r\n"])
 
     def test_optional_status_and_error_commands_do_not_fail_on_timeout(self):
         status, status_transport = self.execute("get_status", responses=[socket.timeout, socket.timeout])

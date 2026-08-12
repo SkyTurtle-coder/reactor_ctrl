@@ -40,6 +40,18 @@ class ProcessManualValidationTests(unittest.TestCase):
                 },
             )
 
+    def test_process_manual_driver_payload_normalizes_ministat_control_fallback_flags(self):
+        payload = _validate_process_manual_command_payload(
+            "start",
+            {
+                "verify_control_response": "true",
+                "allow_unverified_control": "0",
+            },
+        )
+
+        self.assertIs(payload["verify_control_response"], True)
+        self.assertIs(payload["allow_unverified_control"], False)
+
     def test_process_manual_payload_rejects_non_manual_command_name(self):
         with self.assertRaisesRegex(ValueError, "may only execute"):
             _validate_process_manual_command_payload("write_recipe", {"text": "IN_NAME"})
