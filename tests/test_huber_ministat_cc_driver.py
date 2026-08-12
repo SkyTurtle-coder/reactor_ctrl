@@ -87,12 +87,21 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
                 self.assertEqual(result.metadata["value"], expected)
                 self.assertEqual(transport.sent, [sent])
 
-    def test_status_start_and_stop_use_ca_commands(self):
-        status, status_transport = self.execute("get_status", responses=[b"CA +00001\r\n"])
+    def test_status_uses_temp_query_for_control_sensor(self):
+        status, status_transport = self.execute("get_status", responses=[b"INTERN\r\n"])
+        self.assertTrue(status.metadata["value"]["status_available"])
+        self.assertEqual(status.metadata["value"]["active_control_sensor"], "internal")
+        self.assertIsNone(status.metadata["value"]["temperature_control_active"])
+        self.assertIsNone(status.metadata["value"]["circulation_active"])
+        self.assertEqual(status_transport.sent, [b"TEMP?\r\n"])
+
+    def test_status_falls_back_to_ca_query(self):
+        status, status_transport = self.execute("get_status", responses=[socket.timeout, b"CA +00001\r\n"])
         self.assertTrue(status.metadata["value"]["temperature_control_active"])
         self.assertTrue(status.metadata["value"]["circulation_active"])
-        self.assertEqual(status_transport.sent, [b"CA?\r\n"])
+        self.assertEqual(status_transport.sent, [b"TEMP?\r\n", b"CA?\r\n"])
 
+    def test_start_and_stop_use_ca_commands(self):
         started, start_transport = self.execute("start", responses=[b"CA +00001\r\n"])
         self.assertTrue(started.metadata["value"])
         self.assertEqual(start_transport.sent, [b"CA@ 00001\r\n"])
@@ -102,11 +111,11 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
         self.assertEqual(stop_transport.sent, [b"CA@ 00000\r\n"])
 
     def test_optional_status_and_error_commands_do_not_fail_on_timeout(self):
-        status, status_transport = self.execute("get_status", responses=[socket.timeout])
+        status, status_transport = self.execute("get_status", responses=[socket.timeout, socket.timeout])
         self.assertFalse(status.metadata["value"]["status_available"])
         self.assertIsNone(status.metadata["value"]["temperature_control_active"])
         self.assertIn("communication_error", status.metadata["value"])
-        self.assertEqual(status_transport.sent, [b"CA?\r\n"])
+        self.assertEqual(status_transport.sent, [b"TEMP?\r\n", b"CA?\r\n"])
 
         error, error_transport = self.execute("get_error", responses=[socket.timeout])
         self.assertEqual(error.metadata["value"], "")
@@ -158,7 +167,7 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
                 b"SP +02500\r\n",
                 b"TI +02499\r\n",
                 b"TE -15111\r\n",
-                b"CA +00001\r\n",
+                b"INTERN\r\n",
             ],
         )
 
@@ -168,12 +177,14 @@ class HuberMinistatCCDriverTests(unittest.TestCase):
                 "setpoint_C": 25.0,
                 "actual_temp_C": 24.99,
                 "external_temp_C": None,
-                "temperature_control_active": True,
-                "circulation_active": True,
-                "status_raw": 1,
+                "temperature_control_active": None,
+                "circulation_active": None,
+                "status_raw": "INTERN",
+                "status_available": True,
+                "active_control_sensor": "internal",
             },
         )
-        self.assertEqual(transport.sent, [b"SP?\r\n", b"TI?\r\n", b"TE?\r\n", b"CA?\r\n"])
+        self.assertEqual(transport.sent, [b"SP?\r\n", b"TI?\r\n", b"TE?\r\n", b"TEMP?\r\n"])
 
     def test_error_status_uses_fsw_query(self):
         result, transport = self.execute("get_error", responses=[b"0\r\n"])

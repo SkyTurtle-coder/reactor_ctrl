@@ -347,29 +347,27 @@ Der Smoke-Test sendet nur ein PB-Lesekommando, z. B. `{M01****<CR><LF>`, und erw
 Fuer den Ministat cc auf Port 4 den PP-Modus verwenden:
 
 ```powershell
-python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_error
 python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_internal_temp
+python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_setpoint
+python run_huber_smoke_test.py --host 10.90.95.178 --port 4004 --protocol pp --command get_status
 ```
 
-Der PP-Test sendet z. B. `FSW?<CR><LF>` oder `TI?<CR><LF>` und erwartet Antworten wie `0<CR><LF>` bzw. `TI +02499<CR><LF>`.
+Der PP-Test sendet z. B. `TI?<CR><LF>`, `SP?<CR><LF>` oder `TEMP?<CR><LF>` und erwartet Antworten wie `TI +02499<CR><LF>`, `SP +00000<CR><LF>` bzw. `INTERN<CR><LF>`. `FSW?` und `CA?` sind optionale Status-/Fehlerkommandos; bei der getesteten Ministat-CC-Firmware antworten sie nicht, deshalb behandelt der App-Treiber diese Abfragen als optional.
 
-Unterstuetzte Huber-Kommandos im App-Treiber:
+Unterstuetzte Huber-Ministat-cc-Kommandos im App-Treiber:
 
 - `get_setpoint`
 - `get_internal_temp`
-- `get_return_temp`
-- `get_pump_pressure`
+- `get_external_temp`
 - `get_process_temp`
 - `get_error`
-- `get_warning`
 - `get_status`
 - `set_setpoint`
+- `select_internal_sensor`
+- `select_external_sensor`
 - `start`
 - `stop`
-- `set_circulation`
-- `clear_error`
-- `clear_warning`
-- `read_var` / `write_var` fuer rohe PB-Adressen
+- `manual_text` fuer rohe PP-Textkommandos
 
 ## Mettler Toledo ICS435 ueber COM2 Ethernet
 

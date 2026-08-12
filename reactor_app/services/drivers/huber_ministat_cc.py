@@ -22,6 +22,12 @@ _DRAIN_IDLE_TIMEOUT_S = 0.08
 _MAX_STALE_RESPONSES = 3
 _NUMBER_RE = re.compile(r"([+-])?\s*(\d+(?:[.,]\d+)?)")
 _STATUS_ACTIVE_VALUES = {1}
+_CONTROL_SENSOR_ALIASES = {
+    "INTERN": "internal",
+    "INTERNAL": "internal",
+    "EXTERN": "external",
+    "EXTERNAL": "external",
+}
 
 
 @dataclass(frozen=True)
@@ -120,6 +126,27 @@ def _status_payload(raw_status: int) -> dict[str, Any]:
         "circulation_active": active,
         "remote_control_active": None,
         "status_available": True,
+    }
+
+
+def _control_sensor_from_pp_response(text: str | None) -> str:
+    raw = _normalize_response_text(text).upper()
+    tokens = re.split(r"\s+", raw)
+    for token in tokens:
+        if token in _CONTROL_SENSOR_ALIASES:
+            return _CONTROL_SENSOR_ALIASES[token]
+    raise DriverError(f"Ministat CC control sensor response could not be parsed: {raw!r}.")
+
+
+def _control_sensor_status_payload(text: str | None) -> dict[str, Any]:
+    raw = _normalize_response_text(text)
+    return {
+        "raw": raw,
+        "temperature_control_active": None,
+        "circulation_active": None,
+        "remote_control_active": None,
+        "status_available": True,
+        "active_control_sensor": _control_sensor_from_pp_response(raw),
     }
 
 
@@ -223,11 +250,18 @@ class HuberMinistatCCClient:
 
     def read_status(self) -> dict[str, Any]:
         try:
+            # On the tested Compatible-Control firmware, CA? times out while
+            # TEMP? returns the active control sensor ("INTERN"/"EXTERN").
+            return _control_sensor_status_payload(self.send_command("TEMP?").response_text)
+        except (DriverError, OSError, socket.timeout) as temp_exc:
+            LOGGER.info("Ministat CC TEMP? did not return a usable response; trying optional CA? status.")
+            temp_error = temp_exc
+        try:
             raw_status = _integer_from_pp_response(self.send_command("CA?").response_text)
             return _status_payload(raw_status)
         except (DriverError, OSError, socket.timeout) as exc:
             LOGGER.info("Ministat CC CA? did not return a usable response; reporting status as unavailable.")
-            return _unknown_status_payload(exc)
+            return _unknown_status_payload(temp_error if temp_error is not None else exc)
 
     def read_error(self) -> str:
         try:
@@ -331,6 +365,8 @@ class HuberMinistatCCClient:
             telemetry["temperature_control_active"] = status.get("temperature_control_active")
             telemetry["circulation_active"] = status.get("circulation_active")
             telemetry["status_raw"] = status.get("raw")
+            telemetry["status_available"] = status.get("status_available")
+            telemetry["active_control_sensor"] = status.get("active_control_sensor")
 
         if not any(telemetry.get(key) is not None for key in ("setpoint_C", "actual_temp_C", "external_temp_C")):
             raise DriverError("Ministat CC returned no valid numeric temperature data.")

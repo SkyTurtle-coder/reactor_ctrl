@@ -24,7 +24,8 @@ _PP_COMMAND_TEXT = {
     "get_external_temp": "TE?",
     "get_process_temp": "TE?",
     "get_error": "FSW?",
-    "get_status": "CA?",
+    "get_status": "TEMP?",
+    "get_control_status": "CA?",
 }
 _TEMPERATURE_COMMANDS = {"get_setpoint", "get_internal_temp", "get_external_temp", "get_process_temp", "get_return_temp"}
 
@@ -57,7 +58,13 @@ def _query_pb(host: str, port: int, *, command: str, timeout: float) -> tuple[st
     return value_hex, HuberUnistatTCP.decode_i16(value_hex)
 
 
-def _query_pp(host: str, port: int, *, command: str, timeout: float) -> tuple[str, float | int | dict[str, bool] | str]:
+def _query_pp(
+    host: str,
+    port: int,
+    *,
+    command: str,
+    timeout: float,
+) -> tuple[str, float | int | dict[str, bool | str] | str]:
     if command not in _PP_COMMAND_TEXT:
         raise ValueError(f"PP smoke test does not support command '{command}'.")
     command_text = _PP_COMMAND_TEXT[command]
@@ -69,6 +76,10 @@ def _query_pp(host: str, port: int, *, command: str, timeout: float) -> tuple[st
     if command in _TEMPERATURE_COMMANDS:
         return response.strip(), _temperature_from_pp_response(response)
     if command == "get_status":
+        return response.strip(), {
+            "active_control_sensor": response.strip().lower(),
+        }
+    if command == "get_control_status":
         raw = _integer_from_pp_response(response)
         active = raw == 1
         return response.strip(), {
@@ -85,7 +96,7 @@ def _query(
     command: str,
     timeout: float,
     protocol: str,
-) -> tuple[str, float | int | dict[str, bool] | str]:
+) -> tuple[str, float | int | dict[str, bool | str] | str]:
     if protocol == "pp":
         return _query_pp(host, port, command=command, timeout=timeout)
     return _query_pb(host, port, command=command, timeout=timeout)
@@ -113,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
             "get_external_temp",
             "get_process_temp",
             "get_status",
+            "get_control_status",
         ),
     )
     return parser
