@@ -1853,6 +1853,7 @@ def list_live_plot_series():
             min_value=0,
             max_value=5,
         )
+        history_fallback = _parse_query_bool("history_fallback", default=True)
     except ValueError as exc:
         return _json_error(str(exc), 400)
 
@@ -1885,6 +1886,7 @@ def list_live_plot_series():
         max_points=max_points,
         window_end=window_end,
         cache_seconds=cache_seconds,
+        history_fallback=history_fallback,
     )
     return jsonify(
         {
@@ -1896,6 +1898,7 @@ def list_live_plot_series():
             "window_end": plot_payload["window_end"],
             "cache_hit": plot_payload["cache_hit"],
             "cache_seconds": cache_seconds,
+            "history_fallback": history_fallback,
             "series": plot_payload["series"],
         }
     )

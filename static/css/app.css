@@ -2294,12 +2294,14 @@ h2 {
 
 .builder-display-value[data-display-tone="placeholder"],
 .builder-display-value[data-display-tone="no-data"],
-.builder-display-value[data-display-tone="unavailable"] {
+.builder-display-value[data-display-tone="unavailable"],
+.builder-display-value[data-display-tone="stale"] {
     font-size: 0.78rem;
     font-weight: 700;
     color: #57616d;
 }
 
+.builder-display-value[data-display-tone="stale"],
 .builder-display-value[data-display-tone="unavailable"] {
     color: #9a3412;
 }

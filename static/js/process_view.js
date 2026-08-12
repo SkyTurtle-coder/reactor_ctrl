@@ -92,6 +92,7 @@
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const PROCESS_DISPLAY_REFRESH_MS = 1500;
     const PROCESS_DISPLAY_ERROR_BACKOFF_MS = 15000;
+    const PROCESS_DISPLAY_STALE_AFTER_MS = 90000;
     const PROCESS_PLOT_MAX_LOOKBACK_SECONDS = PROCESS_PLOT_MAX_LOOKBACK_MINUTES * 60;
     const DEFAULT_PROCESS_PLOT_WINDOW_VALUE = 1;
     const DEFAULT_PROCESS_PLOT_WINDOW_UNIT = "h";
@@ -1277,6 +1278,7 @@
                     unit: asString(channel?.unit, ""),
                     valueType,
                     symbolId: asString(target?.symbol_id, ""),
+                    protocol: normalizedProtocolName(target?.protocol),
                 });
             }
         }
@@ -1892,6 +1894,125 @@
         return `${option.deviceId}:${option.channelCode}`;
     }
 
+    function timestampMs(value) {
+        if (!value) {
+            return null;
+        }
+        const parsed = Date.parse(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function displayLiveValueFromNumeric(option, numericValue, unit, measuredAt) {
+        if (!Number.isFinite(numericValue)) {
+            return { status: "no-data" };
+        }
+        const measuredAtMs = timestampMs(measuredAt);
+        if (!Number.isFinite(measuredAtMs)) {
+            return { status: "no-data" };
+        }
+        const ageMs = Math.max(0, Date.now() - measuredAtMs);
+        return {
+            status: ageMs > PROCESS_DISPLAY_STALE_AFTER_MS ? "stale" : "ok",
+            value: numericValue,
+            unit: asString(unit, option.unit),
+            measured_at: asString(measuredAt, ""),
+        };
+    }
+
+    function displayLiveValueFromSeries(option, series) {
+        const items = Array.isArray(series?.items) ? series.items : [];
+        const latest = items[items.length - 1];
+        return displayLiveValueFromNumeric(
+            option,
+            asNumber(latest?.numeric_value, null),
+            latest?.unit || series?.unit || option.unit,
+            latest?.measured_at || series?.latest_measurement_at,
+        );
+    }
+
+    function canLoadDisplaySnapshotFallback(option) {
+        const protocol = normalizedProtocolName(option?.protocol);
+        const channelCode = asString(option?.channelCode, "");
+        if ((protocol === "mettler_toledo_ics435" || protocol === "ics435_mtsics") && channelCode === "weight") {
+            return true;
+        }
+        return (
+            protocol === "huber_unistat_430"
+            || protocol === "huber_pilot_one"
+            || protocol === "huber_cc230"
+            || protocol === "huber_ministat_cc"
+        ) && ["setpoint_C", "actual_temp_C", "internal_temp_C", "external_temp_C"].includes(channelCode);
+    }
+
+    function displayLiveValueFromManualState(option, manualStatePayload) {
+        const snapshot = manualStatePayload?.state || null;
+        const extra = snapshot?.reported_extra || null;
+        if (!extra || asString(extra.communication_status, "ok") !== "ok") {
+            return null;
+        }
+
+        const protocol = normalizedProtocolName(option?.protocol);
+        const channelCode = asString(option?.channelCode, "");
+        let rawValue = null;
+        let unit = option.unit;
+
+        if ((protocol === "mettler_toledo_ics435" || protocol === "ics435_mtsics") && channelCode === "weight") {
+            rawValue = extra.weight;
+            unit = extra.unit || option.unit;
+        } else if (extra.kind === "huber") {
+            if (channelCode === "actual_temp_C") {
+                rawValue = extra.actual_temp_C ?? extra.internal_temp_C;
+            } else if (channelCode === "internal_temp_C") {
+                rawValue = extra.internal_temp_C ?? extra.actual_temp_C;
+            } else {
+                rawValue = extra[channelCode];
+            }
+            unit = option.unit || "degC";
+        }
+
+        return displayLiveValueFromNumeric(
+            option,
+            optionalNumber(rawValue),
+            unit,
+            extra.measured_at || snapshot?.reported_state?.updated_at,
+        );
+    }
+
+    async function applyDisplaySnapshotFallbacks(selectedOptions, liveValues) {
+        const fallbackOptions = selectedOptions.filter((option) => {
+            const current = liveValues[option.id];
+            return canLoadDisplaySnapshotFallback(option) && (!current || current.status !== "ok");
+        });
+        if (!fallbackOptions.length) {
+            return liveValues;
+        }
+
+        const deviceIds = Array.from(new Set(fallbackOptions.map((option) => option.deviceId)));
+        const snapshots = new Map();
+        await Promise.all(deviceIds.map(async (deviceId) => {
+            try {
+                const params = new URLSearchParams();
+                params.set("watch", "1");
+                params.set("requested_by", "process_display");
+                const payload = await fetchJson(`/api/devices/${deviceId}/manual-state?${params.toString()}`, {
+                    timeoutMs: 3000,
+                    maxRetries: 0,
+                });
+                snapshots.set(deviceId, payload);
+            } catch (_error) {
+                snapshots.set(deviceId, null);
+            }
+        }));
+
+        for (const option of fallbackOptions) {
+            const fallback = displayLiveValueFromManualState(option, snapshots.get(option.deviceId));
+            if (fallback && fallback.status !== "no-data") {
+                liveValues[option.id] = fallback;
+            }
+        }
+        return liveValues;
+    }
+
     function displayOptionForNode(node) {
         const selectedId = selectedDisplayValueId(node);
         return selectedId ? plotSeriesOptionMap.get(selectedId) || null : null;
@@ -1917,6 +2038,9 @@
         }
         const liveValue = state.displayLiveValues[selectedId];
         if (!liveValue || liveValue.status !== "ok") {
+            if (liveValue?.status === "stale") {
+                return { text: "Stale", tone: "stale" };
+            }
             return { text: "No data", tone: "no-data" };
         }
         return {
@@ -1998,6 +2122,7 @@
             params.set("since_minutes", "1");
             params.set("max_points", "2");
             params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));
+            params.set("history_fallback", "0");
 
             const payload = await fetchJson(
                 `/api/plot-series/live?${params.toString()}`,
@@ -2023,19 +2148,13 @@
             const liveValues = {};
             for (const option of selectedOptions) {
                 const series = payloadSeriesByKey.get(plotSeriesRequestKey(option));
-                const items = Array.isArray(series?.items) ? series.items : [];
-                const latest = items[items.length - 1];
-                const numericValue = asNumber(latest?.numeric_value, null);
-                liveValues[option.id] = Number.isFinite(numericValue)
-                    ? {
-                          status: "ok",
-                          value: numericValue,
-                          unit: asString(latest?.unit || series?.unit || option.unit, option.unit),
-                          measured_at: asString(latest?.measured_at || series?.latest_measurement_at, ""),
-                      }
-                    : { status: "no-data" };
+                liveValues[option.id] = displayLiveValueFromSeries(option, series);
             }
-            state.displayLiveValues = liveValues;
+            const resolvedLiveValues = await applyDisplaySnapshotFallbacks(selectedOptions, liveValues);
+            if (requestId !== state.displayLiveRequestId) {
+                return;
+            }
+            state.displayLiveValues = resolvedLiveValues;
             state.displayBackoffUntil = 0;
             renderDisplayValues();
         } catch (error) {

@@ -373,6 +373,24 @@ class DeviceManualRuntimeTests(unittest.TestCase):
 
         self.assertEqual([row[0] for row in ordered], [4, 3])
 
+    def test_manual_claim_sort_uses_due_time_before_recipe_poll_priority(self):
+        now = datetime.now(timezone.utc)
+        rows = [
+            (4, 0, 0, now - timedelta(seconds=1), None, 2),
+            (3, 0, 0, now - timedelta(seconds=30), None, 1),
+        ]
+
+        ordered = sorted(
+            rows,
+            key=lambda row: device_manual_runtime._manual_claim_candidate_sort_key(
+                row,
+                active_recipe_priority_order={4: (1, 0)},
+                active_recipe=True,
+            ),
+        )
+
+        self.assertEqual([row[0] for row in ordered], [3, 4])
+
 
 class ParseIkaNumericResponseTests(unittest.TestCase):
     """_parse_ika_numeric_response edge-cases."""

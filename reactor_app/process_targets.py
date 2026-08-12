@@ -130,6 +130,33 @@ def default_measurement_plot_channels_for_target(*, symbol_id: str, protocol: st
                 "data_source": "measurement",
             },
         ]
+    if normalized_symbol_id == "hc_system" and normalized_protocol == "huber_ministat_cc":
+        return [
+            {
+                "channel_id": None,
+                "channel_code": "setpoint_C",
+                "display_name": "Setpoint",
+                "unit": "degC",
+                "value_type": "float",
+                "data_source": "measurement",
+            },
+            {
+                "channel_id": None,
+                "channel_code": "actual_temp_C",
+                "display_name": "Internal Temperature",
+                "unit": "degC",
+                "value_type": "float",
+                "data_source": "measurement",
+            },
+            {
+                "channel_id": None,
+                "channel_code": "external_temp_C",
+                "display_name": "External Temperature",
+                "unit": "degC",
+                "value_type": "float",
+                "data_source": "measurement",
+            },
+        ]
     if normalized_symbol_id == "hc_system" and normalized_protocol == "huber_cc230":
         channels = [
             {

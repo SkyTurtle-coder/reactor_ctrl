@@ -398,6 +398,57 @@ class DeviceManualMeasurementPersistenceTests(unittest.TestCase):
                 ["actual_temp_C", "external_temp_C", "setpoint_C"],
             )
 
+    def test_huber_manual_state_caches_temperature_snapshot_for_display_fallback(self):
+        with self.app.app_context():
+            device = Device(
+                asset_serial="HUBER-SNAPSHOT-001",
+                manufacturer_serial="SN-HUBER-SNAPSHOT-001",
+                display_name="Huber Snapshot Test",
+                device_type="thermostat",
+                protocol="huber_ministat_cc",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            db.session.add(
+                DeviceManualState(
+                    device_id=device.device_id,
+                    queue_status="idle",
+                    desired_version=0,
+                    applied_version=0,
+                )
+            )
+            db.session.commit()
+
+            measured_at = datetime.now(timezone.utc)
+            reported_extra = device_manual_runtime._huber_reported_extra(
+                {
+                    "setpoint_C": 25.0,
+                    "actual_temp_C": 24.91,
+                    "external_temp_C": 23.45,
+                    "active_control_sensor": "internal",
+                    "status_available": True,
+                },
+                measured_at=measured_at,
+                device=device,
+            )
+            device_manual_runtime._commit_huber_manual_state_success(
+                self.app,
+                device_id=device.device_id,
+                reported_extra=reported_extra,
+                measured_at=measured_at,
+                watch_active=False,
+                bg_interval=timedelta(seconds=10),
+            )
+
+            state = db.session.get(DeviceManualState, device.device_id)
+            self.assertEqual(state.reported_extra["kind"], "huber")
+            self.assertEqual(state.reported_extra["actual_temp_C"], 24.91)
+            self.assertEqual(state.reported_extra["internal_temp_C"], 24.91)
+            self.assertEqual(state.reported_extra["external_temp_C"], 23.45)
+            snapshot = device_manual_runtime.manual_state_to_dict(state)
+            self.assertEqual(snapshot["reported_extra"]["setpoint_C"], 25.0)
+
     def test_active_ics435_discovery_seeds_manual_state_and_weight_channel(self):
         with self.app.app_context():
             device = Device(

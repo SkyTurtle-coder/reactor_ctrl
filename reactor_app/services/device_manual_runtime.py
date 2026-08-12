@@ -572,7 +572,15 @@ def _manual_claim_candidate_sort_key(
     desired_pending_order = 0 if desired_version > applied_version else 1
     if active_recipe:
         priority, recipe_order = active_recipe_priority_order.get(device_id, (_RECIPE_PRIORITY_MAX + 1, 9999))
-        return (priority, recipe_order, desired_pending_order, port_number, device_id)
+        return (
+            desired_pending_order,
+            _candidate_datetime_sort_value(_candidate_row_value(row, 3)),
+            _candidate_datetime_sort_value(_candidate_row_value(row, 4)),
+            priority,
+            recipe_order,
+            port_number,
+            device_id,
+        )
 
     return (
         desired_pending_order,
@@ -1307,6 +1315,7 @@ def _commit_huber_manual_state_success(
     app: Flask,
     *,
     device_id: int,
+    reported_extra: dict[str, Any] | None = None,
     measured_at: datetime,
     watch_active: bool,
     bg_interval: timedelta,
@@ -1319,7 +1328,7 @@ def _commit_huber_manual_state_success(
     )
 
     def values_factory() -> dict[Any, Any]:
-        return {
+        values: dict[Any, Any] = {
             DeviceManualState.last_reported_at: measured_at,
             DeviceManualState.applied_version: case(
                 (DeviceManualState.desired_version == 0, 0),
@@ -1331,9 +1340,14 @@ def _commit_huber_manual_state_success(
             DeviceManualState.lease_owner: None,
             DeviceManualState.lease_expires_at: None,
         }
+        if reported_extra is not None:
+            values[DeviceManualState.reported_extra] = reported_extra
+        return values
 
     def memory_update(state: DeviceManualState) -> None:
         state.last_reported_at = measured_at
+        if reported_extra is not None:
+            state.reported_extra = reported_extra
         if state.desired_version == 0:
             state.applied_version = 0
         state.last_error = None
@@ -1341,6 +1355,40 @@ def _commit_huber_manual_state_success(
         _release_manual_state_lease(state, status="idle")
 
     return _update_manual_state_row(device_id, values_factory=values_factory, memory_update=memory_update)
+
+
+def _huber_reported_extra(
+    telemetry: dict[str, Any],
+    *,
+    measured_at: datetime,
+    device: Device | None = None,
+) -> dict[str, Any]:
+    def numeric(value: Any) -> float | None:
+        try:
+            return None if value in (None, "") else float(value)
+        except (TypeError, ValueError):
+            return None
+
+    actual_temp = numeric(telemetry.get("actual_temp_C"))
+    internal_temp = numeric(telemetry.get("internal_temp_C"))
+    if internal_temp is None and actual_temp is not None and not _is_cc230_device(device):
+        internal_temp = actual_temp
+    if actual_temp is None and internal_temp is not None:
+        actual_temp = internal_temp
+
+    return {
+        "kind": "huber",
+        "setpoint_C": numeric(telemetry.get("setpoint_C")),
+        "actual_temp_C": actual_temp,
+        "internal_temp_C": internal_temp,
+        "external_temp_C": numeric(telemetry.get("external_temp_C")),
+        "temperature_control_active": telemetry.get("temperature_control_active"),
+        "circulation_active": telemetry.get("circulation_active"),
+        "status_available": telemetry.get("status_available"),
+        "active_control_sensor": telemetry.get("active_control_sensor"),
+        "measured_at": measured_at.isoformat(),
+        "communication_status": "ok",
+    }
 
 
 def _scale_reported_extra(telemetry: dict[str, Any], *, measured_at: datetime) -> dict[str, Any]:
@@ -1847,9 +1895,11 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
                     raise RuntimeError("Queued manual-state writes are not supported for Huber devices.")
                 telemetry = _read_huber_status(device)
                 measured_at = _now_utc()
+                reported_extra = _huber_reported_extra(telemetry, measured_at=measured_at, device=device)
                 _commit_huber_manual_state_success(
                     app,
                     device_id=device_id,
+                    reported_extra=reported_extra,
                     measured_at=measured_at,
                     watch_active=watch_active,
                     bg_interval=bg_interval,
@@ -1946,15 +1996,19 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         # Device-busy during polling: a recipe or manual command holds the device
         # lock.  Never propagate this as a recipe failure — reschedule the poll.
         if isinstance(exc, DeviceCommandError) and is_device_busy_error(exc):
+            busy_retry_interval = _manual_poll_interval(app) if watch_active else (
+                _scale_poll_interval(app) if is_scale else _background_poll_interval(app)
+            )
             _commit_manual_state_release(
                 device_id,
                 status="queued",
-                next_poll_at=_now_utc() + timedelta(seconds=1),
+                next_poll_at=_now_utc() + busy_retry_interval,
             )
             app.logger.info(
                 "Manual reconciler: device %s is busy (another command active); "
-                "poll skipped, rescheduled in 1 s.",
+                "poll skipped, rescheduled in %.3f s.",
                 device_id,
+                busy_retry_interval.total_seconds(),
             )
             return
         state = db.session.get(DeviceManualState, device_id)
@@ -1991,9 +2045,9 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     # its flowsheet (not just the devices the recipe's steps bind) — see
     # _active_flowsheet_device_ids for why that distinction matters.
     active_flowsheet_device_ids = _active_flowsheet_device_ids()
-    # Priority ordering only: devices the recipe is actively driving are
-    # serviced before other flowsheet devices, but never excluded from being
-    # polled at all.
+    # Priority ordering only: explicit desired-state changes still win, but
+    # ordinary telemetry polling is ordered by due time so flowsheet-only
+    # sensors cannot be starved by a busy recipe actor.
     active_recipe_priority_order = _active_recipe_device_priority_order(now)
     include_port_order = _manual_claim_port_order_available()
     selected_columns = [

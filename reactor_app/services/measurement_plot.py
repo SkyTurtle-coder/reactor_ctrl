@@ -598,6 +598,7 @@ def load_batched_device_plot_series_window(
     max_points: int,
     window_end: datetime | None = None,
     cache_seconds: float = 0,
+    history_fallback: bool = True,
 ) -> dict[str, Any]:
     normalized_specs = _normalize_series_specs(series_specs)
     effective_window_end = _cache_aligned_window_end(cache_seconds=cache_seconds, window_end=window_end)
@@ -626,6 +627,7 @@ def load_batched_device_plot_series_window(
             int(window_seconds),
             int(max(1, max_points)),
             normalized_window_end.isoformat(),
+            bool(history_fallback),
         )
         cached = _live_plot_cache_get(cache_key)
         if cached is not None:
@@ -672,7 +674,7 @@ def load_batched_device_plot_series_window(
         key for key in normalized_specs
         if not series_by_key.get(key, {}).get("items")
     ]
-    if empty_specs:
+    if history_fallback and empty_specs:
         _FALLBACK_DAYS = 30
         fallback_start = normalized_window_end - timedelta(days=_FALLBACK_DAYS)
         fallback_bucket = _bucket_seconds(

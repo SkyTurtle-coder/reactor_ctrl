@@ -321,6 +321,33 @@ class DeviceMeasurementsApiTests(unittest.TestCase):
         self.assertEqual(payload["window_start"], (window_end - timedelta(seconds=30)).isoformat())
         self.assertEqual([item["numeric_value"] for item in payload["series"][0]["items"]], [101.0])
 
+    def test_live_plot_series_endpoint_can_disable_history_fallback(self):
+        window_end = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
+        self._insert_measurement_at(
+            measured_at=window_end - timedelta(minutes=5),
+            value=88.8,
+            channel_code="temp",
+            device_id=self.device_id,
+        )
+
+        response = self.client.get(
+            "/api/plot-series/live",
+            query_string=[
+                ("series", f"{self.device_id}:temp"),
+                ("since_seconds", "60"),
+                ("max_points", "20"),
+                ("window_end", window_end.isoformat()),
+                ("history_fallback", "0"),
+                ("cache_seconds", "0"),
+            ],
+        )
+        self.assertEqual(response.status_code, 200)
+
+        payload = response.get_json()
+        self.assertFalse(payload["history_fallback"])
+        self.assertEqual(payload["series"][0]["items"], [])
+        self.assertIsNone(payload["series"][0]["latest_measurement_at"])
+
     def test_live_plot_series_endpoint_rejects_missing_series(self):
         response = self.client.get("/api/plot-series/live?since_minutes=5&max_points=20")
         self.assertEqual(response.status_code, 400)

@@ -296,6 +296,21 @@ class ProcessViewTemplateTests(unittest.TestCase):
         )
         self.assertEqual([channel["channel_code"] for channel in channels], ["weight"])
 
+    def test_ministat_cc_uses_actual_temp_channel_for_internal_display_value(self):
+        channels = default_measurement_plot_channels_for_target(
+            symbol_id="hc_system",
+            protocol="huber_ministat_cc",
+        )
+
+        self.assertEqual(
+            [(channel["channel_code"], channel["display_name"]) for channel in channels],
+            [
+                ("setpoint_C", "Setpoint"),
+                ("actual_temp_C", "Internal Temperature"),
+                ("external_temp_C", "External Temperature"),
+            ],
+        )
+
     def test_process_view_exposes_scale_manual_actions(self):
         response = self.client.get("/process")
         self.assertEqual(response.status_code, 200)
@@ -356,6 +371,13 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("isProgramPolling: false,", source)
         self.assertIn("programPollRequestId: 0,", source)
         self.assertIn("if (settings.quiet && state.isProgramPolling) {", source)
+
+        # Display boxes are live readouts: they must not accept the plot
+        # service's historical fallback as if it were a fresh value.
+        self.assertIn('params.set("history_fallback", "0");', source)
+        self.assertIn("const PROCESS_DISPLAY_STALE_AFTER_MS = 90000;", source)
+        self.assertIn("async function applyDisplaySnapshotFallbacks(selectedOptions, liveValues)", source)
+        self.assertIn('params.set("requested_by", "process_display");', source)
 
     def test_collapsible_ui_uses_shared_chevron_and_animation_styles(self):
         repo_root = Path(__file__).resolve().parents[1]
