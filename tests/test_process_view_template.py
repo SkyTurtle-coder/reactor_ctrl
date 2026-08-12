@@ -208,11 +208,14 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertIn("function loadPlotMeasurements(options)", source)
         self.assertIn("const PROCESS_PLOT_REFRESH_MS = 1000;", source)
         self.assertIn("const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;", source)
+        self.assertIn("const PROCESS_PLOT_WATCH_RENEW_MS = 10000;", source)
+        self.assertIn("const PROCESS_PLOT_STALE_REFRESH_COOLDOWN_MS = 15000;", source)
         self.assertIn('document.getElementById("process-plot-window-value")', source)
         self.assertIn('document.getElementById("process-plot-window-unit")', source)
         self.assertIn('params.set("since_seconds", String(rangeOption.sinceSeconds));', source)
         self.assertIn('params.set("max_points", String(rangeOption.maxPoints));', source)
         self.assertIn('params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));', source)
+        self.assertIn('params.set("history_fallback", "0");', source)
         self.assertIn('params.append("series", seriesKey);', source)
         self.assertIn('`/api/plot-series/live?${params.toString()}`', source)
         self.assertIn("function normalizePlotWindow(payloads, requestedWindowEndIso, rangeOption)", source)
@@ -256,6 +259,18 @@ class ProcessViewTemplateTests(unittest.TestCase):
         self.assertNotIn("ensureRuntimePlotSamples", source)
         self.assertIn("const seriesItems = storedSeries;", source)
         self.assertIn("No data in this window", source)
+
+    def test_process_view_plot_extends_manual_state_watches(self):
+        script_path = Path(__file__).resolve().parents[1] / "static" / "js" / "process_view.js"
+        source = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("async function extendPlotMeasurementWatches(selectedOptions, options)", source)
+        self.assertIn('params.set("requested_by", "process_plot");', source)
+        self.assertIn('params.set("refresh", "1");', source)
+        self.assertIn("void extendPlotMeasurementWatches(selectedOptions);", source)
+        self.assertIn("refreshDeviceIds: staleOrMissingSeries.map((series) => series.deviceId),", source)
+        self.assertIn("plotWatchRenewDueByDeviceId: {},", source)
+        self.assertIn("plotWatchRefreshDueByDeviceId: {},", source)
 
     def test_process_view_api_supports_manual_state_endpoints(self):
         source = (Path(__file__).resolve().parents[1] / "reactor_app" / "api.py").read_text(encoding="utf-8")

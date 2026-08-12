@@ -89,6 +89,8 @@
     const PROCESS_PLOT_ERROR_BACKOFF_MS = 15000;
     const PROCESS_PLOT_LIVE_CACHE_SECONDS = 1;
     const PROCESS_PLOT_STALE_AFTER_MS = 60000;
+    const PROCESS_PLOT_WATCH_RENEW_MS = 10000;
+    const PROCESS_PLOT_STALE_REFRESH_COOLDOWN_MS = 15000;
     const PROCESS_PLOT_MAX_LOOKBACK_MINUTES = 30 * 24 * 60;
     const PROCESS_DISPLAY_REFRESH_MS = 1500;
     const PROCESS_DISPLAY_ERROR_BACKOFF_MS = 15000;
@@ -1894,6 +1896,74 @@
         return `${option.deviceId}:${option.channelCode}`;
     }
 
+    function canWatchPlotMeasurementOption(option) {
+        const deviceId = Number(option?.deviceId);
+        if (!Number.isInteger(deviceId) || deviceId <= 0) {
+            return false;
+        }
+        const protocol = normalizedProtocolName(option?.protocol);
+        return (
+            protocol === "ika_eurostar_60"
+            || protocol === "huber_unistat_430"
+            || protocol === "huber_pilot_one"
+            || protocol === "huber_cc230"
+            || protocol === "huber_ministat_cc"
+            || protocol === "mettler_toledo_ics435"
+            || protocol === "ics435_mtsics"
+        );
+    }
+
+    async function extendPlotMeasurementWatches(selectedOptions, options) {
+        const settings = options || {};
+        const nowMs = Date.now();
+        const refreshDeviceIds = new Set(
+            (Array.isArray(settings.refreshDeviceIds) ? settings.refreshDeviceIds : [])
+                .map((deviceId) => Number(deviceId))
+                .filter((deviceId) => Number.isInteger(deviceId) && deviceId > 0),
+        );
+        const deviceIds = Array.from(new Set(
+            (Array.isArray(selectedOptions) ? selectedOptions : [])
+                .filter(canWatchPlotMeasurementOption)
+                .map((option) => Number(option.deviceId)),
+        ));
+        await Promise.all(deviceIds.map(async (deviceId) => {
+            const key = String(deviceId);
+            const shouldRefresh = refreshDeviceIds.has(deviceId);
+            if (shouldRefresh) {
+                const nextRefreshMs = Number(state.plotWatchRefreshDueByDeviceId[key] || 0);
+                if (nowMs < nextRefreshMs) {
+                    return;
+                }
+                state.plotWatchRefreshDueByDeviceId[key] = nowMs + PROCESS_PLOT_STALE_REFRESH_COOLDOWN_MS;
+            } else {
+                const nextRenewMs = Number(state.plotWatchRenewDueByDeviceId[key] || 0);
+                if (nowMs < nextRenewMs) {
+                    return;
+                }
+                state.plotWatchRenewDueByDeviceId[key] = nowMs + PROCESS_PLOT_WATCH_RENEW_MS;
+            }
+            const params = new URLSearchParams();
+            params.set("watch", "1");
+            params.set("requested_by", "process_plot");
+            if (shouldRefresh) {
+                params.set("refresh", "1");
+            }
+            try {
+                await fetchJson(`/api/devices/${deviceId}/manual-state?${params.toString()}`, {
+                    timeoutMs: 3000,
+                    maxRetries: 0,
+                });
+                state.plotWatchRenewDueByDeviceId[key] = nowMs + PROCESS_PLOT_WATCH_RENEW_MS;
+            } catch (_error) {
+                const retryMs = nowMs + PROCESS_PLOT_ERROR_BACKOFF_MS;
+                state.plotWatchRenewDueByDeviceId[key] = retryMs;
+                if (shouldRefresh) {
+                    state.plotWatchRefreshDueByDeviceId[key] = retryMs;
+                }
+            }
+        }));
+    }
+
     function timestampMs(value) {
         if (!value) {
             return null;
@@ -2109,6 +2179,7 @@
         state.isDisplayLiveBusy = true;
 
         try {
+            void extendPlotMeasurementWatches(selectedOptions);
             const params = new URLSearchParams();
             const seenSeriesKeys = new Set();
             for (const option of selectedOptions) {
@@ -2206,6 +2277,7 @@
         }
 
         try {
+            void extendPlotMeasurementWatches(selectedOptions);
             const params = new URLSearchParams();
             const seenSeriesKeys = new Set();
             for (const option of selectedOptions) {
@@ -2219,6 +2291,7 @@
             params.set("since_seconds", String(rangeOption.sinceSeconds));
             params.set("max_points", String(rangeOption.maxPoints));
             params.set("cache_seconds", String(PROCESS_PLOT_LIVE_CACHE_SECONDS));
+            params.set("history_fallback", "0");
             const payload = await fetchJson(
                 `/api/plot-series/live?${params.toString()}`,
                 { timeoutMs: 5000, maxRetries: 1 },
@@ -2254,7 +2327,16 @@
             renderPlotCharts(seriesItems, plotWindow);
 
             const populatedSeries = seriesItems.filter((series) => series.points.length > 0).length;
-            const staleSeries = seriesItems.filter((series) => plotSeriesFreshness(series, plotWindow).status === "stale").length;
+            const staleOrMissingSeries = seriesItems.filter((series) => {
+                const freshness = plotSeriesFreshness(series, plotWindow);
+                return freshness.status === "stale" || freshness.status === "no-data";
+            });
+            if (staleOrMissingSeries.length) {
+                void extendPlotMeasurementWatches(selectedOptions, {
+                    refreshDeviceIds: staleOrMissingSeries.map((series) => series.deviceId),
+                });
+            }
+            const staleSeries = staleOrMissingSeries.filter((series) => plotSeriesFreshness(series, plotWindow).status === "stale").length;
             if (populatedSeries > 0) {
                 setPlotStatus(
                     `Plot updated for ${rangeOption.label.toLowerCase()} ending ${formatPlotTimestamp(plotWindow.endMs)}. ${populatedSeries} selected series contain trend data${staleSeries ? `, ${staleSeries} stale` : ""}.`,
@@ -4083,6 +4165,8 @@
         plotBackoffUntil: 0,
         isPlotBusy: false,
         plotRequestId: 0,
+        plotWatchRenewDueByDeviceId: {},
+        plotWatchRefreshDueByDeviceId: {},
         displayLiveValues: {},
         displayBackoffUntil: 0,
         isDisplayLiveBusy: false,

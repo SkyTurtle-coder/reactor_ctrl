@@ -80,6 +80,12 @@ _HUBER_SETPOINT_LIMITS_BY_PROTOCOL = {
     "huber_ministat_cc": (-40.0, 150.0),
 }
 _SAFE_HUBER_SETPOINT_C = 20.0
+_HUBER_RECIPE_META_PREFIX = "_recipe_huber_"
+_HUBER_REMOTE_INITIALIZED_FIELD = f"{_HUBER_RECIPE_META_PREFIX}remote_initialized"
+_HUBER_LAST_SETPOINT_WRITE_AT_FIELD = f"{_HUBER_RECIPE_META_PREFIX}last_setpoint_write_at"
+_HUBER_LAST_STEP_INDEX_FIELD = f"{_HUBER_RECIPE_META_PREFIX}last_step_index"
+_HUBER_SETPOINT_MIN_INTERVAL_SECONDS = 10.0
+_HUBER_SETPOINT_MIN_DELTA_C = 0.2
 
 
 class RecipeProgramDeviceCommandError(RuntimeError):
@@ -1480,6 +1486,88 @@ def _positive_int_config(app: Flask, key: str, default: int, *, min_value: int =
     return max(min_value, value)
 
 
+def _non_negative_float_config(app: Flask, key: str, default: float) -> float:
+    try:
+        value = float(app.config.get(key, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(0.0, value)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_utc_datetime(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _as_utc_datetime(datetime.fromisoformat(value.strip()))
+    except ValueError:
+        return None
+
+
+def _evaluation_active_step_index(evaluation: dict[str, Any] | None) -> int | None:
+    if not isinstance(evaluation, dict) or evaluation.get("completed"):
+        return None
+    try:
+        return int(evaluation.get("active_step_index"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _huber_setpoint_write_due(
+    app: Flask,
+    previous_payload: dict[str, Any],
+    *,
+    temp_c: float,
+    has_temp_target: bool,
+    desired_is_on: bool,
+    control_sensor: str,
+    active_step_index: int | None,
+    force_final: bool,
+    now: datetime,
+) -> bool:
+    if not has_temp_target or not desired_is_on:
+        return False
+    if not previous_payload or not bool(previous_payload.get("is_on")):
+        return True
+    if not bool(previous_payload.get(_HUBER_REMOTE_INITIALIZED_FIELD)):
+        return True
+
+    previous_control_sensor = previous_payload.get(_CONTROL_SENSOR_FIELD) if isinstance(previous_payload, dict) else None
+    if previous_control_sensor and control_sensor != previous_control_sensor:
+        return True
+
+    try:
+        previous_temp = round(float(previous_payload.get("temp")), 2)
+    except (TypeError, ValueError):
+        return True
+
+    if force_final and abs(temp_c - previous_temp) > 0.000001:
+        return True
+
+    last_step_index = previous_payload.get(_HUBER_LAST_STEP_INDEX_FIELD)
+    if active_step_index is not None and last_step_index != active_step_index:
+        return True
+
+    min_delta_c = _non_negative_float_config(
+        app,
+        "RECIPE_HUBER_SETPOINT_MIN_DELTA_C",
+        _HUBER_SETPOINT_MIN_DELTA_C,
+    )
+    if abs(temp_c - previous_temp) >= min_delta_c:
+        return True
+
+    last_write_at = _parse_iso_datetime(previous_payload.get(_HUBER_LAST_SETPOINT_WRITE_AT_FIELD))
+    if last_write_at is None:
+        return True
+    min_interval_s = _non_negative_float_config(
+        app,
+        "RECIPE_HUBER_SETPOINT_MIN_INTERVAL_SECONDS",
+        _HUBER_SETPOINT_MIN_INTERVAL_SECONDS,
+    )
+    return abs(temp_c - previous_temp) > 0.000001 and (now - last_write_at).total_seconds() >= min_interval_s
+
+
 def _recipe_command_payload(app: Flask, payload: dict[str, Any] | None) -> dict[str, Any]:
     command_payload = deepcopy(payload or {})
     command_payload.setdefault(
@@ -1632,6 +1720,24 @@ def _execute_recipe_device_command_sequence(
                 )
             except RecipeProgramCommandInterrupted:
                 return False
+            if command_name == "set_setpoint" and expected_setpoint_c is not None:
+                metadata = getattr(getattr(execution, "result", None), "metadata", None)
+                if isinstance(metadata, dict):
+                    readback = metadata.get("verified_setpoint")
+                    if readback is None and metadata.get("setpoint_sync_status") != "unverified":
+                        readback = metadata.get("value")
+                    if readback is not None:
+                        try:
+                            readback_c = round(float(readback), 2)
+                        except (TypeError, ValueError) as exc:
+                            raise RecipeProgramDeviceCommandError(
+                                f"Recipe setpoint write for actor '{actor}' did not return a numeric readback."
+                            ) from exc
+                        if abs(readback_c - expected_setpoint_c) > 0.75:
+                            raise RecipeProgramDeviceCommandError(
+                                f"Recipe setpoint write mismatch for actor '{actor}': "
+                                f"requested {expected_setpoint_c:g} degC, read back {readback_c:g} degC."
+                            )
             if command_name in {"select_internal_sensor", "select_external_sensor"}:
                 time.sleep(_SENSOR_SELECT_SETTLE_SECONDS)
             if command_name == "get_setpoint" and expected_setpoint_c is not None:
@@ -1987,6 +2093,7 @@ def _apply_current_targets(
     applied_lookup = state.last_applied_targets_json if isinstance(state.last_applied_targets_json, dict) else {}
     next_applied_lookup: dict[str, dict[str, Any]] = deepcopy(applied_lookup)
     applied_changes: list[dict[str, Any]] = []
+    now = _now_utc()
 
     ordered_targets = sorted(
         current_targets.items(),
@@ -2070,16 +2177,26 @@ def _apply_current_targets(
                     f"Huber safety range {min_setpoint:g}..{max_setpoint:g} degC."
                 )
             desired_is_on = False if explicit_status is False else True
-            next_payload = {
+            active_step_index = _evaluation_active_step_index(evaluation)
+            next_public_payload = {
                 "profile_id": "hc_system_temperature",
                 "temp": temp_c,
                 "is_on": desired_is_on,
                 "control_sensor": control_sensor,
             }
-            if next_applied_lookup.get(actor) == next_payload:
-                continue
 
             if explicit_status is False:
+                next_payload = {
+                    **next_public_payload,
+                    _HUBER_REMOTE_INITIALIZED_FIELD: False,
+                    _HUBER_LAST_STEP_INDEX_FIELD: active_step_index,
+                }
+                if previous_payload.get(_HUBER_LAST_SETPOINT_WRITE_AT_FIELD):
+                    next_payload[_HUBER_LAST_SETPOINT_WRITE_AT_FIELD] = previous_payload.get(
+                        _HUBER_LAST_SETPOINT_WRITE_AT_FIELD
+                    )
+                if next_applied_lookup.get(actor) == next_payload:
+                    continue
                 try:
                     _execute_recipe_device_command(
                         app,
@@ -2104,26 +2221,47 @@ def _apply_current_targets(
                             "temp": round(float(previous_payload.get("temp") or 0.0), 2) if previous_payload else 0.0,
                             "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
                         },
-                        "current": deepcopy(next_payload),
+                        "current": deepcopy(next_public_payload),
                     }
                 )
                 continue
 
+            was_on = bool(previous_payload.get("is_on")) if previous_payload else False
+            remote_initialized = bool(previous_payload.get(_HUBER_REMOTE_INITIALIZED_FIELD)) if previous_payload else False
+            sensor_changed = control_sensor != previous_control_sensor
+            should_enable_remote = not remote_initialized or not was_on
+            should_select_sensor = should_enable_remote or sensor_changed
+            should_write_setpoint = _huber_setpoint_write_due(
+                app,
+                previous_payload,
+                temp_c=temp_c,
+                has_temp_target=has_temp_target,
+                desired_is_on=desired_is_on,
+                control_sensor=control_sensor,
+                active_step_index=active_step_index,
+                force_final=bool(evaluation.get("completed")) if isinstance(evaluation, dict) else False,
+                now=now,
+            )
+            should_start = not was_on
+
             sensor_command = "select_external_sensor" if control_sensor == "external" else "select_internal_sensor"
-            command_sequence: list[tuple[str, dict[str, Any] | None]] = [
-                ("enable_remote", {}),
-                (sensor_command, {"skip_remote": True}),
-            ]
-            if has_temp_target:
+            command_sequence: list[tuple[str, dict[str, Any] | None]] = []
+            if should_enable_remote:
+                command_sequence.append(("enable_remote", {}))
+            if should_select_sensor:
+                command_sequence.append((sensor_command, {"skip_remote": True}))
+            if should_write_setpoint:
                 setpoint_payload = {
                     "temp_c": temp_c,
                     "min_setpoint_c": min_setpoint,
                     "max_setpoint_c": max_setpoint,
                 }
                 command_sequence.append(("set_setpoint", setpoint_payload))
-                command_sequence.append(("get_setpoint", {}))
-            if not bool(previous_payload.get("is_on")):
+            if should_start:
                 command_sequence.append(("start", {}))
+            if not command_sequence:
+                continue
+
             applied_sequence = _execute_recipe_device_command_sequence(
                 app,
                 evaluation=evaluation,
@@ -2137,6 +2275,22 @@ def _apply_current_targets(
             )
             if not applied_sequence:
                 return None
+            if not should_write_setpoint and previous_payload and "temp" in previous_payload:
+                try:
+                    next_public_payload["temp"] = round(float(previous_payload.get("temp") or 0.0), 2)
+                except (TypeError, ValueError):
+                    next_public_payload["temp"] = temp_c
+            next_payload = {
+                **next_public_payload,
+                _HUBER_REMOTE_INITIALIZED_FIELD: True,
+                _HUBER_LAST_STEP_INDEX_FIELD: active_step_index,
+            }
+            if should_write_setpoint:
+                next_payload[_HUBER_LAST_SETPOINT_WRITE_AT_FIELD] = now.isoformat()
+            elif previous_payload.get(_HUBER_LAST_SETPOINT_WRITE_AT_FIELD):
+                next_payload[_HUBER_LAST_SETPOINT_WRITE_AT_FIELD] = previous_payload.get(
+                    _HUBER_LAST_SETPOINT_WRITE_AT_FIELD
+                )
             next_applied_lookup[actor] = next_payload
             applied_changes.append(
                 {
@@ -2148,7 +2302,7 @@ def _apply_current_targets(
                         "temp": round(float(previous_payload.get("temp") or 0.0), 2) if previous_payload else 0.0,
                         "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
                     },
-                    "current": deepcopy(next_payload),
+                    "current": deepcopy(next_public_payload),
                 }
             )
             continue

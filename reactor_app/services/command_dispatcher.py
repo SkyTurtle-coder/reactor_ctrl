@@ -43,7 +43,7 @@ from .runtime_status import RuntimeStatus
 logger = logging.getLogger(__name__)
 
 _RUNTIME_SCHEDULER_EXTENSION_KEY = "runtime_command_scheduler"
-_DEFAULT_RUNTIME_WORKER_COUNT = 2
+_DEFAULT_RUNTIME_WORKER_COUNT = 3
 _DEFAULT_TIMEOUT_POLICY: dict[int, dict[str, float]] = {
     # EMERGENCY_STOP and SAFETY commands must never expire waiting in the queue
     # while a lower-priority command finishes.  Give them a long enough total

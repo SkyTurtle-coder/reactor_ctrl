@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -239,7 +240,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
                 )
 
         command_names = self._dispatch_command_names(dispatch_command)
-        self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "get_setpoint", "start"])
+        self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "start"])
         self.assertEqual(self._dispatch_command(dispatch_command, 2).payload["temp_c"], 21.25)
         self.assertEqual(self._dispatch_command(dispatch_command, 2).payload["response_timeout_ms"], 1200)
         self.assertEqual(self._dispatch_command(dispatch_command, 2).payload["max_retries"], 1)
@@ -272,11 +273,168 @@ class HuberRecipeProgramTests(unittest.TestCase):
                     )
 
         command_names = self._dispatch_command_names(dispatch_command)
-        self.assertEqual(command_names, ["enable_remote", "select_external_sensor", "set_setpoint", "get_setpoint", "start"])
+        self.assertEqual(command_names, ["enable_remote", "select_external_sensor", "set_setpoint", "start"])
         self.assertFalse(dispatch_command.call_args_list[0].kwargs["acquire_lock"])
         self.assertFalse(dispatch_command.call_args_list[1].kwargs["acquire_lock"])
         self.assertEqual(self._dispatch_command(dispatch_command, 1).payload["skip_remote"], True)
         self.assertEqual(changes[0]["current"]["control_sensor"], "external")
+
+    def test_huber_ramp_target_below_delta_and_interval_is_deferred(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+        now = datetime(2026, 8, 12, 13, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._binding()]}
+        previous_payload = {
+            "profile_id": "hc_system_temperature",
+            "temp": 21.0,
+            "is_on": True,
+            "control_sensor": "internal",
+            recipe_program_runtime._HUBER_REMOTE_INITIALIZED_FIELD: True,
+            recipe_program_runtime._HUBER_LAST_STEP_INDEX_FIELD: 0,
+            recipe_program_runtime._HUBER_LAST_SETPOINT_WRITE_AT_FIELD: now.isoformat(),
+        }
+        state.last_applied_targets_json = {"Huber_01": dict(previous_payload)}
+
+        with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
+                    changes = recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Huber_01": {"temp": 21.05, "pressure": 0, "rpm": 0, "control_sensor": "internal"}},
+                        evaluation={"active_step_index": 0, "completed": False},
+                    )
+
+        dispatch_command.assert_not_called()
+        self.assertEqual(changes, [])
+        self.assertEqual(state.last_applied_targets_json["Huber_01"], previous_payload)
+
+    def test_huber_ramp_target_after_min_interval_writes_setpoint_only(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+        now = datetime(2026, 8, 12, 13, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._binding()]}
+        state.last_applied_targets_json = {
+            "Huber_01": {
+                "profile_id": "hc_system_temperature",
+                "temp": 21.0,
+                "is_on": True,
+                "control_sensor": "internal",
+                recipe_program_runtime._HUBER_REMOTE_INITIALIZED_FIELD: True,
+                recipe_program_runtime._HUBER_LAST_STEP_INDEX_FIELD: 0,
+                recipe_program_runtime._HUBER_LAST_SETPOINT_WRITE_AT_FIELD: (now - timedelta(seconds=11)).isoformat(),
+            }
+        }
+
+        with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
+                    changes = recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Huber_01": {"temp": 21.05, "pressure": 0, "rpm": 0, "control_sensor": "internal"}},
+                        evaluation={"active_step_index": 0, "completed": False},
+                    )
+
+        self.assertEqual(self._dispatch_command_names(dispatch_command), ["set_setpoint"])
+        self.assertEqual(self._dispatch_command(dispatch_command, 0).payload["temp_c"], 21.05)
+        self.assertEqual(state.last_applied_targets_json["Huber_01"]["temp"], 21.05)
+        self.assertEqual(
+            state.last_applied_targets_json["Huber_01"][recipe_program_runtime._HUBER_LAST_SETPOINT_WRITE_AT_FIELD],
+            now.isoformat(),
+        )
+        self.assertEqual(changes[0]["current"]["temp"], 21.05)
+        self.assertNotIn(recipe_program_runtime._HUBER_LAST_SETPOINT_WRITE_AT_FIELD, changes[0]["current"])
+
+    def test_huber_recipe_step_change_forces_small_setpoint_write(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_unistat_430",
+        )
+        now = datetime(2026, 8, 12, 13, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._binding()]}
+        state.last_applied_targets_json = {
+            "Huber_01": {
+                "profile_id": "hc_system_temperature",
+                "temp": 21.0,
+                "is_on": True,
+                "control_sensor": "internal",
+                recipe_program_runtime._HUBER_REMOTE_INITIALIZED_FIELD: True,
+                recipe_program_runtime._HUBER_LAST_STEP_INDEX_FIELD: 0,
+                recipe_program_runtime._HUBER_LAST_SETPOINT_WRITE_AT_FIELD: (now - timedelta(seconds=2)).isoformat(),
+            }
+        }
+
+        with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
+                    recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Huber_01": {"temp": 21.05, "pressure": 0, "rpm": 0, "control_sensor": "internal"}},
+                        evaluation={"active_step_index": 1, "completed": False},
+                    )
+
+        self.assertEqual(self._dispatch_command_names(dispatch_command), ["set_setpoint"])
+        self.assertEqual(state.last_applied_targets_json["Huber_01"][recipe_program_runtime._HUBER_LAST_STEP_INDEX_FIELD], 1)
+
+    def test_huber_sensor_change_does_not_repeat_remote_or_start(self):
+        app = Flask(__name__)
+        device = Device(
+            device_id=7,
+            asset_serial="HUBER-7",
+            display_name="Huber Unistat",
+            device_type="thermostat",
+            protocol="huber_cc230",
+        )
+        binding = {**self._binding(), "protocol": "huber_cc230"}
+        now = datetime(2026, 8, 12, 13, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [binding]}
+        state.last_applied_targets_json = {
+            "Huber_01": {
+                "profile_id": "hc_system_temperature",
+                "temp": 21.0,
+                "is_on": True,
+                "control_sensor": "internal",
+                recipe_program_runtime._HUBER_REMOTE_INITIALIZED_FIELD: True,
+                recipe_program_runtime._HUBER_LAST_STEP_INDEX_FIELD: 0,
+                recipe_program_runtime._HUBER_LAST_SETPOINT_WRITE_AT_FIELD: now.isoformat(),
+            }
+        }
+
+        with patch.object(recipe_program_runtime, "_SENSOR_SELECT_SETTLE_SECONDS", 0):
+            with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+                with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                    with patch.object(recipe_program_runtime, "dispatch_device_command") as dispatch_command:
+                        recipe_program_runtime._apply_current_targets(
+                            app,
+                            state,
+                            {"Huber_01": {"temp": 21.0, "pressure": 0, "rpm": 0, "control_sensor": "external"}},
+                            evaluation={"active_step_index": 0, "completed": False},
+                        )
+
+        self.assertEqual(self._dispatch_command_names(dispatch_command), ["select_external_sensor", "set_setpoint"])
+        self.assertEqual(state.last_applied_targets_json["Huber_01"]["control_sensor"], "external")
 
     def test_huber_current_target_off_sends_stop_without_setpoint(self):
         app = Flask(__name__)
@@ -373,7 +531,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
             def refresh(self, item):
                 self.refresh_calls += 1
-                if self.refresh_calls >= 7:
+                if self.refresh_calls >= 6:
                     item.stop_requested = True
 
         with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=StopAfterSetpointSession(device))):
@@ -387,7 +545,7 @@ class HuberRecipeProgramTests(unittest.TestCase):
 
         self.assertIsNone(changes)
         command_names = self._dispatch_command_names(dispatch_command)
-        self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint", "get_setpoint"])
+        self.assertEqual(command_names, ["enable_remote", "select_internal_sensor", "set_setpoint"])
 
     def test_target_application_aborts_when_stop_was_requested(self):
         app = Flask(__name__)
