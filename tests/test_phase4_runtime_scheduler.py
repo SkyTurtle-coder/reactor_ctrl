@@ -223,6 +223,73 @@ class RuntimeWorkerTests(unittest.TestCase):
 
 
 class RuntimeIntegrationTests(unittest.TestCase):
+    class _FakeSocket:
+        def __init__(self, sent):
+            self.sent = sent
+            self.timeouts = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    def test_immediate_stop_binding_sends_ika_stop_without_runtime_queue(self):
+        app = Flask(__name__)
+        sent = []
+        device = SimpleNamespace(
+            device_id=8,
+            current_binding=SimpleNamespace(
+                connection=SimpleNamespace(connection_id=4, tcp_host="10.90.95.178", tcp_port=4001)
+            ),
+        )
+        fake_db = SimpleNamespace(session=SimpleNamespace(get=lambda _model, _item_id: device))
+
+        def fake_create_connection(address, timeout):
+            self.assertEqual(address, ("10.90.95.178", 4001))
+            self.assertLessEqual(timeout, 0.35)
+            return self._FakeSocket(sent)
+
+        with patch.object(recipe_program_runtime, "db", fake_db):
+            with patch.object(recipe_program_runtime.socket, "create_connection", side_effect=fake_create_connection):
+                error = recipe_program_runtime._immediate_stop_binding(
+                    app,
+                    {
+                        "actor": "Stirrer_01",
+                        "device_id": 8,
+                        "profile_id": "motor_rpm",
+                        "protocol": "ika_eurostar_60",
+                    },
+                )
+
+        self.assertIsNone(error)
+        self.assertEqual(sent, [b"STOP_4 \r\n"])
+
+    def test_immediate_stop_specs_use_protocol_specific_stop_telegrams(self):
+        cases = [
+            ("huber_cc230", b"STOP\r\n"),
+            ("huber_ministat_cc", b"CA@ 00000\r\n"),
+            ("huber_unistat_430", b"{M140000\r\n"),
+        ]
+        with patch.object(recipe_program_runtime, "_binding_tcp_endpoint", return_value=("127.0.0.1", 4004)):
+            for protocol, payload in cases:
+                spec = recipe_program_runtime._immediate_stop_spec_for_binding(
+                    {
+                        "actor": "Huber_01",
+                        "device_id": 5,
+                        "profile_id": "hc_system_temperature",
+                        "protocol": protocol,
+                    }
+                )
+                self.assertIsNotNone(spec)
+                self.assertEqual(spec["payload"], payload)
+
     def test_manual_runtime_uses_dispatcher_with_priority_and_source(self):
         fake_session = SimpleNamespace(commit=MagicMock())
         device = Device(device_id=11, display_name="IKA", protocol="ika_eurostar_60")
@@ -331,18 +398,20 @@ class RuntimeIntegrationTests(unittest.TestCase):
 
         with patch.object(recipe_program_runtime, "db", fake_db):
             with patch.object(recipe_program_runtime, "_ensure_open_program_run", return_value=None):
-                with patch.object(
-                    recipe_program_runtime,
-                    "_apply_safe_stop_to_binding",
-                    return_value=({"actor": "Stirrer_01", "device_id": 8, "is_on": False, "rpm": 0}, []),
-                ) as safe_stop:
-                    with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
-                        recipe_program_runtime._process_safety_stop_state(app, worker_id="worker-1")
+                with patch.object(recipe_program_runtime, "_apply_immediate_stop_to_bindings", return_value=[]):
+                    with patch.object(
+                        recipe_program_runtime,
+                        "_apply_safe_stop_to_binding",
+                        return_value=({"actor": "Stirrer_01", "device_id": 8, "is_on": False, "rpm": 0}, []),
+                    ) as safe_stop:
+                        with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
+                            recipe_program_runtime._process_safety_stop_state(app, worker_id="worker-1")
 
         safe_stop.assert_called_once()
-        cancel_runtime_commands.assert_called_once()
-        self.assertEqual(cancel_runtime_commands.call_args.kwargs["device_id"], 8)
-        self.assertEqual(cancel_runtime_commands.call_args.kwargs["priority_gt"], CommandPriority.SAFETY)
+        self.assertEqual(cancel_runtime_commands.call_count, 2)
+        self.assertNotIn("device_id", cancel_runtime_commands.call_args_list[0].kwargs)
+        self.assertEqual(cancel_runtime_commands.call_args_list[1].kwargs["device_id"], 8)
+        self.assertEqual(cancel_runtime_commands.call_args_list[1].kwargs["priority_gt"], CommandPriority.SAFETY)
         self.assertEqual(state.status, "stopped")
         self.assertFalse(state.stop_requested)
         self.assertIsNone(state.lease_owner)
@@ -367,20 +436,25 @@ class RuntimeIntegrationTests(unittest.TestCase):
             with patch.object(recipe_program_runtime, "_ensure_program_state", return_value=state):
                 with patch.object(recipe_program_runtime, "_ensure_open_program_run", return_value=None):
                     with patch.object(recipe_program_runtime, "_publish_program_stop_request", side_effect=publish_stop_request):
-                        with patch.object(
-                            recipe_program_runtime,
-                            "_apply_safe_stop_to_binding",
-                            return_value=({"actor": "Huber_01", "device_id": 7, "is_on": False}, []),
-                        ):
-                            with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
-                                result = recipe_program_runtime.stop_recipe_program(app, requested_by="operator")
+                        with patch.object(recipe_program_runtime, "_apply_immediate_stop_to_bindings", return_value=[]):
+                            with patch.object(
+                                recipe_program_runtime,
+                                "_apply_safe_stop_to_binding",
+                                return_value=({"actor": "Huber_01", "device_id": 7, "is_on": False}, []),
+                            ):
+                                with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
+                                    result = recipe_program_runtime.stop_recipe_program(app, requested_by="operator")
 
         self.assertIs(result, state)
-        self.assertEqual(cancel_runtime_commands.call_count, 2)
-        first_call = cancel_runtime_commands.call_args_list[0]
-        self.assertEqual(first_call.kwargs["device_id"], 7)
-        self.assertEqual(first_call.kwargs["priority_gt"], CommandPriority.SAFETY)
-        self.assertEqual(first_call.kwargs["status"], RuntimeStatus.PREEMPTED)
+        self.assertEqual(cancel_runtime_commands.call_count, 3)
+        global_call = cancel_runtime_commands.call_args_list[0]
+        self.assertNotIn("device_id", global_call.kwargs)
+        self.assertEqual(global_call.kwargs["priority_gt"], CommandPriority.SAFETY)
+        self.assertEqual(global_call.kwargs["status"], RuntimeStatus.PREEMPTED)
+        first_device_call = cancel_runtime_commands.call_args_list[1]
+        self.assertEqual(first_device_call.kwargs["device_id"], 7)
+        self.assertEqual(first_device_call.kwargs["priority_gt"], CommandPriority.SAFETY)
+        self.assertEqual(first_device_call.kwargs["status"], RuntimeStatus.PREEMPTED)
         self.assertEqual(state.status, "stopped")
 
     def test_stop_recipe_program_resolves_build_bindings_when_snapshot_bindings_are_empty(self):
@@ -420,17 +494,19 @@ class RuntimeIntegrationTests(unittest.TestCase):
                             "_build_target_lookup",
                             return_value={"Stirrer_01": fallback_binding},
                         ):
-                            with patch.object(
-                                recipe_program_runtime,
-                                "_apply_safe_stop_to_binding",
-                                return_value=({"actor": "Stirrer_01", "device_id": 8, "is_on": False}, []),
-                            ) as safe_stop:
-                                with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
-                                    result = recipe_program_runtime.stop_recipe_program(app, requested_by="operator")
+                            with patch.object(recipe_program_runtime, "_apply_immediate_stop_to_bindings", return_value=[]):
+                                with patch.object(
+                                    recipe_program_runtime,
+                                    "_apply_safe_stop_to_binding",
+                                    return_value=({"actor": "Stirrer_01", "device_id": 8, "is_on": False}, []),
+                                ) as safe_stop:
+                                    with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
+                                        result = recipe_program_runtime.stop_recipe_program(app, requested_by="operator")
 
         self.assertIs(result, state)
-        cancel_runtime_commands.assert_called_once()
-        self.assertEqual(cancel_runtime_commands.call_args.kwargs["device_id"], 8)
+        self.assertEqual(cancel_runtime_commands.call_count, 2)
+        self.assertNotIn("device_id", cancel_runtime_commands.call_args_list[0].kwargs)
+        self.assertEqual(cancel_runtime_commands.call_args_list[1].kwargs["device_id"], 8)
         safe_stop.assert_called_once()
         self.assertEqual(safe_stop.call_args.args[1]["device_id"], 8)
         self.assertEqual(state.status, "stopped")

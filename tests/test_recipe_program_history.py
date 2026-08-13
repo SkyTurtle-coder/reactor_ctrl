@@ -556,9 +556,10 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 db.session.commit()
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=stopped_at):
-                with patch.object(recipe_program_runtime, "dispatch_device_command"):
-                    recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
-                    db.session.commit()
+                with patch.object(recipe_program_runtime, "_apply_immediate_stop_to_bindings", return_value=[]):
+                    with patch.object(recipe_program_runtime, "dispatch_device_command"):
+                        recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
+                        db.session.commit()
 
             run = RecipeProgramRun.query.one()
             events = RecipeProgramEvent.query.order_by(RecipeProgramEvent.recipe_program_event_id.asc()).all()
@@ -830,9 +831,10 @@ class RecipeProgramHistoryPersistenceTests(unittest.TestCase):
                 db.session.commit()
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=stopped_at):
-                with patch.object(recipe_program_runtime, "dispatch_device_command"):
-                    recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
-                    db.session.commit()
+                with patch.object(recipe_program_runtime, "_apply_immediate_stop_to_bindings", return_value=[]):
+                    with patch.object(recipe_program_runtime, "dispatch_device_command"):
+                        recipe_program_runtime.stop_recipe_program(self.app, requested_by="integration_stop")
+                        db.session.commit()
 
             with patch.object(recipe_program_runtime, "_now_utc", return_value=restarted_at):
                 state = recipe_program_runtime.start_recipe_program(self.app, second_recipe, requested_by="integration_restart")

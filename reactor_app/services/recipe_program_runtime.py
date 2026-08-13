@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import socket
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -30,6 +32,7 @@ from ..models import (
     RecipeProgramState,
     ReactorBuild,
 )
+from .drivers import HuberUnistatTCP
 from .command_dispatcher import cancel_runtime_commands, dispatch_device_command, is_runtime_interrupted_error
 from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_manual_runtime import queue_manual_state_update
@@ -93,6 +96,9 @@ _IKA_LAST_RPM_WRITE_AT_FIELD = f"{_IKA_RECIPE_META_PREFIX}last_rpm_write_at"
 _IKA_LAST_STEP_INDEX_FIELD = f"{_IKA_RECIPE_META_PREFIX}last_step_index"
 _IKA_RPM_MIN_INTERVAL_SECONDS = 5.0
 _IKA_RPM_MIN_DELTA = 10.0
+_IMMEDIATE_STOP_CONNECT_TIMEOUT_S = 0.35
+_IMMEDIATE_STOP_WRITE_TIMEOUT_S = 0.35
+_IMMEDIATE_STOP_READ_TIMEOUT_S = 0.35
 
 
 class RecipeProgramDeviceCommandError(RuntimeError):
@@ -1495,6 +1501,144 @@ def _manual_text_payload(command_text: str) -> dict[str, Any]:
     }
 
 
+def _binding_tcp_endpoint(binding: dict[str, Any]) -> tuple[str, int]:
+    actor = str(binding.get("actor") or "").strip() or "unknown"
+    device = _load_binding_device(binding, actor)
+    current = device.current_binding
+    connection = current.connection if current is not None else None
+    if connection is None:
+        raise RuntimeError(f"Device {device.device_id} for actor '{actor}' has no active connection.")
+    host = str(connection.tcp_host or "").strip()
+    if not host:
+        raise RuntimeError(f"Connection {connection.connection_id} for actor '{actor}' has no TCP host.")
+    return host, int(connection.tcp_port)
+
+
+def _socket_send_immediate(
+    host: str,
+    port: int,
+    payload: bytes,
+    *,
+    read_until_lf: bool = False,
+) -> bytes:
+    with socket.create_connection(
+        (host, int(port)),
+        timeout=_IMMEDIATE_STOP_CONNECT_TIMEOUT_S,
+    ) as sock:
+        sock.settimeout(_IMMEDIATE_STOP_WRITE_TIMEOUT_S)
+        sock.sendall(payload)
+        if not read_until_lf:
+            return b""
+
+        sock.settimeout(_IMMEDIATE_STOP_READ_TIMEOUT_S)
+        data = bytearray()
+        while len(data) < 128:
+            chunk = sock.recv(1)
+            if not chunk:
+                break
+            data.extend(chunk)
+            if data.endswith(b"\n"):
+                break
+        return bytes(data)
+
+
+def _immediate_stop_spec_for_binding(binding: dict[str, Any]) -> dict[str, Any] | None:
+    protocol = _protocol_for_binding(binding)
+    actor = str(binding.get("actor") or "").strip() or "unknown"
+    host, port = _binding_tcp_endpoint(binding)
+    if protocol == "ika_eurostar_60":
+        payload = b"STOP_4 \r\n"
+    elif protocol == "huber_cc230":
+        payload = b"STOP\r\n"
+    elif protocol == "huber_ministat_cc":
+        payload = b"CA@ 00000\r\n"
+    elif protocol in {"huber_unistat_430", "huber_pilot_one"}:
+        payload = HuberUnistatTCP.build_request("14", "0000").encode("ascii")
+    else:
+        return None
+    return {
+        "actor": actor,
+        "protocol": protocol,
+        "host": host,
+        "port": port,
+        "payload": payload,
+    }
+
+
+def _send_immediate_stop_spec(app: Flask, spec: dict[str, Any]) -> str | None:
+    """Best-effort raw stop command that bypasses runtime queue/device locks."""
+    try:
+        _socket_send_immediate(
+            str(spec["host"]),
+            int(spec["port"]),
+            bytes(spec["payload"]),
+        )
+        return None
+    except Exception as exc:
+        message = f"{spec.get('actor')}: immediate {spec.get('protocol') or 'unknown'} stop failed: {exc}"
+        app.logger.critical(message, exc_info=True)
+        return message
+
+
+def _immediate_stop_binding(
+    app: Flask,
+    binding: dict[str, Any],
+) -> str | None:
+    try:
+        spec = _immediate_stop_spec_for_binding(binding)
+    except Exception as exc:
+        actor = str(binding.get("actor") or "").strip() or "unknown"
+        protocol = _protocol_for_binding(binding)
+        message = f"{actor}: immediate {protocol or 'unknown'} stop failed: {exc}"
+        app.logger.critical(message, exc_info=True)
+        return message
+    if spec is None:
+        return None
+    return _send_immediate_stop_spec(app, spec)
+
+
+def _resolve_immediate_stop_specs(app: Flask, bindings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    specs: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        if not (_is_ika_motor_binding(binding) or _is_huber_temperature_binding(binding)):
+            continue
+        try:
+            spec = _immediate_stop_spec_for_binding(binding)
+        except Exception as exc:
+            actor = str(binding.get("actor") or "").strip() or "unknown"
+            protocol = _protocol_for_binding(binding)
+            message = f"{actor}: immediate {protocol or 'unknown'} stop failed: {exc}"
+            app.logger.critical(message, exc_info=True)
+            errors.append(message)
+            continue
+        if spec is not None:
+            specs.append(spec)
+    return specs, errors
+
+
+def _send_immediate_stop_specs_parallel(app: Flask, specs: list[dict[str, Any]]) -> list[str]:
+    if not specs:
+        return []
+    errors: list[str] = []
+    worker_count = min(len(specs), 8)
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="safety-stop") as executor:
+        future_to_spec = {executor.submit(_send_immediate_stop_spec, app, spec): spec for spec in specs}
+        for future in as_completed(future_to_spec):
+            error = future.result()
+            if error:
+                errors.append(error)
+    return errors
+
+
+def _apply_immediate_stop_to_bindings(app: Flask, bindings: list[dict[str, Any]]) -> list[str]:
+    specs, errors = _resolve_immediate_stop_specs(app, bindings)
+    errors.extend(_send_immediate_stop_specs_parallel(app, specs))
+    return errors
+
+
 def _positive_int_config(app: Flask, key: str, default: int, *, min_value: int = 1) -> int:
     try:
         value = int(app.config.get(key, default))
@@ -2024,6 +2168,12 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
     safe_snapshot, safe_errors = _safe_stop_snapshot_for_state(state, snapshot)
     bindings = safe_snapshot.get("bindings") if isinstance(safe_snapshot.get("bindings"), list) else []
+    cancel_runtime_commands(
+        app,
+        priority_gt=CommandPriority.SAFETY,
+        status=RuntimeStatus.PREEMPTED,
+        reason="Recipe stop requested; interrupting all lower-priority runtime commands.",
+    )
     for binding in bindings:
         if not isinstance(binding, dict):
             continue
@@ -2037,6 +2187,7 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
             status=RuntimeStatus.PREEMPTED,
             reason="Recipe stop requested before command execution.",
         )
+    safe_errors.extend(_apply_immediate_stop_to_bindings(app, bindings))
     safe_targets, apply_errors = _apply_recipe_safe_state(app, safe_snapshot, requested_by=requested_by)
     safe_errors.extend(apply_errors)
 
@@ -2521,6 +2672,12 @@ def _process_safety_stop_state(app: Flask, *, worker_id: str) -> None:
     run = _ensure_open_program_run(state)
     safe_snapshot, safe_errors = _safe_stop_snapshot_for_state(state, snapshot)
     bindings = safe_snapshot.get("bindings") if isinstance(safe_snapshot.get("bindings"), list) else []
+    cancel_runtime_commands(
+        app,
+        priority_gt=CommandPriority.SAFETY,
+        status=RuntimeStatus.PREEMPTED,
+        reason="Recovered safety-stop state; interrupting all lower-priority runtime commands.",
+    )
     for binding in bindings:
         if not isinstance(binding, dict):
             continue
@@ -2534,6 +2691,7 @@ def _process_safety_stop_state(app: Flask, *, worker_id: str) -> None:
             status=RuntimeStatus.PREEMPTED,
             reason="Recovered safety-stop state before command execution.",
         )
+    safe_errors.extend(_apply_immediate_stop_to_bindings(app, bindings))
 
     try:
         safe_targets, apply_errors = _apply_recipe_safe_state(app, safe_snapshot, requested_by=requested_by)
@@ -2730,6 +2888,12 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
         safe_targets: dict[str, dict[str, Any]] = {}
         safe_snapshot, safe_errors = _safe_stop_snapshot_for_state(state, snapshot)
         bindings = safe_snapshot.get("bindings") if isinstance(safe_snapshot.get("bindings"), list) else []
+        cancel_runtime_commands(
+            app,
+            priority_gt=CommandPriority.SAFETY,
+            status=RuntimeStatus.PREEMPTED,
+            reason="Recipe runtime fatal error; interrupting all lower-priority runtime commands.",
+        )
         for binding in bindings:
             if not isinstance(binding, dict):
                 continue
@@ -2743,6 +2907,7 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
                 status=RuntimeStatus.PREEMPTED,
                 reason="Recipe runtime fatal error before safe-state execution.",
             )
+        safe_errors.extend(_apply_immediate_stop_to_bindings(app, bindings))
         try:
             safe_targets, apply_errors = _apply_recipe_safe_state(app, safe_snapshot, requested_by=requested_by)
             safe_errors.extend(apply_errors)
