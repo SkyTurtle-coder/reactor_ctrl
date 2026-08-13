@@ -409,7 +409,7 @@ def _active_flowsheet_device_ids() -> set[int] | None:
         return None
 
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
-    raw_reactor_build_id = snapshot.get("reactor_build_id")
+    raw_reactor_build_id = snapshot.get("reactor_build_id") or getattr(state, "reactor_build_id", None)
     try:
         reactor_build_id = int(raw_reactor_build_id)
     except (TypeError, ValueError):
@@ -417,7 +417,7 @@ def _active_flowsheet_device_ids() -> set[int] | None:
 
     if reactor_build_id is None:
         LOGGER.warning(
-            "Active recipe program has no reactor_build_id in its snapshot; "
+            "Active recipe program has no reactor_build_id in its snapshot or state row; "
             "falling back to recipe-only device scope for background polling."
         )
         return _active_recipe_program_device_ids()
@@ -1775,9 +1775,12 @@ def _ensure_manual_states_for_active_devices(app: Flask) -> None:
         Device.is_active.is_(True),
     )
     if active_flowsheet_device_ids is not None:
-        if not active_flowsheet_device_ids:
-            return
-        active_devices_query = active_devices_query.filter(Device.device_id.in_(active_flowsheet_device_ids))
+        active_devices_query = active_devices_query.filter(
+            or_(
+                Device.device_id.in_(active_flowsheet_device_ids),
+                Device.protocol.in_(list(_SCALE_PROTOCOLS)),
+            )
+        )
     active_devices = active_devices_query.all()
     seeded_states = 0
     seeded_channels = 0
@@ -2125,18 +2128,21 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
             .outerjoin(DeviceConnection, DeviceConnection.connection_id == DeviceBindingCurrent.connection_id)
         )
     if active_flowsheet_device_ids is not None:
-        if not active_flowsheet_device_ids:
-            return None
         # While a recipe runs, background polling is scoped to the active
         # flowsheet's devices (actuators AND sensors) rather than to the
         # narrower set of devices the recipe's steps happen to bind.  This is
         # what keeps a flowsheet-only sensor (e.g. a scale with no recipe
         # step) polled and recorded for the whole duration of the recipe.
+        # Active scales are deliberately kept as a fallback path: they are
+        # passive acquisition devices and must not freeze just because a
+        # legacy recipe snapshot is missing bindings or a transient flowsheet
+        # resolution yields an empty scope.
         # Non-flowsheet devices with an active UI watch are also allowed so
         # their live telemetry keeps flowing even while a recipe runs.
         candidate_query = candidate_query.filter(
             or_(
                 DeviceManualState.device_id.in_(active_flowsheet_device_ids),
+                Device.protocol.in_(list(_SCALE_PROTOCOLS)),
                 and_(
                     DeviceManualState.watch_expires_at.is_not(None),
                     DeviceManualState.watch_expires_at > now,

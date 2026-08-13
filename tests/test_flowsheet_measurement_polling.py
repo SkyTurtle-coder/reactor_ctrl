@@ -49,6 +49,7 @@ from reactor_app.models import (
     DeviceManualState,
     DeviceServer,
     Measurement,
+    MeasurementChannel,
     ReactorBuild,
     RecipeProgramState,
 )
@@ -138,7 +139,21 @@ class ActiveFlowsheetDeviceIdsUnitTests(unittest.TestCase):
         self.assertEqual(result, {1})
         self.assertNotIn(99, result)
 
-    def test_falls_back_to_recipe_scope_when_snapshot_has_no_reactor_build_id(self):
+    def test_uses_state_reactor_build_id_when_snapshot_has_no_reactor_build_id(self):
+        program_state = RecipeProgramState(status="running", reactor_build_id=12)
+        program_state.snapshot_json = {"bindings": [{"device_id": 10}]}
+        reactor_build = ReactorBuild(reactor_build_id=12, build_name="Build", definition_json={})
+        fake_session = _FakeSessionForFlowsheetScope(program_state=program_state, reactor_build=reactor_build)
+        flowsheet_targets = {"node-scale": {"is_resolved": True, "device_id": 20}}
+
+        with patch.object(device_manual_runtime, "db", SimpleNamespace(session=fake_session)):
+            with patch.object(device_manual_runtime, "resolve_process_device_targets", return_value=flowsheet_targets):
+                result = device_manual_runtime._active_flowsheet_device_ids()
+
+        self.assertEqual(result, {20})
+        self.assertNotIn(10, result)
+
+    def test_falls_back_to_recipe_scope_when_no_reactor_build_id_is_available(self):
         program_state = RecipeProgramState(status="running")
         program_state.snapshot_json = {"bindings": [{"device_id": 10}]}
         fake_session = _FakeSessionForFlowsheetScope(program_state=program_state, reactor_build=None)
@@ -812,6 +827,73 @@ class FlowsheetScopedPollingIntegrationTests(unittest.TestCase):
         self.assertEqual(len(payload["items"]), 1)
         self.assertAlmostEqual(payload["items"][0]["numeric_value"], 12.34)
         self.assertEqual(payload["items"][0]["channel_code"], "weight")
+
+    def test_legacy_recipe_state_build_id_keeps_scale_claimable_during_recipe(self):
+        with self.app.app_context():
+            scale, scale_server, scale_connection = self._seed_scale(
+                host="127.0.0.1", port=9011, asset_serial="SCALE-LEGACY"
+            )
+            stirrer, stirrer_server, stirrer_connection = self._seed_stirrer(
+                asset_serial="STIR-LEGACY", with_manual_state=False
+            )
+            build = self._seed_flowsheet(
+                stirrer_server=stirrer_server,
+                stirrer_connection=stirrer_connection,
+                scale_server=scale_server,
+                scale_connection=scale_connection,
+            )
+            state = RecipeProgramState(
+                recipe_program_state_id=1,
+                reactor_build_id=build.reactor_build_id,
+                status="running",
+            )
+            # Older persisted states may have the build id on the DB row but
+            # not duplicated into snapshot_json, and may have no recipe
+            # bindings for passive sensors.
+            state.snapshot_json = {"bindings": []}
+            db.session.add(state)
+            db.session.commit()
+
+            scope = device_manual_runtime._active_flowsheet_device_ids()
+            self.assertIn(scale.device_id, scope)
+
+            claimed_device_id = device_manual_runtime._claim_next_device_id(self.app, "worker-legacy")
+
+            self.assertEqual(claimed_device_id, scale.device_id)
+
+    def test_active_scale_is_claimable_when_running_recipe_scope_is_empty(self):
+        with self.app.app_context():
+            scale, _server, _connection = self._seed_scale(
+                host="127.0.0.1", port=9012, asset_serial="SCALE-EMPTY-SCOPE"
+            )
+
+            with patch.object(device_manual_runtime, "_active_flowsheet_device_ids", return_value=set()):
+                claimed_device_id = device_manual_runtime._claim_next_device_id(self.app, "worker-empty-scope")
+
+            self.assertEqual(claimed_device_id, scale.device_id)
+
+    def test_active_scale_discovery_survives_empty_running_recipe_scope(self):
+        with self.app.app_context():
+            scale, _server, _connection = self._seed_scale(
+                host="127.0.0.1",
+                port=9013,
+                asset_serial="SCALE-DISCOVERY-EMPTY-SCOPE",
+                with_manual_state=False,
+            )
+
+            with patch.object(device_manual_runtime, "_active_flowsheet_device_ids", return_value=set()):
+                device_manual_runtime._ensure_manual_states_for_active_devices(self.app)
+
+            state = db.session.get(DeviceManualState, scale.device_id)
+            channels = (
+                MeasurementChannel.query
+                .filter(MeasurementChannel.device_id == scale.device_id)
+                .order_by(MeasurementChannel.channel_code.asc())
+                .all()
+            )
+
+            self.assertIsNotNone(state)
+            self.assertEqual([channel.channel_code for channel in channels], ["weight"])
 
     # -- requirement #2 -------------------------------------------------------
 
