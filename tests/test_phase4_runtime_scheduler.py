@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from flask import Flask
 
-from reactor_app.models import Device, RecipeProgramState
+from reactor_app.models import Device, ReactorBuild, RecipeProgramState
 from reactor_app.services import device_manual_runtime, recipe_program_runtime
 from reactor_app.services.command_model import CommandPriority, CommandSource, DeviceCommand
 from reactor_app.services.runtime_scheduler import (
@@ -331,6 +331,80 @@ class RuntimeIntegrationTests(unittest.TestCase):
         self.assertEqual(first_call.kwargs["priority_gt"], CommandPriority.SAFETY)
         self.assertEqual(first_call.kwargs["status"], RuntimeStatus.PREEMPTED)
         self.assertEqual(state.status, "stopped")
+
+    def test_stop_recipe_program_resolves_build_bindings_when_snapshot_bindings_are_empty(self):
+        app = Flask(__name__)
+        build = ReactorBuild(reactor_build_id=1, build_name="Build", definition_json={})
+        state = RecipeProgramState(status="running", requested_by="initial", reactor_build_id=1)
+        state.snapshot_json = {
+            "reactor_build_id": 1,
+            "bindings": [],
+            "safe_state": [],
+        }
+        fallback_binding = {
+            "actor": "Stirrer_01",
+            "device_id": 8,
+            "device_display_name": "IKA Stirrer",
+            "profile_id": "motor_rpm",
+            "protocol": "ika_eurostar_60",
+            "is_resolved": True,
+        }
+
+        def fake_get(model, item_id):
+            if model is ReactorBuild and int(item_id) == 1:
+                return build
+            return None
+
+        fake_db = SimpleNamespace(session=SimpleNamespace(flush=MagicMock(), get=fake_get))
+
+        def publish_stop_request(item):
+            item.stop_requested = True
+
+        with patch.object(recipe_program_runtime, "db", fake_db):
+            with patch.object(recipe_program_runtime, "_ensure_program_state", return_value=state):
+                with patch.object(recipe_program_runtime, "_ensure_open_program_run", return_value=None):
+                    with patch.object(recipe_program_runtime, "_publish_program_stop_request", side_effect=publish_stop_request):
+                        with patch.object(
+                            recipe_program_runtime,
+                            "_build_target_lookup",
+                            return_value={"Stirrer_01": fallback_binding},
+                        ):
+                            with patch.object(
+                                recipe_program_runtime,
+                                "_apply_safe_stop_to_binding",
+                                return_value=({"actor": "Stirrer_01", "device_id": 8, "is_on": False}, []),
+                            ) as safe_stop:
+                                with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
+                                    result = recipe_program_runtime.stop_recipe_program(app, requested_by="operator")
+
+        self.assertIs(result, state)
+        cancel_runtime_commands.assert_called_once()
+        self.assertEqual(cancel_runtime_commands.call_args.kwargs["device_id"], 8)
+        safe_stop.assert_called_once()
+        self.assertEqual(safe_stop.call_args.args[1]["device_id"], 8)
+        self.assertEqual(state.status, "stopped")
+        self.assertEqual(state.last_applied_targets_json["Stirrer_01"]["is_on"], False)
+
+    def test_stop_recipe_program_without_any_safe_stop_binding_reports_error(self):
+        app = Flask(__name__)
+        state = RecipeProgramState(status="running", requested_by="initial")
+        state.snapshot_json = {"bindings": [], "safe_state": []}
+        fake_db = SimpleNamespace(session=SimpleNamespace(flush=MagicMock()))
+
+        def publish_stop_request(item):
+            item.stop_requested = True
+
+        with patch.object(recipe_program_runtime, "db", fake_db):
+            with patch.object(recipe_program_runtime, "_ensure_program_state", return_value=state):
+                with patch.object(recipe_program_runtime, "_ensure_open_program_run", return_value=None):
+                    with patch.object(recipe_program_runtime, "_publish_program_stop_request", side_effect=publish_stop_request):
+                        with patch.object(recipe_program_runtime, "_apply_safe_stop_to_binding") as safe_stop:
+                            result = recipe_program_runtime.stop_recipe_program(app, requested_by="operator")
+
+        self.assertIs(result, state)
+        safe_stop.assert_not_called()
+        self.assertEqual(state.status, "error")
+        self.assertIn("No recipe bindings or reactor_build_id", state.last_error or "")
 
 
 if __name__ == "__main__":

@@ -1960,6 +1960,48 @@ def _apply_recipe_safe_state(
     return safe_targets, safe_errors
 
 
+def _safe_stop_snapshot_for_state(
+    state: RecipeProgramState,
+    snapshot: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    if bindings:
+        return snapshot, []
+
+    raw_reactor_build_id = snapshot.get("reactor_build_id") or getattr(state, "reactor_build_id", None)
+    try:
+        reactor_build_id = int(raw_reactor_build_id)
+    except (TypeError, ValueError):
+        reactor_build_id = None
+
+    if reactor_build_id is None:
+        return snapshot, ["No recipe bindings or reactor_build_id were available for safe-state stop."]
+
+    try:
+        reactor_build = db.session.get(ReactorBuild, reactor_build_id)
+        if reactor_build is None:
+            raise RuntimeError(f"ReactorBuild {reactor_build_id} could not be loaded.")
+        fallback_bindings = [
+            deepcopy(binding)
+            for binding in _build_target_lookup(reactor_build).values()
+            if isinstance(binding, dict)
+            and binding.get("is_resolved")
+            and binding.get("device_id")
+            and (_is_ika_motor_binding(binding) or _is_huber_temperature_binding(binding))
+        ]
+    except Exception as exc:
+        return snapshot, [f"Safe-state stop could not resolve reactor_build_id={reactor_build_id}: {exc}"]
+
+    if not fallback_bindings:
+        return snapshot, [f"Safe-state stop found no resolved controllable devices for reactor_build_id={reactor_build_id}."]
+
+    return {
+        **snapshot,
+        "reactor_build_id": reactor_build_id,
+        "bindings": fallback_bindings,
+    }, []
+
+
 def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     app.logger.info(
         "Recipe stop requested by '%s': cancelling pending commands and applying safe-state.",
@@ -1969,7 +2011,8 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
     run = _ensure_open_program_run(state) if str(state.status or "").strip().lower() == _LEASE_STATUS_RUNNING else _find_open_program_run()
     _publish_program_stop_request(state)
     snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
-    bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+    safe_snapshot, safe_errors = _safe_stop_snapshot_for_state(state, snapshot)
+    bindings = safe_snapshot.get("bindings") if isinstance(safe_snapshot.get("bindings"), list) else []
     for binding in bindings:
         if not isinstance(binding, dict):
             continue
@@ -1983,7 +2026,8 @@ def stop_recipe_program(app: Flask, *, requested_by: str) -> RecipeProgramState:
             status=RuntimeStatus.PREEMPTED,
             reason="Recipe stop requested before command execution.",
         )
-    safe_targets, safe_errors = _apply_recipe_safe_state(app, snapshot, requested_by=requested_by)
+    safe_targets, apply_errors = _apply_recipe_safe_state(app, safe_snapshot, requested_by=requested_by)
+    safe_errors.extend(apply_errors)
 
     now = _now_utc()
     error_message = "; ".join(safe_errors) if safe_errors else None
@@ -2563,8 +2607,8 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
             return
         requested_by = str(getattr(state, "requested_by", "") or "recipe_program").strip() or "recipe_program"
         safe_targets: dict[str, dict[str, Any]] = {}
-        safe_errors: list[str] = []
-        bindings = snapshot.get("bindings") if isinstance(snapshot.get("bindings"), list) else []
+        safe_snapshot, safe_errors = _safe_stop_snapshot_for_state(state, snapshot)
+        bindings = safe_snapshot.get("bindings") if isinstance(safe_snapshot.get("bindings"), list) else []
         for binding in bindings:
             if not isinstance(binding, dict):
                 continue
@@ -2579,7 +2623,8 @@ def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
                 reason="Recipe runtime fatal error before safe-state execution.",
             )
         try:
-            safe_targets, safe_errors = _apply_recipe_safe_state(app, snapshot, requested_by=requested_by)
+            safe_targets, apply_errors = _apply_recipe_safe_state(app, safe_snapshot, requested_by=requested_by)
+            safe_errors.extend(apply_errors)
         except Exception as safe_exc:
             safe_errors.append(str(safe_exc))
             app.logger.critical(
