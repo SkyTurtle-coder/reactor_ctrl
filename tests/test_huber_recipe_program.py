@@ -462,6 +462,122 @@ class HuberRecipeProgramTests(unittest.TestCase):
         self.assertFalse(state.last_applied_targets_json["Huber_01"]["is_on"])
         self.assertEqual(changes[0]["current"]["profile_id"], "hc_system_temperature")
 
+    def test_ika_ramp_rpm_inside_min_interval_is_deferred(self):
+        app = Flask(__name__)
+        app.config["RECIPE_IKA_RPM_MIN_INTERVAL_SECONDS"] = 5.0
+        app.config["RECIPE_IKA_RPM_MIN_DELTA"] = 10.0
+        device = Device(
+            device_id=8,
+            asset_serial="IKA-8",
+            display_name="IKA Stirrer",
+            device_type="actuator",
+            protocol="ika_eurostar_60",
+        )
+        now = datetime(2026, 8, 13, 11, 0, 0, tzinfo=timezone.utc)
+        previous_payload = {
+            "profile_id": "motor_rpm",
+            "rpm": 300,
+            "is_on": True,
+            recipe_program_runtime._IKA_LAST_RPM_WRITE_AT_FIELD: (now - timedelta(seconds=2)).isoformat(),
+            recipe_program_runtime._IKA_LAST_STEP_INDEX_FIELD: 0,
+        }
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._motor_binding()]}
+        state.last_applied_targets_json = {"Stirrer_01": dict(previous_payload)}
+
+        with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "queue_manual_state_update") as queue_update:
+                    changes = recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Stirrer_01": {"rpm": 320, "pressure": 0, "temp": 0}},
+                        evaluation={"active_step_index": 0, "completed": False},
+                    )
+
+        queue_update.assert_not_called()
+        self.assertEqual(changes, [])
+        self.assertEqual(state.last_applied_targets_json["Stirrer_01"], previous_payload)
+
+    def test_ika_ramp_rpm_after_min_interval_queues_update(self):
+        app = Flask(__name__)
+        app.config["RECIPE_IKA_RPM_MIN_INTERVAL_SECONDS"] = 5.0
+        app.config["RECIPE_IKA_RPM_MIN_DELTA"] = 10.0
+        device = Device(
+            device_id=8,
+            asset_serial="IKA-8",
+            display_name="IKA Stirrer",
+            device_type="actuator",
+            protocol="ika_eurostar_60",
+        )
+        now = datetime(2026, 8, 13, 11, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._motor_binding()]}
+        state.last_applied_targets_json = {
+            "Stirrer_01": {
+                "profile_id": "motor_rpm",
+                "rpm": 300,
+                "is_on": True,
+                recipe_program_runtime._IKA_LAST_RPM_WRITE_AT_FIELD: (now - timedelta(seconds=6)).isoformat(),
+                recipe_program_runtime._IKA_LAST_STEP_INDEX_FIELD: 0,
+            }
+        }
+
+        with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "queue_manual_state_update") as queue_update:
+                    changes = recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Stirrer_01": {"rpm": 312, "pressure": 0, "temp": 0}},
+                        evaluation={"active_step_index": 0, "completed": False},
+                    )
+
+        queue_update.assert_called_once()
+        self.assertTrue(queue_update.call_args.kwargs["desired_is_on"])
+        self.assertEqual(queue_update.call_args.kwargs["desired_speed"], 312)
+        applied = state.last_applied_targets_json["Stirrer_01"]
+        self.assertEqual(applied["rpm"], 312)
+        self.assertEqual(applied[recipe_program_runtime._IKA_LAST_RPM_WRITE_AT_FIELD], now.isoformat())
+        self.assertEqual(changes[0]["current"], {"profile_id": "motor_rpm", "rpm": 312, "is_on": True})
+
+    def test_ika_final_rpm_target_bypasses_ramp_throttle(self):
+        app = Flask(__name__)
+        app.config["RECIPE_IKA_RPM_MIN_INTERVAL_SECONDS"] = 5.0
+        app.config["RECIPE_IKA_RPM_MIN_DELTA"] = 10.0
+        device = Device(
+            device_id=8,
+            asset_serial="IKA-8",
+            display_name="IKA Stirrer",
+            device_type="actuator",
+            protocol="ika_eurostar_60",
+        )
+        now = datetime(2026, 8, 13, 11, 0, 0, tzinfo=timezone.utc)
+        state = RecipeProgramState()
+        state.snapshot_json = {"bindings": [self._motor_binding()]}
+        state.last_applied_targets_json = {
+            "Stirrer_01": {
+                "profile_id": "motor_rpm",
+                "rpm": 300,
+                "is_on": True,
+                recipe_program_runtime._IKA_LAST_RPM_WRITE_AT_FIELD: now.isoformat(),
+                recipe_program_runtime._IKA_LAST_STEP_INDEX_FIELD: 0,
+            }
+        }
+
+        with patch.object(recipe_program_runtime, "_now_utc", return_value=now):
+            with patch.object(recipe_program_runtime, "db", SimpleNamespace(session=_FakeSession(device))):
+                with patch.object(recipe_program_runtime, "queue_manual_state_update") as queue_update:
+                    recipe_program_runtime._apply_current_targets(
+                        app,
+                        state,
+                        {"Stirrer_01": {"rpm": 305, "pressure": 0, "temp": 0}},
+                        evaluation={"active_step_index": None, "completed": True},
+                    )
+
+        queue_update.assert_called_once()
+        self.assertEqual(queue_update.call_args.kwargs["desired_speed"], 305)
+
     def test_huber_current_target_failure_reports_recipe_context(self):
         app = Flask(__name__)
         device = Device(

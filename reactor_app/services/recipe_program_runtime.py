@@ -86,6 +86,11 @@ _HUBER_LAST_SETPOINT_WRITE_AT_FIELD = f"{_HUBER_RECIPE_META_PREFIX}last_setpoint
 _HUBER_LAST_STEP_INDEX_FIELD = f"{_HUBER_RECIPE_META_PREFIX}last_step_index"
 _HUBER_SETPOINT_MIN_INTERVAL_SECONDS = 10.0
 _HUBER_SETPOINT_MIN_DELTA_C = 0.2
+_IKA_RECIPE_META_PREFIX = "_recipe_ika_"
+_IKA_LAST_RPM_WRITE_AT_FIELD = f"{_IKA_RECIPE_META_PREFIX}last_rpm_write_at"
+_IKA_LAST_STEP_INDEX_FIELD = f"{_IKA_RECIPE_META_PREFIX}last_step_index"
+_IKA_RPM_MIN_INTERVAL_SECONDS = 5.0
+_IKA_RPM_MIN_DELTA = 10.0
 
 
 class RecipeProgramDeviceCommandError(RuntimeError):
@@ -1514,6 +1519,51 @@ def _evaluation_active_step_index(evaluation: dict[str, Any] | None) -> int | No
         return None
 
 
+def _ika_rpm_write_due(
+    app: Flask,
+    previous_payload: dict[str, Any],
+    *,
+    rpm: int,
+    desired_is_on: bool,
+    force_final: bool,
+    now: datetime,
+) -> bool:
+    if not previous_payload:
+        return True
+
+    was_on = bool(previous_payload.get("is_on"))
+    if was_on != desired_is_on:
+        return True
+
+    try:
+        previous_rpm = max(0, int(round(float(previous_payload.get("rpm") or 0.0))))
+    except (TypeError, ValueError):
+        return True
+
+    rpm_delta = abs(int(rpm) - previous_rpm)
+    if rpm_delta <= 0:
+        return False
+
+    if force_final:
+        return True
+
+    if not desired_is_on:
+        return True
+
+    last_write_at = _parse_iso_datetime(previous_payload.get(_IKA_LAST_RPM_WRITE_AT_FIELD))
+    if last_write_at is not None:
+        min_interval_s = _non_negative_float_config(
+            app,
+            "RECIPE_IKA_RPM_MIN_INTERVAL_SECONDS",
+            _IKA_RPM_MIN_INTERVAL_SECONDS,
+        )
+        if (now - last_write_at).total_seconds() < min_interval_s:
+            return False
+
+    min_delta = _non_negative_float_config(app, "RECIPE_IKA_RPM_MIN_DELTA", _IKA_RPM_MIN_DELTA)
+    return rpm_delta >= min_delta or last_write_at is None
+
+
 def _huber_setpoint_write_due(
     app: Flask,
     previous_payload: dict[str, Any],
@@ -2124,12 +2174,20 @@ def _apply_current_targets(
                 desired_is_on = True
             else:
                 desired_is_on = rounded_rpm > 0
-            next_payload = {
+            next_public_payload = {
                 "profile_id": "motor_rpm",
                 "rpm": rounded_rpm,
                 "is_on": desired_is_on,
             }
-            if next_applied_lookup.get(actor) == next_payload:
+            should_write_rpm = _ika_rpm_write_due(
+                app,
+                previous_payload,
+                rpm=rounded_rpm,
+                desired_is_on=desired_is_on,
+                force_final=bool(evaluation.get("completed")) if isinstance(evaluation, dict) else False,
+                now=now,
+            )
+            if not should_write_rpm:
                 continue
 
             queue_manual_state_update(
@@ -2139,6 +2197,13 @@ def _apply_current_targets(
                 desired_speed=rounded_rpm,
                 requested_by="recipe_program",
             )
+            next_payload = {
+                **next_public_payload,
+                _IKA_LAST_RPM_WRITE_AT_FIELD: now.isoformat(),
+            }
+            active_step_index = _evaluation_active_step_index(evaluation)
+            if active_step_index is not None:
+                next_payload[_IKA_LAST_STEP_INDEX_FIELD] = active_step_index
             next_applied_lookup[actor] = next_payload
             applied_changes.append(
                 {
@@ -2150,7 +2215,7 @@ def _apply_current_targets(
                         "rpm": max(0, int(round(float(previous_payload.get("rpm") or 0.0)))) if previous_payload else 0,
                         "is_on": bool(previous_payload.get("is_on")) if previous_payload else False,
                     },
-                    "current": deepcopy(next_payload),
+                    "current": deepcopy(next_public_payload),
                 }
             )
             continue
