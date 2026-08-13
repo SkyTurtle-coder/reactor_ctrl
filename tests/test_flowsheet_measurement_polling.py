@@ -895,6 +895,83 @@ class FlowsheetScopedPollingIntegrationTests(unittest.TestCase):
             self.assertIsNotNone(state)
             self.assertEqual([channel.channel_code for channel in channels], ["weight"])
 
+    def test_huber_background_claim_uses_huber_specific_poll_interval(self):
+        previous_huber_interval = self.app.config.get("HUBER_POLLER_INTERVAL_MS")
+        previous_generic_interval = self.app.config.get("MEASUREMENT_POLLER_INTERVAL_SECONDS")
+        self.app.config["HUBER_POLLER_INTERVAL_MS"] = 3000
+        self.app.config["MEASUREMENT_POLLER_INTERVAL_SECONDS"] = 10
+        try:
+            with self.app.app_context():
+                now = datetime.now(timezone.utc)
+                device = Device(
+                    asset_serial="HUBER-FAST-POLL",
+                    manufacturer_serial="SN-HUBER-FAST-POLL",
+                    display_name="Huber Fast Poll",
+                    device_type="thermostat",
+                    protocol="huber_ministat_cc",
+                    is_active=True,
+                )
+                db.session.add(device)
+                db.session.flush()
+                state = DeviceManualState(
+                    device_id=device.device_id,
+                    queue_status="idle",
+                    desired_version=0,
+                    applied_version=0,
+                )
+                state.last_reported_at = now - timedelta(seconds=4)
+                state.next_poll_at = now - timedelta(seconds=1)
+                db.session.add(state)
+                db.session.commit()
+                device_id = device.device_id
+
+                claimed_device_id = device_manual_runtime._claim_next_device_id(self.app, "worker-huber-fast")
+
+            self.assertEqual(claimed_device_id, device_id)
+        finally:
+            self.app.config["HUBER_POLLER_INTERVAL_MS"] = previous_huber_interval
+            self.app.config["MEASUREMENT_POLLER_INTERVAL_SECONDS"] = previous_generic_interval
+
+    def test_watch_snapshot_promotes_future_background_due_to_live_due(self):
+        with self.app.app_context():
+            now = datetime.now(timezone.utc)
+            device = Device(
+                asset_serial="HUBER-WATCH-PROMOTE",
+                manufacturer_serial="SN-HUBER-WATCH-PROMOTE",
+                display_name="Huber Watch Promote",
+                device_type="thermostat",
+                protocol="huber_ministat_cc",
+                is_active=True,
+            )
+            db.session.add(device)
+            db.session.flush()
+            original_next_poll_at = now + timedelta(seconds=10)
+            state = DeviceManualState(
+                device_id=device.device_id,
+                queue_status="idle",
+                desired_version=0,
+                applied_version=0,
+            )
+            state.last_reported_at = now
+            state.next_poll_at = original_next_poll_at
+            db.session.add(state)
+            db.session.commit()
+
+            updated = device_manual_runtime.ensure_manual_state_snapshot(
+                self.app,
+                device,
+                requested_by="process_plot",
+                watch=True,
+                refresh=False,
+            )
+            next_poll_at = device_manual_runtime._as_utc_datetime(updated.next_poll_at)
+            watch_expires_at = device_manual_runtime._as_utc_datetime(updated.watch_expires_at)
+            queue_status = updated.queue_status
+
+        self.assertLess(next_poll_at, original_next_poll_at - timedelta(seconds=5))
+        self.assertGreater(watch_expires_at, now)
+        self.assertEqual(queue_status, "queued")
+
     # -- requirement #2 -------------------------------------------------------
 
     def test_all_flowsheet_sensors_are_scoped_even_when_recipe_uses_a_single_actor(self):

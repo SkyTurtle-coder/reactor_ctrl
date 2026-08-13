@@ -289,6 +289,19 @@ def _scale_poll_interval(app: Flask) -> timedelta:
     return timedelta(milliseconds=milliseconds)
 
 
+def _huber_poll_interval(app: Flask) -> timedelta:
+    milliseconds = max(2000, int(app.config.get("HUBER_POLLER_INTERVAL_MS", 3000)))
+    return timedelta(milliseconds=milliseconds)
+
+
+def _device_background_poll_interval(app: Flask, device: Device | None) -> timedelta:
+    if _is_scale_device(device):
+        return _scale_poll_interval(app)
+    if _is_huber_device(device):
+        return _huber_poll_interval(app)
+    return _background_poll_interval(app)
+
+
 def _manual_lease_duration(app: Flask) -> timedelta:
     seconds = max(3, int(app.config.get("DEVICE_MANUAL_RECONCILER_LEASE_SECONDS", 15)))
     return timedelta(seconds=seconds)
@@ -912,13 +925,28 @@ def ensure_manual_state_snapshot(
         values: dict[Any, Any] = {}
         if watch:
             values[DeviceManualState.watch_expires_at] = now + _manual_watch_ttl(app)
+            live_due_cutoff = now + _manual_poll_interval(app)
+            values[DeviceManualState.next_poll_at] = case(
+                (
+                    or_(
+                        DeviceManualState.next_poll_at.is_(None),
+                        DeviceManualState.next_poll_at > live_due_cutoff,
+                    ),
+                    now,
+                ),
+                else_=DeviceManualState.next_poll_at,
+            )
+            values[DeviceManualState.queue_status] = case(
+                (DeviceManualState.queue_status != "running", "queued"),
+                else_=DeviceManualState.queue_status,
+            )
         if refresh:
             values[DeviceManualState.next_poll_at] = now
             values[DeviceManualState.queue_status] = case(
                 (DeviceManualState.queue_status != "running", "queued"),
                 else_=DeviceManualState.queue_status,
             )
-        else:
+        elif not watch:
             values[DeviceManualState.next_poll_at] = case(
                 (DeviceManualState.last_reported_at.is_(None), now),
                 else_=DeviceManualState.next_poll_at,
@@ -1857,7 +1885,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
     ui_poll_due = watch_active and (next_poll_at is None or next_poll_at <= now)
     # Background poll: fires even with no UI session so measurements are stored
     # continuously.  Uses a longer interval than the live UI poll cadence.
-    bg_interval = _scale_poll_interval(app) if _is_scale_device(device) else _background_poll_interval(app)
+    bg_interval = _device_background_poll_interval(app, device)
     last_reported = _as_utc_datetime(state.last_reported_at)
     bg_poll_due = last_reported is None or last_reported + bg_interval <= now
     poll_due = ui_poll_due or bg_poll_due
@@ -2002,8 +2030,10 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         # Device-busy during polling: a recipe or manual command holds the device
         # lock.  Never propagate this as a recipe failure — reschedule the poll.
         if isinstance(exc, DeviceCommandError) and is_device_busy_error(exc):
-            busy_retry_interval = _manual_poll_interval(app) if watch_active else (
-                _scale_poll_interval(app) if is_scale else _background_poll_interval(app)
+            busy_retry_interval = (
+                _manual_poll_interval(app)
+                if watch_active
+                else _device_background_poll_interval(app, device)
             )
             _commit_manual_state_release(
                 device_id,
@@ -2024,9 +2054,7 @@ def _process_manual_state(app: Flask, *, device_id: int, worker_id: str) -> None
         fallback_error = describe_device_command_error(exc) if isinstance(exc, DeviceCommandError) else str(exc)
         # Use the background interval for retry when no UI session is watching so
         # an unreachable device is not hammered on every reconciler tick.
-        retry_interval = _manual_poll_interval(app) if watch_active else (
-            _scale_poll_interval(app) if is_scale else _background_poll_interval(app)
-        )
+        retry_interval = _manual_poll_interval(app) if watch_active else _device_background_poll_interval(app, device)
         if is_scale:
             # Keep the last known weight visible but flag it as stale/errored
             # rather than silently freezing — the UI can then show "value
@@ -2047,6 +2075,7 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
     # Background telemetry cutoff: poll even without an active UI session.
     bg_cutoff = now - _background_poll_interval(app)
     scale_bg_cutoff = now - _scale_poll_interval(app)
+    huber_bg_cutoff = now - _huber_poll_interval(app)
     # Device scope: while a recipe runs, this is every measurable device on
     # its flowsheet (not just the devices the recipe's steps bind) — see
     # _active_flowsheet_device_ids for why that distinction matters.
@@ -2106,7 +2135,15 @@ def _claim_next_device_id(app: Flask, worker_id: str) -> int | None:
                             ),
                         ),
                         and_(
+                            Device.protocol.in_(list(_HUBER_PROTOCOLS)),
+                            or_(
+                                DeviceManualState.last_reported_at.is_(None),
+                                DeviceManualState.last_reported_at <= huber_bg_cutoff,
+                            ),
+                        ),
+                        and_(
                             ~Device.protocol.in_(list(_SCALE_PROTOCOLS)),
+                            ~Device.protocol.in_(list(_HUBER_PROTOCOLS)),
                             or_(
                                 DeviceManualState.last_reported_at.is_(None),
                                 DeviceManualState.last_reported_at <= bg_cutoff,
