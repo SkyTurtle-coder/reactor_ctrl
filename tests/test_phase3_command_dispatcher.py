@@ -345,6 +345,34 @@ class DispatchDeviceCommandTests(unittest.TestCase):
         _, kwargs = mock_exec.call_args
         self.assertEqual(kwargs["requested_by"], "recipe_reconciler")
 
+    def test_safety_interlock_blocks_non_safety_command_before_driver_dispatch(self):
+        from reactor_app.services.device_runtime import DeviceCommandError
+
+        device = self._make_device()
+        command = self._make_command(
+            command_type="set_setpoint",
+            priority=CommandPriority.MANUAL,
+        )
+        details = {
+            "runtime_status": "safety_stop",
+            "program_status": "safety_stop",
+            "stop_requested": True,
+            "device_id": command.device_id,
+            "command_type": command.command_type,
+        }
+
+        with patch(
+            "reactor_app.services.command_dispatcher.safety_interlock_block_details",
+            return_value=details,
+        ):
+            with patch("reactor_app.services.command_dispatcher.execute_device_command") as mock_exec:
+                with self.assertRaises(DeviceCommandError) as ctx:
+                    dispatch_device_command(device, command)
+
+        self.assertEqual(ctx.exception.status_code, 423)
+        self.assertEqual(ctx.exception.details, details)
+        mock_exec.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # API import smoke test

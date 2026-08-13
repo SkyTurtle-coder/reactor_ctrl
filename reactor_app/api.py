@@ -1991,6 +1991,8 @@ def queue_manual_state_for_device(device_id: int):
         )
     except ValueError as exc:
         return _json_error(str(exc), 400)
+    except DeviceCommandError as exc:
+        return _json_error(str(exc), exc.status_code, str(exc.details) if exc.details else None)
 
     ok, error_response = _commit()
     if not ok:

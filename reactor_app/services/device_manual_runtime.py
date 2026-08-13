@@ -31,6 +31,7 @@ from ..process_targets import resolve_process_device_targets
 from .command_dispatcher import dispatch_device_command, is_runtime_interrupted_error
 from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_runtime import DeviceCommandError, describe_device_command_error, is_device_busy_error
+from .safety_interlock import unsafe_manual_target_blocked
 
 
 _WORKER_EXTENSION_KEY = "device_manual_reconciler_thread"
@@ -982,6 +983,16 @@ def queue_manual_state_update(
     requested_by: str,
 ) -> DeviceManualState:
     device_id = int(device.device_id)
+    block_details = unsafe_manual_target_blocked(
+        desired_is_on=desired_is_on,
+        desired_speed=desired_speed,
+    )
+    if block_details is not None:
+        raise DeviceCommandError(
+            "Safety stop is active; manual actuator target updates are blocked.",
+            status_code=423,
+            details={**block_details, "device_id": device_id},
+        )
 
     def operation() -> DeviceManualState:
         _ensure_manual_state_row(device_id)

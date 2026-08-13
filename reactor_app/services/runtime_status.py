@@ -105,9 +105,10 @@ class ProgramStatus:
 
     IDLE = "idle"
     RUNNING = "running"
+    SAFETY_STOP = "safety_stop"
     COMPLETED = "completed"
     STOPPED = "stopped"
     ERROR = "error"
 
     TERMINAL: frozenset[str] = frozenset({"completed", "stopped", "error"})
-    ACTIVE: frozenset[str] = frozenset({"running"})
+    ACTIVE: frozenset[str] = frozenset({"running", "safety_stop"})

@@ -15,7 +15,7 @@ from reactor_app.services.runtime_scheduler import (
     RuntimeWorker,
     ScheduledRuntimeCommand,
 )
-from reactor_app.services.runtime_status import RuntimeStatus
+from reactor_app.services.runtime_status import ProgramStatus, RuntimeStatus
 
 
 class RuntimeCommandQueueTests(unittest.TestCase):
@@ -296,6 +296,57 @@ class RuntimeIntegrationTests(unittest.TestCase):
         command = dispatch_command.call_args_list[0].args[1]
         self.assertEqual(command.priority, CommandPriority.SAFETY)
         self.assertEqual(command.source, CommandSource.SYSTEM)
+
+    def test_publish_program_stop_request_enters_safety_stop_state(self):
+        state = RecipeProgramState(status="running", stop_requested=False)
+        fake_db = SimpleNamespace(session=SimpleNamespace(flush=MagicMock(), commit=MagicMock()))
+
+        with patch.object(recipe_program_runtime, "db", fake_db):
+            recipe_program_runtime._publish_program_stop_request(state)
+
+        self.assertEqual(state.status, ProgramStatus.SAFETY_STOP)
+        self.assertTrue(state.stop_requested)
+        fake_db.session.flush.assert_called_once()
+        fake_db.session.commit.assert_called_once()
+
+    def test_reconciler_recovers_persisted_safety_stop_state(self):
+        app = Flask(__name__)
+        state = RecipeProgramState(
+            status=ProgramStatus.SAFETY_STOP,
+            stop_requested=True,
+            requested_by="operator",
+            lease_owner="worker-1",
+        )
+        state.snapshot_json = {
+            "bindings": [{"actor": "Stirrer_01", "device_id": 8, "profile_id": "motor_rpm"}],
+            "safe_state": [],
+        }
+        fake_db = SimpleNamespace(
+            session=SimpleNamespace(
+                get=lambda _model, _item_id: state,
+                refresh=lambda _item: None,
+                commit=MagicMock(),
+            )
+        )
+
+        with patch.object(recipe_program_runtime, "db", fake_db):
+            with patch.object(recipe_program_runtime, "_ensure_open_program_run", return_value=None):
+                with patch.object(
+                    recipe_program_runtime,
+                    "_apply_safe_stop_to_binding",
+                    return_value=({"actor": "Stirrer_01", "device_id": 8, "is_on": False, "rpm": 0}, []),
+                ) as safe_stop:
+                    with patch.object(recipe_program_runtime, "cancel_runtime_commands") as cancel_runtime_commands:
+                        recipe_program_runtime._process_safety_stop_state(app, worker_id="worker-1")
+
+        safe_stop.assert_called_once()
+        cancel_runtime_commands.assert_called_once()
+        self.assertEqual(cancel_runtime_commands.call_args.kwargs["device_id"], 8)
+        self.assertEqual(cancel_runtime_commands.call_args.kwargs["priority_gt"], CommandPriority.SAFETY)
+        self.assertEqual(state.status, "stopped")
+        self.assertFalse(state.stop_requested)
+        self.assertIsNone(state.lease_owner)
+        self.assertEqual(state.last_applied_targets_json["Stirrer_01"]["rpm"], 0)
 
     def test_stop_recipe_program_preempts_pending_lower_priority_commands(self):
         app = Flask(__name__)

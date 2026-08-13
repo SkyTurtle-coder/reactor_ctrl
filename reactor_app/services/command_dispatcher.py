@@ -39,6 +39,7 @@ from .runtime_scheduler import (
     ScheduledRuntimeCommand,
 )
 from .runtime_status import RuntimeStatus
+from .safety_interlock import safety_interlock_block_details
 
 logger = logging.getLogger(__name__)
 
@@ -608,6 +609,28 @@ def _validate_command_source(command: DeviceCommand) -> None:
         )
 
 
+def _raise_if_safety_interlock_blocks(command: DeviceCommand) -> None:
+    details = safety_interlock_block_details(command)
+    if details is None:
+        return
+    logger.warning(
+        "Safety-stop interlock blocked command_id=%s device_id=%s type=%s "
+        "priority=%s source=%s status=%s stop_requested=%s",
+        command.command_id,
+        command.device_id,
+        command.command_type,
+        _priority_label(command.priority),
+        command.source,
+        details.get("program_status"),
+        details.get("stop_requested"),
+    )
+    raise DeviceCommandError(
+        "Safety stop is active; non-safety device commands are blocked.",
+        status_code=423,
+        details=details,
+    )
+
+
 def _resolved_command(command: DeviceCommand, *, app: Any | None) -> DeviceCommand:
     resolved = deepcopy(command)
     if app is None:
@@ -957,6 +980,7 @@ def _execute_with_worker_app(
 ) -> ExecutedDeviceCommand:
     with app.app_context():
         try:
+            _raise_if_safety_interlock_blocks(command)
             configured_token = _configure_execution_cancellation_token(
                 command,
                 started_at=started_at,
@@ -1054,6 +1078,7 @@ def dispatch_device_command(
     _validate_command_source(command)
     app_obj = _resolve_flask_app(app)
     resolved_command = _resolved_command(command, app=app_obj)
+    _raise_if_safety_interlock_blocks(resolved_command)
 
     logger.debug(
         "dispatch command_id=%s device_id=%s type=%s priority=%s source=%s requested_by=%s",

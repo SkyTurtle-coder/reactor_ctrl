@@ -34,13 +34,15 @@ from .command_dispatcher import cancel_runtime_commands, dispatch_device_command
 from .command_model import CommandPriority, CommandSource, DeviceCommand
 from .device_manual_runtime import queue_manual_state_update
 from .device_runtime import DeviceCommandError, device_command_sequence_lock, is_device_busy_error
-from .runtime_status import RuntimeStatus
+from .runtime_status import ProgramStatus, RuntimeStatus
 
 
 _WORKER_EXTENSION_KEY = "recipe_program_reconciler_thread"
 _PROGRAM_STATE_ID = 1
 _LEASE_STATUS_RUNNING = "running"
 _STATUS_PAUSED = "paused"
+_STATUS_SAFETY_STOP = ProgramStatus.SAFETY_STOP
+_STATUS_SAFETY_STOP_ALIASES = {_STATUS_SAFETY_STOP, "safty_stop"}
 _TERMINAL_STATUSES = {"completed", "stopped", "error"}
 _TRANSIENT_MYSQL_ERROR_CODES = {1020, 1205, 1213}
 
@@ -1367,6 +1369,8 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
         raise ValueError("Another recipe program is already running. Stop it before starting a new one.")
     if current_status == _STATUS_PAUSED:
         raise ValueError("Another recipe program is paused. Resume or stop it before starting a new one.")
+    if current_status == _STATUS_SAFETY_STOP or bool(state.stop_requested):
+        raise ValueError("A safety stop is active. Wait until the safe-state stop has completed before starting a new recipe.")
 
     now = _now_utc()
     initial_evaluation = _evaluate_program_timeline(
@@ -1424,12 +1428,20 @@ def start_recipe_program(app: Flask, recipe: Recipe, *, requested_by: str) -> Re
 def _publish_program_stop_request(state: RecipeProgramState) -> None:
     if str(state.status or "").strip().lower() != _LEASE_STATUS_RUNNING:
         return
+    state.status = _STATUS_SAFETY_STOP
     state.stop_requested = True
     state.lease_owner = None
     state.lease_expires_at = None
     # Commit before sending safe-stop commands so a claimed worker can see the abort.
     db.session.flush()
     db.session.commit()
+
+
+def _state_requires_safety_stop(state: RecipeProgramState | None) -> bool:
+    if state is None:
+        return False
+    status = str(state.status or "").strip().lower().replace("-", "_")
+    return status in _STATUS_SAFETY_STOP_ALIASES or bool(state.stop_requested)
 
 
 def _program_claim_allows_target_application(state: RecipeProgramState, worker_id: str | None) -> bool:
@@ -1871,8 +1883,7 @@ def _apply_safe_stop_to_binding(
         return safe_target, errors
 
     if _is_ika_motor_binding(binding):
-        safe_p = safe_params or {}
-        safe_rpm = int(max(0, round(float(safe_p["rpm"])))) if safe_p.get("rpm") is not None else 0
+        safe_rpm = 0
         safe_target.update({"rpm": safe_rpm, "is_on": False})
         try:
             queue_manual_state_update(
@@ -2454,9 +2465,119 @@ def _claim_program_state(app: Flask, worker_id: str) -> bool:
     return bool(claimed)
 
 
+def _claim_safety_stop_state(app: Flask, worker_id: str) -> bool:
+    now = _now_utc()
+    lease_until = now + _recipe_program_lease_duration(app)
+    try:
+        claimed = (
+            db.session.query(RecipeProgramState)
+            .filter(
+                RecipeProgramState.recipe_program_state_id == _PROGRAM_STATE_ID,
+                or_(
+                    RecipeProgramState.status.in_(tuple(sorted(_STATUS_SAFETY_STOP_ALIASES))),
+                    RecipeProgramState.stop_requested.is_(True),
+                ),
+                or_(RecipeProgramState.lease_expires_at.is_(None), RecipeProgramState.lease_expires_at < now),
+            )
+            .update(
+                {
+                    RecipeProgramState.lease_owner: worker_id,
+                    RecipeProgramState.lease_expires_at: lease_until,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.session.commit()
+    except OperationalError as exc:
+        db.session.rollback()
+        if _is_mysql_record_changed_error(exc):
+            return False
+        raise
+    return bool(claimed)
+
+
 def _release_program_lease(state: RecipeProgramState) -> None:
     state.lease_owner = None
     state.lease_expires_at = None
+
+
+def _program_claim_allows_safety_stop(state: RecipeProgramState, worker_id: str | None) -> bool:
+    if not worker_id:
+        return _state_requires_safety_stop(state)
+    try:
+        db.session.refresh(state)
+    except Exception:
+        return False
+    return state.lease_owner == worker_id and _state_requires_safety_stop(state)
+
+
+def _process_safety_stop_state(app: Flask, *, worker_id: str) -> None:
+    state = db.session.get(RecipeProgramState, _PROGRAM_STATE_ID)
+    if state is None or not _program_claim_allows_safety_stop(state, worker_id):
+        return
+
+    snapshot = state.snapshot_json if isinstance(state.snapshot_json, dict) else {}
+    requested_by = str(getattr(state, "requested_by", "") or "safety_stop").strip() or "safety_stop"
+    run = _ensure_open_program_run(state)
+    safe_snapshot, safe_errors = _safe_stop_snapshot_for_state(state, snapshot)
+    bindings = safe_snapshot.get("bindings") if isinstance(safe_snapshot.get("bindings"), list) else []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        device_id = binding.get("device_id")
+        if device_id in (None, ""):
+            continue
+        cancel_runtime_commands(
+            app,
+            device_id=int(device_id),
+            priority_gt=CommandPriority.SAFETY,
+            status=RuntimeStatus.PREEMPTED,
+            reason="Recovered safety-stop state before command execution.",
+        )
+
+    try:
+        safe_targets, apply_errors = _apply_recipe_safe_state(app, safe_snapshot, requested_by=requested_by)
+        safe_errors.extend(apply_errors)
+    except Exception as exc:
+        safe_targets = {}
+        safe_errors.append(str(exc))
+        app.logger.critical("Recovered safety-stop safe-state orchestration failed: %s", exc, exc_info=True)
+
+    now = _now_utc()
+    error_message = "; ".join(safe_errors) if safe_errors else None
+    state.status = "error" if error_message else "stopped"
+    state.stop_requested = False
+    state.finished_at = now
+    state.last_progress_at = now
+    state.last_error = error_message
+    state.last_applied_targets_json = safe_targets
+    _release_program_lease(state)
+    if run is not None:
+        run.status = state.status
+        run.finished_at = now
+        run.last_progress_at = now
+        run.last_error = error_message
+        _record_program_event(
+            run,
+            "error" if error_message else "stopped",
+            state=state,
+            evaluation=_evaluate_state_snapshot(state, now=now),
+            payload={
+                "error": error_message,
+                "applied_targets": _applied_targets_payload(safe_targets),
+                "recovered_safety_stop": True,
+            } if error_message else {
+                "applied_targets": _applied_targets_payload(safe_targets),
+                "recovered_safety_stop": True,
+            },
+        )
+    db.session.commit()
+    if safe_errors:
+        app.logger.critical(
+            "Recovered safety-stop had %d failure(s): %s",
+            len(safe_errors),
+            "; ".join(safe_errors),
+        )
 
 
 def _process_recipe_program_state(app: Flask, *, worker_id: str) -> None:
@@ -2678,6 +2799,10 @@ def _reconciler_loop(app: Flask, worker_id: str) -> None:
     while True:
         try:
             with app.app_context():
+                if _claim_safety_stop_state(app, worker_id):
+                    _process_safety_stop_state(app, worker_id=worker_id)
+                    db.session.remove()
+                    continue
                 if not _claim_program_state(app, worker_id):
                     db.session.remove()
                     time.sleep(loop_sleep)
