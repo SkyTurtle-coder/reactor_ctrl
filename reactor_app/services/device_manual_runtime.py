@@ -77,6 +77,9 @@ _IKA_TELEMETRY_CHANNELS: tuple[dict, ...] = (
 _HUBER_PROTOCOLS = {"huber_unistat_430", "huber_pilot_one", "huber_cc230", "huber_ministat_cc"}
 _SCALE_PROTOCOLS = {"mettler_toledo_ics435", "ics435_mtsics"}
 _BACKGROUND_POLL_PROTOCOLS = ("ika_eurostar_60", *_HUBER_PROTOCOLS, *_SCALE_PROTOCOLS)
+_IKA_MANUAL_CONNECT_TIMEOUT_MS = 3000
+_IKA_MANUAL_RESPONSE_TIMEOUT_MS = 5000
+_IKA_MANUAL_WRITE_TIMEOUT_MS = 2000
 # Background polling must finish well within the execution_timeout_s for POLLING
 # commands so that user-triggered commands (start, set_setpoint, …) can preempt
 # polling within one cooperative-poll interval (250 ms).
@@ -310,14 +313,19 @@ def _manual_lease_duration(app: Flask) -> timedelta:
 
 def _manual_command_payload(text: str) -> dict[str, Any]:
     normalized = str(text or "").strip().upper()
-    return {
+    payload = {
         "text": normalized,
         "encoding": "ascii",
         "line_ending": "space_crlf",
         "response_terminator": "crlf" if normalized.startswith("IN_") else "none",
         "expect_response": normalized.startswith("IN_"),
         "strip_response": True,
+        "connect_timeout_ms": _IKA_MANUAL_CONNECT_TIMEOUT_MS,
+        "write_timeout_ms": _IKA_MANUAL_WRITE_TIMEOUT_MS,
     }
+    if normalized.startswith("IN_"):
+        payload["response_timeout_ms"] = _IKA_MANUAL_RESPONSE_TIMEOUT_MS
+    return payload
 
 
 def _parse_ika_numeric_response(text: str | None) -> float | None:

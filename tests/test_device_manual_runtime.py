@@ -73,6 +73,24 @@ class _FakeSessionForRetry:
         self.rollback_calls += 1
 
 
+class IkaManualCommandPayloadTests(unittest.TestCase):
+    def test_read_command_uses_bounded_response_timeout(self):
+        payload = device_manual_runtime._manual_command_payload("IN_SP_4")
+
+        self.assertEqual(payload["response_timeout_ms"], 5000)
+        self.assertEqual(payload["connect_timeout_ms"], 3000)
+        self.assertEqual(payload["write_timeout_ms"], 2000)
+        self.assertTrue(payload["expect_response"])
+        self.assertEqual(payload["response_terminator"], "crlf")
+
+    def test_write_command_does_not_wait_for_response(self):
+        payload = device_manual_runtime._manual_command_payload("START_4")
+
+        self.assertNotIn("response_timeout_ms", payload)
+        self.assertFalse(payload["expect_response"])
+        self.assertEqual(payload["response_terminator"], "none")
+
+
 class _FakeManualStateUpdateQuery:
     def __init__(self, session, update_side_effects):
         self._session = session
