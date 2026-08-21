@@ -441,6 +441,12 @@ class ParseIkaNumericResponseTests(unittest.TestCase):
         # IKA EUROSTAR appends the channel number: "IN_SP_4" → "100.0 4"
         self.assertAlmostEqual(self._call("100.0 4"), 100.0)
 
+    def test_command_prefixed_setpoint_response(self):
+        self.assertAlmostEqual(self._call("IN_SP_4 500"), 500.0)
+
+    def test_command_prefixed_actual_rpm_response(self):
+        self.assertAlmostEqual(self._call("IN_PV_4 498.7"), 498.7)
+
     def test_ika_channel_suffix_pv(self):
         # "IN_PV_5" → "2.3 5"
         self.assertAlmostEqual(self._call("2.3 5"), 2.3)

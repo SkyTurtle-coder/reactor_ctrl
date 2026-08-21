@@ -193,6 +193,7 @@ class IkaDeviceClampingDetectionTests(unittest.TestCase):
     def test_parse_ika_response_strips_channel_suffix(self):
         self.assertAlmostEqual(_parse_ika_numeric_response("500.0 4"), 500.0)
         self.assertAlmostEqual(_parse_ika_numeric_response("1500.0 4"), 1500.0)
+        self.assertAlmostEqual(_parse_ika_numeric_response("IN_SP_4 500"), 500.0)
         self.assertIsNone(_parse_ika_numeric_response(None))
         self.assertIsNone(_parse_ika_numeric_response(""))
 

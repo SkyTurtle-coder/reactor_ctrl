@@ -334,14 +334,20 @@ def _parse_ika_numeric_response(text: str | None) -> float | None:
     raw = str(text).strip()
     if not raw:
         return None
-    # IKA EUROSTAR responses include a channel suffix after the value
+    # IKA EUROSTAR responses may put the value first ("500.0 4") or echo
+    # the command before the value ("IN_SP_4 500").
     # (e.g. "IN_SP_4" → "100.0 4", "IN_PV_5" → "2.3 5").
-    # Take only the first whitespace-delimited token as the numeric value.
-    token = raw.split()[0]
-    try:
-        return float(token)
-    except ValueError:
+    tokens = raw.split()
+    if not tokens:
         return None
+    first_token = tokens[0].upper()
+    candidate_tokens = tokens[1:] if first_token.startswith(("IN_", "OUT_")) else tokens[:1]
+    for token in candidate_tokens:
+        try:
+            return float(str(token).replace(",", "."))
+        except ValueError:
+            continue
+    return None
 
 
 def _supports_manual_runtime(device: Device | None) -> bool:
