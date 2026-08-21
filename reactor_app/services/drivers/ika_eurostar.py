@@ -59,6 +59,16 @@ def _default_expect_response(command_text: str) -> bool:
     return normalized.startswith("IN_")
 
 
+def _drain_stale_input(transport: ITransport, *, max_bytes: int) -> bytes:
+    drain = getattr(transport, "drain_input", None)
+    if not callable(drain):
+        return b""
+    try:
+        return drain(max_bytes=max_bytes, idle_timeout_s=0.05)
+    except Exception:
+        return b""
+
+
 class IkaEurostarDriver(DeviceDriver):
     protocol_names = ("ika_eurostar_60",)
 
@@ -99,6 +109,11 @@ class IkaEurostarDriver(DeviceDriver):
             default=max(transport.recv_size, 4096),
         )
         strip_response = _coerce_bool(payload.get("strip_response"), field_name="strip_response", default=True)
+        drain_before_send = _coerce_bool(
+            payload.get("drain_before_send"),
+            field_name="drain_before_send",
+            default=True,
+        )
 
         try:
             request_bytes = command_text.encode(encoding) + _LINE_ENDINGS[line_ending_name]
@@ -106,6 +121,7 @@ class IkaEurostarDriver(DeviceDriver):
             raise DriverValidationError(f"Encoding '{encoding}' is not supported.") from exc
 
         request.throw_if_interrupted(location="driver.ika_eurostar.pre_send")
+        drained_bytes = _drain_stale_input(transport, max_bytes=max_response_bytes) if drain_before_send else b""
         transport.send(request_bytes)
 
         response_bytes = b""
@@ -135,5 +151,6 @@ class IkaEurostarDriver(DeviceDriver):
                 "line_ending": line_ending_name,
                 "expect_response": expect_response,
                 "request_hex": request_bytes.hex(),
+                "drained_hex": drained_bytes.hex() if drained_bytes else None,
             },
         )

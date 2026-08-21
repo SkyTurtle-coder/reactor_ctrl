@@ -10,7 +10,7 @@ Covers:
 import unittest
 
 from reactor_app.services.drivers import DeviceCapability
-from reactor_app.services.drivers.base import DeviceDriver
+from reactor_app.services.drivers.base import DeviceCommandRequest, DeviceDriver
 from reactor_app.services.drivers.huber_cc230 import HuberCC230Driver
 from reactor_app.services.drivers.huber_ministat_cc import HuberMinistatCCDriver
 from reactor_app.services.drivers.huber_unistat import HuberUnistatDriver
@@ -241,6 +241,45 @@ class IkaEurostarDriverCapabilityTests(unittest.TestCase):
         self.assertNotIn(DeviceCapability.CAN_HEAT, self.caps)
         self.assertNotIn(DeviceCapability.CAN_COOL, self.caps)
         self.assertNotIn(DeviceCapability.CAN_SET_TEMPERATURE, self.caps)
+
+
+class _FakeIkaTransport:
+    recv_size = 4096
+
+    def __init__(self, *, drained=b"START_4\r\n", response=b"IKA ES 60\r\n"):
+        self.drained = drained
+        self.response = response
+        self.operations = []
+
+    def drain_input(self, **_kwargs):
+        self.operations.append(("drain_input", None))
+        return self.drained
+
+    def send(self, payload):
+        self.operations.append(("send", payload))
+
+    def receive_until(self, delimiter, *, max_bytes):
+        self.operations.append(("receive_until", delimiter))
+        return self.response
+
+
+class IkaEurostarDriverExecutionTests(unittest.TestCase):
+    def test_drains_stale_write_echo_before_query(self):
+        transport = _FakeIkaTransport()
+        request = DeviceCommandRequest(command_name="manual_text", payload={"text": "IN_NAME"})
+
+        result = IkaEurostarDriver().execute(transport=transport, request=request)
+
+        self.assertEqual(result.response_text, "IKA ES 60")
+        self.assertEqual(
+            transport.operations,
+            [
+                ("drain_input", None),
+                ("send", b"IN_NAME \r\n"),
+                ("receive_until", b"\r\n"),
+            ],
+        )
+        self.assertEqual(result.metadata["drained_hex"], b"START_4\r\n".hex())
 
 
 # ---------------------------------------------------------------------------
