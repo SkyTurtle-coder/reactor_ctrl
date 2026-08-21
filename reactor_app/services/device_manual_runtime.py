@@ -80,6 +80,8 @@ _BACKGROUND_POLL_PROTOCOLS = ("ika_eurostar_60", *_HUBER_PROTOCOLS, *_SCALE_PROT
 _IKA_MANUAL_CONNECT_TIMEOUT_MS = 3000
 _IKA_MANUAL_RESPONSE_TIMEOUT_MS = 5000
 _IKA_MANUAL_WRITE_TIMEOUT_MS = 2000
+_IKA_SETPOINT_VERIFY_ATTEMPTS = 3
+_IKA_SETPOINT_VERIFY_RETRY_DELAY_S = 0.5
 # Background polling must finish well within the execution_timeout_s for POLLING
 # commands so that user-triggered commands (start, set_setpoint, …) can preempt
 # polling within one cooperative-poll interval (250 ms).
@@ -1770,16 +1772,25 @@ def _apply_desired_ika_state(device: Device, state: DeviceManualState) -> None:
         )
         time.sleep(0.5)
 
-        # Verify the setpoint was accepted: a None response means the device
-        # is not communicating (e.g. still booting).  Raise so the reconciler
-        # stores a visible error and retries on the next cycle.
-        sp_response = _run_logged_manual_command(
-            device,
-            "IN_SP_4",
-            priority=CommandPriority.MANUAL,
-            source=CommandSource.MANUAL_RECONCILER,
-        )
-        sp_value = _parse_ika_numeric_response(sp_response)
+        # Verify the setpoint was accepted.  Some IKA/Moxa combinations can
+        # return one stale readback immediately after OUT_SP_4; retry numeric
+        # mismatches briefly before treating them as device-level clamping.
+        sp_response = None
+        sp_value = None
+        for attempt in range(_IKA_SETPOINT_VERIFY_ATTEMPTS):
+            if attempt:
+                time.sleep(_IKA_SETPOINT_VERIFY_RETRY_DELAY_S)
+            sp_response = _run_logged_manual_command(
+                device,
+                "IN_SP_4",
+                priority=CommandPriority.MANUAL,
+                source=CommandSource.MANUAL_RECONCILER,
+            )
+            sp_value = _parse_ika_numeric_response(sp_response)
+            if sp_value is None:
+                break
+            if desired_speed <= 0 or sp_value >= desired_speed - 5:
+                break
         if sp_value is None:
             raise RuntimeError(
                 f"Stirrer did not confirm setpoint after START command "

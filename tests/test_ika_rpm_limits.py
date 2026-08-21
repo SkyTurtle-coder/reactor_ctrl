@@ -157,7 +157,7 @@ class IkaDeviceClampingDetectionTests(unittest.TestCase):
         # Device responds: START_4 → None, OUT_SP_4 → None, IN_SP_4 → "500.0 4" (clamped)
         with patch(
             "reactor_app.services.device_manual_runtime._run_logged_manual_command",
-            side_effect=[None, None, "500.0 4"],
+            side_effect=[None, None, "500.0 4", "500.0 4", "500.0 4"],
         ):
             with self.assertRaises(RuntimeError) as ctx:
                 _apply_desired_ika_state(device, state)
@@ -166,6 +166,22 @@ class IkaDeviceClampingDetectionTests(unittest.TestCase):
         self.assertIn("500", msg)
         self.assertIn("1500", msg)
         self.assertIn("Speed Limit", msg)
+
+    def test_retries_stale_setpoint_readback_before_clamp_error(self):
+        device = self._make_device()
+        state = self._make_state(desired_speed=111)
+
+        with patch(
+            "reactor_app.services.device_manual_runtime._run_logged_manual_command",
+            side_effect=[None, None, "IN_SP_4 101", "IN_SP_4 111"],
+        ) as run_command:
+            with patch("reactor_app.services.device_manual_runtime.time.sleep"):
+                _apply_desired_ika_state(device, state)
+
+        self.assertEqual(
+            [call.args[1] for call in run_command.call_args_list],
+            ["START_4", "OUT_SP_4 111", "IN_SP_4", "IN_SP_4"],
+        )
 
     def test_no_error_when_setpoint_accepted_exactly(self):
         """No error when the device confirms the requested setpoint."""
