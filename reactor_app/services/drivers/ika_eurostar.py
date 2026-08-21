@@ -13,6 +13,10 @@ _LINE_ENDINGS = {
     "crlf": b"\r\n",
     "space_crlf": b" \r\n",
 }
+_DRAIN_IDLE_TIMEOUT_S = 0.08
+_DEFAULT_MAX_STALE_RESPONSES = 3
+_STALE_WRITE_RESPONSE_PREFIXES = ("OUT_SP_4",)
+_STALE_WRITE_RESPONSE_TOKENS = {"START_4", "STOP_4"}
 
 
 def _coerce_bool(value: Any, *, field_name: str, default: bool) -> bool:
@@ -64,9 +68,32 @@ def _drain_stale_input(transport: ITransport, *, max_bytes: int) -> bytes:
     if not callable(drain):
         return b""
     try:
-        return drain(max_bytes=max_bytes, idle_timeout_s=0.05)
+        return drain(max_bytes=max_bytes, idle_timeout_s=_DRAIN_IDLE_TIMEOUT_S)
     except Exception:
         return b""
+
+
+def _decoded_response(response_bytes: bytes, *, encoding: str, strip_response: bool) -> str | None:
+    if not response_bytes:
+        return None
+    response_text = response_bytes.decode(encoding, errors="replace")
+    if strip_response:
+        response_text = response_text.rstrip(" \r\n")
+    return response_text
+
+
+def _is_stale_ika_response(response_text: str | None, *, command_text: str) -> bool:
+    normalized = str(response_text or "").strip().upper()
+    if not normalized:
+        return False
+    sent_command = str(command_text or "").strip().upper()
+    sent_command_name = sent_command.split()[0] if sent_command else ""
+    if normalized in {sent_command, sent_command_name}:
+        return True
+    first_token = normalized.split()[0]
+    if first_token in _STALE_WRITE_RESPONSE_TOKENS:
+        return True
+    return any(normalized.startswith(prefix) for prefix in _STALE_WRITE_RESPONSE_PREFIXES)
 
 
 class IkaEurostarDriver(DeviceDriver):
@@ -114,6 +141,17 @@ class IkaEurostarDriver(DeviceDriver):
             field_name="drain_before_send",
             default=True,
         )
+        drain_after_write = _coerce_bool(
+            payload.get("drain_after_write"),
+            field_name="drain_after_write",
+            default=True,
+        )
+        max_stale_responses = _coerce_int(
+            payload.get("max_stale_responses"),
+            field_name="max_stale_responses",
+            default=_DEFAULT_MAX_STALE_RESPONSES,
+            min_value=0,
+        )
 
         try:
             request_bytes = command_text.encode(encoding) + _LINE_ENDINGS[line_ending_name]
@@ -125,21 +163,30 @@ class IkaEurostarDriver(DeviceDriver):
         transport.send(request_bytes)
 
         response_bytes = b""
+        response_text = None
+        skipped_stale_responses: list[str] = []
         if expect_response:
             request.throw_if_interrupted(location="driver.ika_eurostar.pre_receive")
             response_terminator = _LINE_ENDINGS[response_terminator_name]
-            response_bytes = (
-                transport.receive_until(response_terminator, max_bytes=max_response_bytes)
-                if response_terminator
-                else transport.receive(recv_size=max_response_bytes)
-            )
+            while True:
+                response_bytes = (
+                    transport.receive_until(response_terminator, max_bytes=max_response_bytes)
+                    if response_terminator
+                    else transport.receive(recv_size=max_response_bytes)
+                )
+                response_text = _decoded_response(response_bytes, encoding=encoding, strip_response=strip_response)
+                if (
+                    len(skipped_stale_responses) < max_stale_responses
+                    and _is_stale_ika_response(response_text, command_text=command_text)
+                ):
+                    skipped_stale_responses.append(str(response_text or ""))
+                    continue
+                break
             request.throw_if_interrupted(location="driver.ika_eurostar.post_receive")
-
-        response_text = None
-        if response_bytes:
-            response_text = response_bytes.decode(encoding, errors="replace")
-            if strip_response:
-                response_text = response_text.rstrip(" \r\n")
+        elif drain_after_write:
+            drained_after_write_bytes = _drain_stale_input(transport, max_bytes=max_response_bytes)
+            if drained_after_write_bytes:
+                drained_bytes += drained_after_write_bytes
 
         return DeviceCommandResult(
             acknowledged=True,
@@ -152,5 +199,6 @@ class IkaEurostarDriver(DeviceDriver):
                 "expect_response": expect_response,
                 "request_hex": request_bytes.hex(),
                 "drained_hex": drained_bytes.hex() if drained_bytes else None,
+                "skipped_stale_responses": skipped_stale_responses,
             },
         )

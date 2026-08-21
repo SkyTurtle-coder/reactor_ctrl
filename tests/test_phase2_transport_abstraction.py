@@ -247,20 +247,20 @@ class _FakeIkaTransport:
     recv_size = 4096
 
     def __init__(self, *, drained=b"START_4\r\n", response=b"IKA ES 60\r\n"):
-        self.drained = drained
-        self.response = response
+        self.drained = list(drained) if isinstance(drained, (tuple, list)) else [drained]
+        self.response = list(response) if isinstance(response, (tuple, list)) else [response]
         self.operations = []
 
     def drain_input(self, **_kwargs):
         self.operations.append(("drain_input", None))
-        return self.drained
+        return self.drained.pop(0) if self.drained else b""
 
     def send(self, payload):
         self.operations.append(("send", payload))
 
     def receive_until(self, delimiter, *, max_bytes):
         self.operations.append(("receive_until", delimiter))
-        return self.response
+        return self.response.pop(0) if self.response else b""
 
 
 class IkaEurostarDriverExecutionTests(unittest.TestCase):
@@ -280,6 +280,41 @@ class IkaEurostarDriverExecutionTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result.metadata["drained_hex"], b"START_4\r\n".hex())
+
+    def test_skips_stale_write_echo_response_before_query_result(self):
+        transport = _FakeIkaTransport(drained=b"", response=[b"START_4\r\n", b"IKA ES 60\r\n"])
+        request = DeviceCommandRequest(command_name="manual_text", payload={"text": "IN_NAME"})
+
+        result = IkaEurostarDriver().execute(transport=transport, request=request)
+
+        self.assertEqual(result.response_text, "IKA ES 60")
+        self.assertEqual(result.metadata["skipped_stale_responses"], ["START_4"])
+        self.assertEqual(
+            transport.operations,
+            [
+                ("drain_input", None),
+                ("send", b"IN_NAME \r\n"),
+                ("receive_until", b"\r\n"),
+                ("receive_until", b"\r\n"),
+            ],
+        )
+
+    def test_drains_write_echo_after_no_response_command(self):
+        transport = _FakeIkaTransport(drained=[b"", b"START_4\r\n"], response=b"")
+        request = DeviceCommandRequest(command_name="manual_text", payload={"text": "START_4"})
+
+        result = IkaEurostarDriver().execute(transport=transport, request=request)
+
+        self.assertIsNone(result.response_text)
+        self.assertEqual(result.metadata["drained_hex"], b"START_4\r\n".hex())
+        self.assertEqual(
+            transport.operations,
+            [
+                ("drain_input", None),
+                ("send", b"START_4 \r\n"),
+                ("drain_input", None),
+            ],
+        )
 
 
 # ---------------------------------------------------------------------------
