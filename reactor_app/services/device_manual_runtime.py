@@ -317,7 +317,7 @@ def _manual_command_payload(text: str) -> dict[str, Any]:
         "text": normalized,
         "encoding": "ascii",
         "line_ending": "space_crlf",
-        "response_terminator": "crlf" if normalized.startswith("IN_") else "none",
+        "response_terminator": "lf" if normalized.startswith("IN_") else "none",
         "expect_response": normalized.startswith("IN_"),
         "strip_response": True,
         "connect_timeout_ms": _IKA_MANUAL_CONNECT_TIMEOUT_MS,

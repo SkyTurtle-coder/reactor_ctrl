@@ -276,7 +276,7 @@ class IkaEurostarDriverExecutionTests(unittest.TestCase):
             [
                 ("drain_input", None),
                 ("send", b"IN_NAME \r\n"),
-                ("receive_until", b"\r\n"),
+                ("receive_until", b"\n"),
             ],
         )
         self.assertEqual(result.metadata["drained_hex"], b"START_4\r\n".hex())
@@ -294,8 +294,24 @@ class IkaEurostarDriverExecutionTests(unittest.TestCase):
             [
                 ("drain_input", None),
                 ("send", b"IN_NAME \r\n"),
-                ("receive_until", b"\r\n"),
-                ("receive_until", b"\r\n"),
+                ("receive_until", b"\n"),
+                ("receive_until", b"\n"),
+            ],
+        )
+
+    def test_accepts_space_between_cr_and_lf_response_terminator(self):
+        transport = _FakeIkaTransport(drained=b"", response=b"IKA ES 60 \r \n")
+        request = DeviceCommandRequest(command_name="manual_text", payload={"text": "IN_NAME"})
+
+        result = IkaEurostarDriver().execute(transport=transport, request=request)
+
+        self.assertEqual(result.response_text, "IKA ES 60")
+        self.assertEqual(
+            transport.operations,
+            [
+                ("drain_input", None),
+                ("send", b"IN_NAME \r\n"),
+                ("receive_until", b"\n"),
             ],
         )
 

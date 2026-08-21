@@ -12,6 +12,7 @@ _LINE_ENDINGS = {
     "lf": b"\n",
     "crlf": b"\r\n",
     "space_crlf": b" \r\n",
+    "space_cr_space_lf": b" \r \n",
 }
 _DRAIN_IDLE_TIMEOUT_S = 0.08
 _DEFAULT_MAX_STALE_RESPONSES = 3
@@ -123,12 +124,13 @@ class IkaEurostarDriver(DeviceDriver):
             field_name="expect_response",
             default=_default_expect_response(command_text),
         )
-        # Field devices have been observed to answer with CRLF, sometimes with an extra
-        # carriage return before LF, even though commands themselves use "blank CRLF".
+        # IKA manuals encode the line end as blank/CR/LF, and some revisions
+        # show an additional blank before LF.  Read to LF so both variants end
+        # the response without waiting for an exact CRLF byte pair.
         response_terminator_name = _coerce_line_ending(
             payload.get("response_terminator"),
             field_name="response_terminator",
-            default="crlf" if expect_response else "none",
+            default="lf" if expect_response else "none",
         )
         max_response_bytes = _coerce_int(
             payload.get("max_response_bytes"),

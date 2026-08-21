@@ -81,7 +81,7 @@ class IkaManualCommandPayloadTests(unittest.TestCase):
         self.assertEqual(payload["connect_timeout_ms"], 3000)
         self.assertEqual(payload["write_timeout_ms"], 2000)
         self.assertTrue(payload["expect_response"])
-        self.assertEqual(payload["response_terminator"], "crlf")
+        self.assertEqual(payload["response_terminator"], "lf")
 
     def test_write_command_does_not_wait_for_response(self):
         payload = device_manual_runtime._manual_command_payload("START_4")
