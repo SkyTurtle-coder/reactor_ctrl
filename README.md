@@ -547,6 +547,19 @@ sudo systemctl restart reactor_ctrl
 
 Die Gunicorn-Konfiguration liegt in `gunicorn.conf.py` und bindet standardmaessig an `127.0.0.1:5000`. Damit bleibt der Dienst sauber im Hintergrund aktiv, auch wenn die SSH-Verbindung getrennt wird.
 
+### Python-Abhaengigkeiten aktualisieren
+
+`requirements.txt` enthaelt die Laufzeitpakete mit festen Versionen. Pip loest weitere Abhaengigkeiten bei der Installation auf. Dependabot schlaegt Updates der Datei woechentlich per Pull Request vor. GitHub Actions startet fuer diese Aenderungen die Tests mit Python 3.13, prueft die Gunicorn-Konfiguration und sucht mit `pip-audit` nach bekannten Sicherheitsluecken.
+
+Nach Freigabe der Aenderung im Wartungsfenster das folgende Kommando im Projektordner bei gestopptem `reactor_ctrl` ausfuehren. Es aktualisiert die Python-Pakete in der Anwendungsumgebung, einschliesslich ihrer Abhaengigkeiten:
+
+```bash
+.venv/bin/python -m pip install --upgrade --upgrade-strategy eager -r requirements.txt &&
+.venv/bin/python -m pip check
+```
+
+Mit dem zusaetzlichen Argument `--dry-run` beim Installationsbefehl kannst du die geplanten Aenderungen vorher ansehen. Nach erfolgreicher Installation den Dienst starten und `/health` sowie `/health/db` pruefen. Sicherheitsupdates fuer Debian-Pakete wie `libbrotli1` werden separat ueber APT eingespielt.
+
 ## Automatischer Datenbank-Backup
 
 Der Server kann taeglich einen komprimierten SQL-Dump erzeugen, der danach vom zentralen Backup-System gesichert werden kann. Der Dump-Runner liest `DATABASE_URL` aus `.env`, schreibt keine Passwoerter in die Prozessargumente und verwendet `mariadb-dump`/`mysqldump` mit `--single-transaction`, damit der Betrieb nicht durch Tabellen-Locks blockiert wird.

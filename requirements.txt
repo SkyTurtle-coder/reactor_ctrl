@@ -1,6 +1,10 @@
-Flask>=3.0,<4.0
-Flask-SQLAlchemy>=3.1,<4.0
-PyMySQL>=1.1,<2.0
-cryptography>=42,<46
-python-dotenv>=1.0,<2.0
-gunicorn>=21,<24
+Flask==3.1.3
+Flask-SQLAlchemy==3.1.1
+itsdangerous==2.2.0
+PyMySQL[rsa]==1.2.4
+# RSA extra dependency, pinned to keep the security fixes in deployments.
+cryptography==50.0.2
+python-dotenv==1.2.4
+SQLAlchemy==2.1.9
+Werkzeug==3.1.9
+gunicorn==27.0.1; sys_platform != "win32"
